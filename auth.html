@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log In or Sign Up | Play X Cafe</title>
+<meta name="description" content="Log in or create a free Play X Cafe racer account to book faster, track lap times, and earn rewards.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏎️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ============ SIMPLE AUTH HEADER ============ -->
+<header class="auth-topbar">
+  <a href="index.html" class="logo">
+    <span class="logo-mark">PLAY <span class="x-mark">X</span></span>
+    <span class="logo-sub">CAFE</span>
+  </a>
+</header>
+
+<!-- ============ AUTH PAGE ============ -->
+<main class="auth-page">
+  <div class="auth-card" id="authCard">
+
+    <div id="authFormArea">
+      <div class="modal-tabs" role="tablist">
+        <button type="button" class="modal-tab active" id="tabLogin" role="tab" aria-selected="true">Log In</button>
+        <button type="button" class="modal-tab" id="tabSignup" role="tab" aria-selected="false">Sign Up</button>
+      </div>
+
+      <!-- Log In panel -->
+      <div class="modal-view" id="viewLogin">
+        <h1 id="authPageTitle">Your Racing Journey Starts Here</h1>
+        <p class="modal-sub">Track your lap times, compete with friends, and earn rewards with every session.</p>
+
+        <div class="social-auth-row">
+          <button type="button" class="btn-social" id="googleLoginBtn">
+            <svg viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/><path fill="#FBBC05" d="M3.964 10.707A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.707V4.961H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.039l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.581C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/></svg>
+            Continue with Google
+          </button>
+          <button type="button" class="btn-social" id="appleLoginBtn">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#000" d="M16.365 1.43c0 1.14-.42 2.02-1.26 2.79-.9.83-1.99 1.32-3.02 1.24-.12-1.11.42-2.09 1.24-2.83.83-.75 2.09-1.28 3.04-1.2zM20.9 17.19c-.55 1.27-.82 1.84-1.53 2.96-.99 1.56-2.39 3.5-4.12 3.51-1.54.02-1.94-1.01-4.03-1-2.09.01-2.52 1.02-4.06 1-1.73-.02-3.06-1.77-4.05-3.32-2.78-4.33-3.07-9.42-1.35-12.13 1.22-1.94 3.15-3.07 4.97-3.07 1.85 0 3.02 1.02 4.55 1.02 1.48 0 2.39-1.02 4.55-1.02 1.62 0 3.34.88 4.56 2.4-4.02 2.2-3.37 7.93.51 9.65z"/></svg>
+            Continue with Apple
+          </button>
+        </div>
+        <p class="auth-divider">or continue with email</p>
+
+        <form id="loginForm">
+          <div class="form-field">
+            <label for="loginEmail">Email</label>
+            <input type="email" id="loginEmail" name="email" required autocomplete="email">
+          </div>
+          <div class="form-field">
+            <label for="loginPassword">Password</label>
+            <input type="password" id="loginPassword" name="password" required autocomplete="current-password">
+          </div>
+          <div class="modal-row-between">
+            <label class="checkbox-line"><input type="checkbox" name="remember"> Remember me</label>
+            <a href="#" class="link-muted" id="forgotPasswordLink">Forgot password?</a>
+          </div>
+          <button type="submit" class="btn btn-primary btn-full" id="loginSubmitBtn">Log In</button>
+          <p class="form-status" id="loginStatus" role="status" aria-live="polite"></p>
+        </form>
+        <p class="modal-switch">New to Play X Cafe? <button type="button" class="link-inline" id="goToSignup">Create a free account</button></p>
+      </div>
+
+      <!-- Sign Up panel -->
+      <div class="modal-view" id="viewSignup" hidden>
+        <h1>Join Play X Cafe</h1>
+        <p class="modal-sub">Create your free racer account to unlock:</p>
+        <ul class="perk-list">
+          <li>Faster checkout when booking sessions</li>
+          <li>Lap-time leaderboards &amp; race history</li>
+          <li>Member rewards &amp; league standings</li>
+          <li>Early access to tournaments &amp; events</li>
+        </ul>
+
+        <div class="social-auth-row">
+          <button type="button" class="btn-social" id="googleSignupBtn">
+            <svg viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/><path fill="#FBBC05" d="M3.964 10.707A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.707V4.961H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.039l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.581C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/></svg>
+            Continue with Google
+          </button>
+          <button type="button" class="btn-social" id="appleSignupBtn">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#000" d="M16.365 1.43c0 1.14-.42 2.02-1.26 2.79-.9.83-1.99 1.32-3.02 1.24-.12-1.11.42-2.09 1.24-2.83.83-.75 2.09-1.28 3.04-1.2zM20.9 17.19c-.55 1.27-.82 1.84-1.53 2.96-.99 1.56-2.39 3.5-4.12 3.51-1.54.02-1.94-1.01-4.03-1-2.09.01-2.52 1.02-4.06 1-1.73-.02-3.06-1.77-4.05-3.32-2.78-4.33-3.07-9.42-1.35-12.13 1.22-1.94 3.15-3.07 4.97-3.07 1.85 0 3.02 1.02 4.55 1.02 1.48 0 2.39-1.02 4.55-1.02 1.62 0 3.34.88 4.56 2.4-4.02 2.2-3.37 7.93.51 9.65z"/></svg>
+            Continue with Apple
+          </button>
+        </div>
+        <p class="auth-divider">or sign up with email</p>
+
+        <form id="signupForm">
+          <div class="form-row">
+            <div class="form-field">
+              <label for="signupName">Full Name</label>
+              <input type="text" id="signupName" name="name" required autocomplete="name">
+            </div>
+            <div class="form-field">
+              <label for="signupPhone">Phone Number</label>
+              <input type="tel" id="signupPhone" name="phone" required autocomplete="tel">
+            </div>
+          </div>
+          <div class="form-field">
+            <label for="signupEmail">Email</label>
+            <input type="email" id="signupEmail" name="email" required autocomplete="email">
+          </div>
+          <div class="form-row">
+            <div class="form-field">
+              <label for="signupPassword">Password</label>
+              <input type="password" id="signupPassword" name="password" required autocomplete="new-password" minlength="8">
+            </div>
+            <div class="form-field">
+              <label for="signupConfirm">Confirm Password</label>
+              <input type="password" id="signupConfirm" name="confirm" required autocomplete="new-password" minlength="8">
+            </div>
+          </div>
+          <label class="checkbox-line"><input type="checkbox" name="terms" required> I agree to the <a href="index.html#terms" class="link-muted">Terms &amp; Conditions</a></label>
+          <button type="submit" class="btn btn-primary btn-full" id="signupSubmitBtn">Create Free Account</button>
+          <p class="form-status" id="signupStatus" role="status" aria-live="polite"></p>
+        </form>
+        <p class="modal-switch">Already a member? <button type="button" class="link-inline" id="goToLogin">Log in</button></p>
+      </div>
+    </div>
+
+    <!-- Success state (shown after any login/signup action completes) -->
+    <div class="auth-success" id="authSuccess" tabindex="-1" hidden>
+      <div class="success-icon" aria-hidden="true">&#10003;</div>
+      <h2 id="successHeadline">Welcome to Play X Cafe!</h2>
+      <p id="successMessage">Your free racer account is ready.</p>
+      <a href="index.html" class="btn btn-primary btn-full">Continue to Home</a>
+      <p class="auth-demo-note">Redirecting you to Play X Cafe&hellip;</p>
+    </div>
+
+  </div>
+</main>
+
+<!-- ============ HERO BANNER ============ -->
+<section class="auth-hero-banner">
+  <svg class="auth-hero-graphic" viewBox="0 0 480 220" aria-hidden="true">
+    <rect width="480" height="220" class="gfx-track-bg"/>
+    <path d="M0 170 L90 100 L150 150 L230 60 L320 130 L400 80 L480 140 V220 H0 Z" class="gfx-track"/>
+    <polygon points="240,30 275,90 240,78 205,90" class="gfx-flag-hero"/>
+    <rect x="235" y="30" width="10" height="140" class="gfx-flag-hero"/>
+  </svg>
+  <p class="auth-hero-caption">Inside Play X Cafe &mdash; professional rigs, real telemetry, real racing.</p>
+</section>
+
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="js/firebase-config.js"></script>
+<script src="js/auth.js"></script>
+</body>
+</html>
