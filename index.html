@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Play X Cafe | Car Racing Simulator Lounge</title>
-<meta name="description" content="Play X Cafe - Bengaluru's premium car racing simulator cafe. Pro-grade force-feedback rigs, 100+ tracks, coaching, memberships and event bookings.">
+<title>Play X Cafe | Premium Motorsport Simulator Experience</title>
+<meta name="description" content="Play X Cafe - Chennai's premium motorsport entertainment venue. Static and Motion racing simulators, memberships, and a pit-lane inspired hangout. Book your session.">
+<meta name="theme-color" content="#0c0c0d">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏎️</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,31 +18,26 @@
 <header class="site-header" id="top">
   <div class="header-inner">
     <a href="#top" class="logo">
-      <span class="logo-mark">PLAY <span class="x-mark">X</span></span>
-      <span class="logo-sub">CAFE</span>
+      <img src="assets/brand/playx-logo-light.png" alt="Play X Cafe" class="logo-img">
     </a>
     <nav class="main-nav" id="mainNav">
       <div class="mobile-auth-row" id="mobileAuthArea">
         <a href="auth.html?mode=login" class="btn btn-outline">Log In</a>
         <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
       </div>
-      <a href="#about">About</a>
-      <a href="#simulators">Simulators</a>
-      <a href="#gallery">Gallery</a>
+      <a href="#top">Home</a>
+      <a href="#experiences">Experiences</a>
       <a href="#pricing">Pricing</a>
       <a href="#membership">Membership</a>
-      <a href="#academy">Academy</a>
-      <a href="#shop">Pro Shop</a>
-      <a href="#events">Events</a>
-      <a href="#location">Location</a>
-      <a href="#contact">Contact</a>
+      <a href="#cafe">Cafe</a>
+      <a href="#visit">Visit Us</a>
     </nav>
     <div class="header-actions">
       <span id="desktopAuthArea" class="desktop-auth-area">
         <a href="auth.html?mode=login" class="btn btn-sm btn-text auth-btn-desktop">Log In</a>
         <a href="auth.html?mode=signup" class="btn btn-sm btn-outline auth-btn-desktop">Sign Up</a>
       </span>
-      <a href="#booking" class="btn btn-sm btn-primary">Book Now</a>
+      <a href="#booking" class="btn btn-sm btn-primary">Book a Session</a>
       <button class="nav-toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">
         <span></span><span></span><span></span>
       </button>
@@ -51,295 +47,167 @@
 
 <!-- ============ HERO ============ -->
 <section class="hero">
-  <div class="hero-bg" aria-hidden="true">
-    <div class="speed-lines"></div>
-    <div class="checker-strip"></div>
+  <div class="hero-bg" aria-hidden="true"></div>
+
+  <!-- Original, hand-drawn open-wheel racing silhouette - not a real car,
+       team livery, or licensed asset. Stands in for real motorsport
+       photography until that exists (see assets/cafe/SPECS.md for the
+       same approach used elsewhere on the site). -->
+  <div class="hero-visual" aria-hidden="true">
+    <svg viewBox="0 0 420 170" preserveAspectRatio="xMidYMax slice">
+      <g stroke="#f5f3f0" stroke-width="2.5" stroke-linecap="round" opacity="0.4">
+        <line x1="0" y1="108" x2="30" y2="108"/>
+        <line x1="0" y1="118" x2="22" y2="118"/>
+        <line x1="4" y1="98" x2="26" y2="98"/>
+      </g>
+      <path d="M0,150 Q140,168 220,150 T420,132" fill="none" stroke="#e2231a" stroke-width="1.5" opacity="0.45"/>
+      <path d="M395,118 C385,108 375,100 365,96 C350,90 330,85 310,80 Q290,60 270,55 Q255,50 240,52 Q228,55 222,62 C200,68 170,72 140,76 C115,80 95,85 78,92 L58,99 C48,103 40,106 34,110 C40,116 55,121 78,124 L300,128 C330,127 355,124 378,120 Z" fill="#f5f3f0"/>
+      <path d="M223,55 Q244,18 266,55" fill="none" stroke="#f5f3f0" stroke-width="3.5" stroke-linecap="round"/>
+      <g stroke="#f5f3f0" stroke-linecap="round">
+        <line x1="72" y1="98" x2="72" y2="46" stroke-width="3"/>
+        <path d="M46,46 Q73,36 102,46" fill="none" stroke-width="4"/>
+        <line x1="46" y1="32" x2="46" y2="55" stroke-width="3"/>
+        <line x1="102" y1="32" x2="102" y2="55" stroke-width="3"/>
+      </g>
+      <g stroke="#f5f3f0" stroke-linecap="round">
+        <path d="M370,142 Q392,135 414,142" fill="none" stroke-width="4"/>
+        <line x1="370" y1="132" x2="370" y2="150" stroke-width="3"/>
+        <line x1="414" y1="132" x2="414" y2="150" stroke-width="3"/>
+      </g>
+      <g fill="#101012" stroke="#e2231a" stroke-width="3.5">
+        <ellipse cx="80" cy="125" rx="27" ry="27"/>
+        <ellipse cx="340" cy="125" rx="25" ry="25"/>
+      </g>
+    </svg>
   </div>
-  <div class="hero-content">
-    <p class="eyebrow">Bengaluru&rsquo;s Premium Sim Racing Lounge</p>
-    <h1>FEEL THE RACE.<br>LIVE THE SPEED.</h1>
-    <p class="hero-sub">Step into professional-grade car racing simulators with direct-drive force feedback, motion cockpits, and 100+ real-world tracks &mdash; no license, no car, no limits.</p>
+  <div class="hero-scrim" aria-hidden="true"></div>
+
+  <div class="container hero-content">
+    <h1 class="hero-tagline">Race. <span class="accent">X</span>perience. Hangout.</h1>
+    <p class="hero-sub">Static &amp; Motion Racing Simulators.</p>
     <div class="hero-cta">
       <a href="#booking" class="btn btn-primary btn-lg">Book a Session</a>
-      <a href="#pricing" class="btn btn-outline btn-lg">View Pricing</a>
-    </div>
-    <div class="hero-stats">
-      <div><strong>6</strong><span>Racing Rigs</span></div>
-      <div><strong>100+</strong><span>Tracks</span></div>
-      <div><strong>200+</strong><span>Licensed Cars</span></div>
-      <div><strong>10+</strong><span>Age to Race</span></div>
     </div>
   </div>
 </section>
 
-<!-- ============ ABOUT ============ -->
-<section class="section about" id="about">
-  <div class="container two-col">
-    <div class="col-text">
-      <p class="kicker">About Play X Cafe</p>
-      <h2>An Exceptional Sim Racing Experience</h2>
-      <p>Play X Cafe brings professional-grade car racing simulation to Bengaluru. Every rig is fitted with direct-drive force-feedback steering wheels, load-cell brake pedals, and curved triple-monitor (or VR) displays &mdash; the same technology used by professional sim racing teams.</p>
-      <p>Race on 100+ meticulously modeled circuits from around the world in 200+ licensed cars, spanning GT3 endurance racers, open-wheel single-seaters, rally cars, and road cars. Real-time telemetry and lap-time analysis help you shave off seconds every session.</p>
-      <p>Fully air-conditioned, beginner-friendly, and open to ages 10 and up &mdash; Play X Cafe is built for casual friend meetups, corporate team outings, birthday celebrations, and serious sim racers chasing the perfect lap.</p>
-      <ul class="check-list">
-        <li>Professional direct-drive force-feedback rigs</li>
-        <li>All gear provided at no extra cost</li>
-        <li>Beginner coaching &amp; pro racing academy</li>
-        <li>Private bay bookings for groups &amp; events</li>
-      </ul>
-    </div>
-    <div class="col-visual">
-      <div class="about-graphic" aria-hidden="true">
-        <svg viewBox="0 0 400 400" class="wheel-illustration">
-          <circle cx="200" cy="200" r="150" class="wheel-outer"/>
-          <circle cx="200" cy="200" r="110" class="wheel-inner"/>
-          <circle cx="200" cy="200" r="34" class="wheel-hub"/>
-          <rect x="190" y="90" width="20" height="90" rx="6" class="wheel-spoke"/>
-          <rect x="90" y="190" width="90" height="20" rx="6" class="wheel-spoke" transform="rotate(45 200 200)"/>
-          <rect x="220" y="190" width="90" height="20" rx="6" class="wheel-spoke" transform="rotate(-45 200 200)"/>
-        </svg>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ FEATURES / SIMULATORS ============ -->
-<section class="section features" id="simulators">
+<!-- ============ EXPERIENCES (STATIC VS MOTION) ============ -->
+<section class="section experiences" id="experiences" data-reveal>
   <div class="container">
-    <p class="kicker center">Our Technology</p>
-    <h2 class="center">Built Like the Pros Race</h2>
-    <div class="feature-grid">
-      <div class="feature-card">
-        <div class="feature-icon">
-          <svg viewBox="0 0 48 48"><path d="M24 4a20 20 0 100 40 20 20 0 000-40zm0 6a4 4 0 110 8 4 4 0 010-8zm0 28a4 4 0 110-8 4 4 0 010 8zM10 24a4 4 0 118 0 4 4 0 01-8 0zm20 0a4 4 0 118 0 4 4 0 01-8 0z"/></svg>
-        </div>
-        <h3>Direct-Drive Force Feedback</h3>
-        <p>Motion-cockpit rigs with direct-drive wheels, load-cell brakes, and sequential shifters &mdash; feel every curb, slide, and collision.</p>
+    <p class="kicker center">The Main Attraction</p>
+    <h2 class="center">Static vs Motion Simulators</h2>
+    <p class="section-note center">4 racing simulators in total &mdash; 2 Static, 2 Motion.</p>
+    <div class="experience-grid">
+      <div class="experience-card">
+        <span class="experience-count">2 Machines</span>
+        <h3>Static Simulator</h3>
+        <p>A fixed racing rig with a responsive force-feedback wheel and pedals &mdash; ideal for focused, precise laps and first-time racers.</p>
       </div>
-      <div class="feature-card">
-        <div class="feature-icon">
-          <svg viewBox="0 0 48 48"><path d="M6 12h36v20H6zM4 36h40v3H4z"/><circle cx="16" cy="22" r="3"/><circle cx="32" cy="22" r="3"/></svg>
-        </div>
-        <h3>100+ Tracks, 200+ Cars</h3>
-        <p>From Spa to Suzuka, GT3 to open-wheel &mdash; race the world&rsquo;s most iconic circuits in a constantly growing licensed car roster.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon">
-          <svg viewBox="0 0 48 48"><path d="M24 2l5 14h15l-12 9 5 15-13-9-13 9 5-15-12-9h15z"/></svg>
-        </div>
-        <h3>All Gear Included</h3>
-        <p>Racing seat, headset, and pedals are provided free with every booking. Just walk in and race.</p>
+      <div class="experience-card">
+        <span class="experience-count">2 Machines</span>
+        <h3>Motion Simulator</h3>
+        <p>A motion-actuated rig that moves with every corner, brake, and collision &mdash; the most immersive racing feel in the cafe.</p>
       </div>
     </div>
-  </div>
-</section>
-
-<!-- ============ GALLERY ============ -->
-<section class="section gallery" id="gallery">
-  <div class="container">
-    <p class="kicker center">Take a Look Inside</p>
-    <h2 class="center">The Play X Cafe Floor</h2>
-    <p class="section-note center">Real photos of the cafe will replace these preview cards once the space is fitted out.</p>
-    <div class="gallery-grid">
-      <figure class="gallery-card gallery-1">
-        <svg viewBox="0 0 200 200" aria-hidden="true"><rect width="200" height="200"/><path d="M0 150 L60 90 L100 130 L140 60 L200 120 V200 H0 Z" class="gfx-track"/></svg>
-        <figcaption>Racing Rig Bay</figcaption>
-      </figure>
-      <figure class="gallery-card gallery-2">
-        <svg viewBox="0 0 200 200" aria-hidden="true"><rect width="200" height="200"/><rect x="20" y="60" width="160" height="70" rx="6" class="gfx-screen"/><rect x="70" y="150" width="60" height="14" rx="4" class="gfx-screen"/></svg>
-        <figcaption>Triple-Screen Cockpits</figcaption>
-      </figure>
-      <figure class="gallery-card gallery-3">
-        <svg viewBox="0 0 200 200" aria-hidden="true"><rect width="200" height="200"/><circle cx="100" cy="90" r="45" class="gfx-cup"/><rect x="60" y="140" width="80" height="10" class="gfx-cup"/></svg>
-        <figcaption>Lounge &amp; Cafe Area</figcaption>
-      </figure>
-      <figure class="gallery-card gallery-4">
-        <svg viewBox="0 0 200 200" aria-hidden="true"><rect width="200" height="200"/><polygon points="100,40 130,90 100,80 70,90" class="gfx-flag"/><rect x="96" y="40" width="8" height="130" class="gfx-flag"/></svg>
-        <figcaption>Tournament &amp; Event Nights</figcaption>
-      </figure>
-    </div>
+    <ul class="amenity-list">
+      <li>All racing gear included</li>
+      <li>Beginner-friendly &mdash; no experience needed</li>
+      <li>Fully air-conditioned</li>
+    </ul>
   </div>
 </section>
 
 <!-- ============ PRICING ============ -->
-<section class="section pricing" id="pricing">
+<section class="section pricing" id="pricing" data-reveal>
   <div class="container">
     <p class="kicker center">Session Rates</p>
     <h2 class="center">Simple, Transparent Pricing</h2>
-    <div class="pricing-columns">
-      <div class="pricing-card">
-        <h3>Weekday <span>Tue &ndash; Fri</span></h3>
-        <ul class="price-list">
-          <li><span>Individual (60 min)</span><strong>&#8377;900</strong></li>
-          <li><span>Duo (60 min)</span><strong>&#8377;1,600</strong></li>
-          <li><span>Squad of 4 (60 min)</span><strong>&#8377;3,000</strong></li>
-        </ul>
-      </div>
-      <div class="pricing-card featured">
-        <span class="badge">Most Popular</span>
-        <h3>Weekend <span>Sat &ndash; Sun</span></h3>
-        <ul class="price-list">
-          <li><span>Individual (60 min)</span><strong>&#8377;1,100</strong></li>
-          <li><span>Duo (60 min)</span><strong>&#8377;2,000</strong></li>
-          <li><span>Squad of 4 (60 min)</span><strong>&#8377;3,600</strong></li>
-        </ul>
-      </div>
-    </div>
-    <p class="price-footnote">Add-on: Live coaching during your session &mdash; +&#8377;500. Prices shown are placeholders &mdash; update once final rates are set.</p>
+    <p class="section-note center">Static and Motion simulator pricing &mdash; rates to be announced.</p>
+    <!-- Cards below are generated from js/pricing-config.js by js/pricing.js.
+         To change pricing (duration, weekday/weekend/member rates), edit
+         js/pricing-config.js only - this markup never needs to change. -->
+    <div class="pricing-columns" id="pricingGrid" aria-live="polite"></div>
   </div>
 </section>
 
 <!-- ============ MEMBERSHIP ============ -->
-<section class="section membership" id="membership">
+<section class="section membership" id="membership" data-reveal>
   <div class="container">
     <p class="kicker center">Membership</p>
     <h2 class="center">Race More, Save More</h2>
-    <div class="membership-grid">
-      <div class="member-card">
-        <h3>Pole Position <span>Quarterly</span></h3>
-        <p class="member-price">&#8377;9,999<span> / 3 months</span></p>
-        <ul>
-          <li>Priority slot booking</li>
-          <li>10% off all sessions &amp; add-ons</li>
-          <li>1 free guest pass / month</li>
-        </ul>
-        <a href="#booking" class="btn btn-outline">Join Now</a>
-      </div>
-      <div class="member-card highlight">
-        <h3>Champion <span>Annual</span></h3>
-        <p class="member-price">&#8377;29,999<span> / year</span></p>
-        <ul>
-          <li>Priority slot booking</li>
-          <li>20% off all sessions &amp; add-ons</li>
-          <li>2 free guest passes / month</li>
-          <li>Access to member-only race nights</li>
-        </ul>
-        <a href="#booking" class="btn btn-primary">Join Now</a>
-      </div>
-    </div>
+    <p class="section-note center">PLAY X MEMBER &amp; PLAY X PRO &mdash; final pricing and benefits coming soon.</p>
+    <!-- Cards below are generated from js/membership-config.js by
+         js/membership.js. To change tiers (fee, benefits, priority,
+         validity), edit js/membership-config.js only - this markup never
+         needs to change. -->
+    <div class="membership-grid" id="membershipGrid" aria-live="polite"></div>
   </div>
 </section>
 
-<!-- ============ ACADEMY / COACHING ============ -->
-<section class="section academy" id="academy">
+<!-- ============ CAFE (ATMOSPHERE) ============ -->
+<section class="section cafe" id="cafe" data-reveal>
   <div class="container">
-    <p class="kicker center">Racing Academy</p>
-    <h2 class="center">Coaching for Every Age</h2>
-    <div class="academy-grid">
-      <div class="academy-card">
-        <h3>Junior Racers <span>Under 13</span></h3>
-        <ul class="price-list">
-          <li><span>Single lesson (individual)</span><strong>&#8377;1,500</strong></li>
-          <li><span>8-hour package (individual)</span><strong>&#8377;10,500</strong></li>
-          <li><span>8-hour package (group, per student)</span><strong>&#8377;6,500</strong></li>
-        </ul>
+    <p class="kicker center">Step Inside</p>
+    <h2 class="cafe-headline center">
+      <span>Race.</span>
+      <span class="accent">Xperience.</span>
+      <span>Hangout.</span>
+    </h2>
+    <p class="section-note center">Play X Cafe is a racing simulator experience and a premium place to hang out &mdash; pit-lane design, cafe comfort, and a space built to race with your crew.</p>
+
+    <div class="cafe-visual" aria-hidden="true">
+      <div class="cafe-visual-panel">
+        <svg class="cafe-panel-icon" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="24" cy="24" r="5" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M24 8v11M11 32l10-7M37 32l-10-7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        <div class="cafe-panel-text">
+          <strong>Race</strong>
+          <span>The Rig Bay &mdash; Static &amp; Motion simulators</span>
+        </div>
       </div>
-      <div class="academy-card">
-        <h3>Teen &amp; Adult <span>14+</span></h3>
-        <ul class="price-list">
-          <li><span>Single lesson (individual)</span><strong>&#8377;2,000</strong></li>
-          <li><span>8-hour package (individual)</span><strong>&#8377;13,500</strong></li>
-        </ul>
+      <div class="cafe-visual-panel">
+        <svg class="cafe-panel-icon" viewBox="0 0 48 48"><path d="M22 4 9 27h9l-3 17 21-25H24z" fill="currentColor"/></svg>
+        <div class="cafe-panel-text">
+          <strong>Xperience</strong>
+          <span>Matte black, carbon texture, red light</span>
+        </div>
+      </div>
+      <div class="cafe-visual-panel">
+        <svg class="cafe-panel-icon" viewBox="0 0 48 48"><circle cx="17" cy="17" r="7" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="31" cy="17" r="7" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M6 40c0-7.5 5-13 11-13M20 40c1-7.5 6-13 11-13 6 0 11 5.5 11 13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        <div class="cafe-panel-text">
+          <strong>Hangout</strong>
+          <span>The Lounge &mdash; relax and race with friends</span>
+        </div>
       </div>
     </div>
+    <p class="cafe-photo-note center">Real photography of the space is coming soon.</p>
   </div>
 </section>
 
-<!-- ============ PRO SHOP ============ -->
-<section class="section shop" id="shop">
-  <div class="container">
-    <p class="kicker center">Pro Shop</p>
-    <h2 class="center">Gear Up</h2>
-    <div class="shop-grid">
-      <div class="shop-item"><span>🏁</span>Racing Gloves</div>
-      <div class="shop-item"><span>🧢</span>Play X Cafe Caps &amp; Tees</div>
-      <div class="shop-item"><span>🎮</span>Wheel &amp; Pedal Accessories</div>
-      <div class="shop-item"><span>🖼️</span>Track &amp; Livery Prints</div>
-      <div class="shop-item"><span>🎁</span>Gift Cards</div>
-      <div class="shop-item"><span>🏷️</span>Stickers &amp; Merch</div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ EVENTS ============ -->
-<section class="section events" id="events">
+<!-- ============ VISIT US (LOCATION & CONTACT) ============ -->
+<section class="section visit" id="visit" data-reveal>
   <div class="container two-col">
     <div class="col-text">
-      <p class="kicker">Events &amp; Leagues</p>
-      <h2>Play X Sim Racing League</h2>
-      <p>Join our weekly league nights and monthly time-trial tournaments, or book the whole cafe for a corporate team-building event or birthday celebration. Leaderboards, trophies, and bragging rights included.</p>
-      <ul class="check-list">
-        <li>Weekly league race nights</li>
-        <li>Monthly time-trial tournaments with prizes</li>
-        <li>Corporate &amp; team-building packages</li>
-        <li>Birthday &amp; private party bookings</li>
-      </ul>
-      <a href="#contact" class="btn btn-outline">Enquire About Events</a>
-    </div>
-    <div class="col-visual">
-      <div class="events-graphic" aria-hidden="true">
-        <svg viewBox="0 0 300 200">
-          <polygon points="0,200 40,120 80,200" class="gfx-podium podium-2"/>
-          <polygon points="80,200 130,80 180,200" class="gfx-podium podium-1"/>
-          <polygon points="180,200 220,140 260,200" class="gfx-podium podium-3"/>
-        </svg>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ TERMS & CONDITIONS ============ -->
-<section class="section terms" id="terms">
-  <div class="container">
-    <p class="kicker center">Terms &amp; Conditions</p>
-    <h2 class="center">Booking Policy</h2>
-    <div class="terms-grid">
-      <div>
-        <h4>Cancellations</h4>
-        <p>Sessions cancelled or rescheduled with at least 24 hours&rsquo; notice are eligible for a full refund or free reschedule. Cancellations within 24 hours are non-refundable.</p>
-      </div>
-      <div>
-        <h4>Age &amp; Safety</h4>
-        <p>Racers must be 10 years or older. Guests with a history of motion sickness or seizure conditions should consult a physician before booking.</p>
-      </div>
-      <div>
-        <h4>Equipment Care</h4>
-        <p>Guests are liable for damage caused by misuse of simulator equipment. Please follow staff instructions at all times.</p>
-      </div>
-      <div>
-        <h4>Liability Waiver</h4>
-        <p>By booking a session, guests acknowledge the inherent risks of simulator use and release Play X Cafe from liability to the extent permitted under [STATE] law.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ LOCATION & CONTACT ============ -->
-<section class="section location" id="location">
-  <div class="container two-col">
-    <div class="col-text">
-      <p class="kicker">Find Us</p>
-      <h2>Location &amp; Hours</h2>
-      <p class="contact-line"><strong>Address:</strong> [ADDRESS LINE 1], [AREA], [CITY] [PIN CODE]</p>
-      <p class="contact-line"><strong>Phone:</strong> <a href="tel:+910000000000">[PHONE NUMBER]</a></p>
-      <p class="contact-line"><strong>Email:</strong> <a href="mailto:hello@playxcafe.com">[EMAIL ADDRESS]</a></p>
+      <p class="kicker">Visit Us</p>
+      <h2>Find Play X Cafe</h2>
+      <p class="contact-line"><strong>Address:</strong> No 536, Third Floor, Sai JBM Complex, Poonamallee High Rd, SVP Nagar, Amaravathi Nagar, Arumbakkam, Chennai, Greater Chennai, Tamil Nadu 600106</p>
+      <p class="contact-line"><strong>Phone:</strong> <a href="tel:+91XXXXXXXX">+91XXXXXXXX</a></p>
+      <p class="contact-line"><strong>Email:</strong> <a href="mailto:playxcafe@gmail.com">playxcafe@gmail.com</a></p>
       <p class="contact-line"><strong>Hours:</strong> Tue&ndash;Sun, 11:00 AM &ndash; 11:00 PM (Closed Monday)</p>
-      <div class="social-row" id="contact">
-        <a href="#" aria-label="Instagram" class="social-btn">Instagram</a>
-        <a href="#" aria-label="WhatsApp" class="social-btn">WhatsApp</a>
-        <a href="#" aria-label="Facebook" class="social-btn">Facebook</a>
+      <div class="social-row">
+        <a href="https://wa.me/919944046574" class="social-btn" target="_blank" rel="noopener">WhatsApp</a>
+        <a href="tel:+91XXXXXXXX" class="social-btn">Call Us</a>
       </div>
     </div>
     <div class="col-visual">
       <div class="map-placeholder">
-        <p>Map embed goes here<br><span>(add Google Maps iframe with real address)</span></p>
+        <p>Interactive map embed coming soon.</p>
+        <a class="btn btn-outline" href="https://www.google.com/maps/search/?api=1&query=No+536%2C+Third+Floor%2C+Sai+JBM+Complex%2C+Poonamallee+High+Rd%2C+SVP+Nagar%2C+Amaravathi+Nagar%2C+Arumbakkam%2C+Chennai%2C+Tamil+Nadu+600106" target="_blank" rel="noopener">Get Directions</a>
       </div>
     </div>
   </div>
 </section>
 
 <!-- ============ BOOKING / RESERVATION ============ -->
-<section class="section booking" id="booking">
+<section class="section booking" id="booking" data-reveal>
   <div class="container">
     <p class="kicker center">Reservations</p>
     <h2 class="center">Book Your Session</h2>
@@ -364,10 +232,19 @@
           <select id="racers" name="racers" required>
             <option value="1">1 (Individual)</option>
             <option value="2">2 (Duo)</option>
-            <option value="4">4 (Squad)</option>
-            <option value="6+">6+ (Private Event)</option>
+            <option value="3">3</option>
+            <option value="4">4 (Full Group)</option>
           </select>
         </div>
+      </div>
+      <div class="form-field">
+        <label for="simulator">Simulator Type</label>
+        <select id="simulator" name="simulator" required>
+          <option value="" disabled selected>Select simulator type</option>
+          <option value="static">Static Simulator</option>
+          <option value="motion">Motion Simulator</option>
+          <option value="either">No preference</option>
+        </select>
       </div>
       <div class="form-row">
         <div class="form-field">
@@ -381,7 +258,7 @@
       </div>
       <div class="form-field">
         <label for="notes">Notes (optional)</label>
-        <textarea id="notes" name="notes" rows="3" placeholder="Coaching add-on, birthday party, corporate event, etc."></textarea>
+        <textarea id="notes" name="notes" rows="3" placeholder="Birthday party, corporate event, etc."></textarea>
       </div>
       <button type="submit" class="btn btn-primary btn-lg">Request Booking</button>
       <p class="form-status" id="formStatus" role="status" aria-live="polite"></p>
@@ -389,42 +266,133 @@
   </div>
 </section>
 
+<!--
+  PARKED FOR LAUNCH - NOT PART OF THE CURRENT CUSTOMER JOURNEY.
+  The three sections below (Racing Academy, Pro Shop, Events and Leagues)
+  are commented out because none of these offerings are operational at
+  launch. The markup is kept here, fully intact, so it can be restored
+  later without rebuilding from scratch.
+
+  To bring one back:
+    1. Move its section out of the comment below and into the homepage flow.
+    2. Add a nav link back in the header/footer.
+    3. Un-comment its matching CSS block at the end of css/style.css
+       (search for "FUTURE (NOT LIVE)").
+    4. Replace every placeholder price with a real, confirmed price first -
+       the numbers below are leftover prototype placeholders, not rates
+       that were ever approved.
+-->
+
+<!-- FUTURE (NOT LIVE): Racing Academy / coaching
+<section class="section academy" id="academy">
+  <div class="container">
+    <p class="kicker center">Racing Academy</p>
+    <h2 class="center">Coaching for Every Age</h2>
+    <div class="academy-grid">
+      <div class="academy-card">
+        <h3>Junior Racers <span>Under 13</span></h3>
+        <ul class="price-list">
+          <li><span>Single lesson (individual)</span><strong>&#8377;1,500</strong></li>
+          <li><span>8-hour package (individual)</span><strong>&#8377;10,500</strong></li>
+          <li><span>8-hour package (group, per student)</span><strong>&#8377;6,500</strong></li>
+        </ul>
+      </div>
+      <div class="academy-card">
+        <h3>Teen &amp; Adult <span>14+</span></h3>
+        <ul class="price-list">
+          <li><span>Single lesson (individual)</span><strong>&#8377;2,000</strong></li>
+          <li><span>8-hour package (individual)</span><strong>&#8377;13,500</strong></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+-->
+
+<!-- FUTURE (NOT LIVE): Pro Shop / merchandise
+<section class="section shop" id="shop">
+  <div class="container">
+    <p class="kicker center">Pro Shop</p>
+    <h2 class="center">Gear Up</h2>
+    <div class="shop-grid">
+      <div class="shop-item"><span>🏁</span>Racing Gloves</div>
+      <div class="shop-item"><span>🧢</span>Play X Cafe Caps &amp; Tees</div>
+      <div class="shop-item"><span>🎮</span>Wheel &amp; Pedal Accessories</div>
+      <div class="shop-item"><span>🖼️</span>Track &amp; Livery Prints</div>
+      <div class="shop-item"><span>🎁</span>Gift Cards</div>
+      <div class="shop-item"><span>🏷️</span>Stickers &amp; Merch</div>
+    </div>
+  </div>
+</section>
+-->
+
+<!-- FUTURE (NOT LIVE): Events & Leagues (tournaments)
+<section class="section events" id="events">
+  <div class="container two-col">
+    <div class="col-text">
+      <p class="kicker">Events &amp; Leagues</p>
+      <h2>Play X Sim Racing League</h2>
+      <p>Join our weekly league nights and monthly time-trial tournaments, or book the whole cafe for a corporate team-building event or birthday celebration. Leaderboards, trophies, and bragging rights included.</p>
+      <ul class="check-list">
+        <li>Weekly league race nights</li>
+        <li>Monthly time-trial tournaments with prizes</li>
+        <li>Corporate &amp; team-building packages</li>
+        <li>Birthday &amp; private party bookings</li>
+      </ul>
+      <a href="#visit" class="btn btn-outline">Enquire About Events</a>
+    </div>
+    <div class="col-visual">
+      <div class="events-graphic" aria-hidden="true">
+        <svg viewBox="0 0 300 200">
+          <polygon points="0,200 40,120 80,200" class="gfx-podium podium-2"/>
+          <polygon points="80,200 130,80 180,200" class="gfx-podium podium-1"/>
+          <polygon points="180,200 220,140 260,200" class="gfx-podium podium-3"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+-->
+
 <!-- ============ FOOTER ============ -->
 <footer class="site-footer">
   <div class="container footer-grid">
     <div>
-      <span class="logo-mark">PLAY <span class="x-mark">X</span></span> <span class="logo-sub">CAFE</span>
-      <p class="footer-tagline">Bengaluru&rsquo;s premium car racing simulator lounge.</p>
+      <img src="assets/brand/playx-logo-light.png" alt="Play X Cafe" class="logo-img logo-img-footer">
+      <p class="footer-tagline">Chennai&rsquo;s premium motorsport entertainment venue.</p>
     </div>
     <div>
       <h4>Explore</h4>
-      <a href="#about">About</a>
+      <a href="#experiences">Experiences</a>
       <a href="#pricing">Pricing</a>
       <a href="#membership">Membership</a>
-      <a href="#events">Events</a>
+      <a href="#cafe">Cafe</a>
     </div>
     <div>
       <h4>Contact</h4>
-      <a href="mailto:hello@playxcafe.com">[EMAIL ADDRESS]</a>
-      <a href="tel:+910000000000">[PHONE NUMBER]</a>
-      <a href="#location">[ADDRESS PLACEHOLDER]</a>
+      <a href="mailto:playxcafe@gmail.com">playxcafe@gmail.com</a>
+      <a href="tel:+91XXXXXXXX">+91XXXXXXXX</a>
+      <a href="#visit">Arumbakkam, Chennai</a>
     </div>
     <div>
-      <h4>Follow</h4>
-      <a href="#">Instagram</a>
-      <a href="#">WhatsApp</a>
-      <a href="#">Facebook</a>
+      <h4>Booking Policy</h4>
+      <p class="footer-terms" id="terms">Sessions cancelled or rescheduled with at least 24 hours&rsquo; notice are eligible for a full refund or reschedule. Full terms available on request.</p>
     </div>
   </div>
   <p class="footer-copy">&copy; 2026 Play X Cafe. All rights reserved.</p>
 </footer>
 
-<a href="#" class="whatsapp-float" aria-label="Chat on WhatsApp">WhatsApp</a>
+<a href="https://wa.me/919944046574" class="whatsapp-float" aria-label="Chat on WhatsApp" target="_blank" rel="noopener">WhatsApp</a>
 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="js/firebase-config.js"></script>
 <script src="js/site-auth-state.js"></script>
+<script src="js/pricing-config.js"></script>
+<script src="js/pricing.js"></script>
+<script src="js/membership-config.js"></script>
+<script src="js/membership.js"></script>
+<script src="js/scroll-reveal.js"></script>
 <script src="js/script.js"></script>
 </body>
 </html>
