@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Play X Cafe | Premium Motorsport Simulator Experience</title>
-<meta name="description" content="Play X Cafe - Chennai's premium motorsport entertainment venue. Static and Motion racing simulators, memberships, and a pit-lane inspired hangout. Book your session.">
+<meta name="description" content="Play X Cafe - Chennai's premium motorsport entertainment venue. Static and Motion racing simulators, the Play X Race Pass, and a pit-lane inspired hangout. Book your session.">
 <meta name="theme-color" content="#0c0c0d">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏎️</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -28,7 +28,7 @@
       <a href="#top">Home</a>
       <a href="#experiences">Experiences</a>
       <a href="#pricing">Pricing</a>
-      <a href="#membership">Membership</a>
+      <a href="#race-pass">Race Pass</a>
       <a href="#cafe">Cafe</a>
       <a href="#visit">Visit Us</a>
     </nav>
@@ -121,26 +121,29 @@
 <section class="section pricing" id="pricing" data-reveal>
   <div class="container">
     <p class="kicker center">Session Rates</p>
-    <h2 class="center">Simple, Transparent Pricing</h2>
-    <p class="section-note center">Static and Motion simulator pricing &mdash; rates to be announced.</p>
-    <!-- Cards below are generated from js/pricing-config.js by js/pricing.js.
-         To change pricing (duration, weekday/weekend/member rates), edit
-         js/pricing-config.js only - this markup never needs to change. -->
-    <div class="pricing-columns" id="pricingGrid" aria-live="polite"></div>
+    <h2 class="center">Race-Day Pricing</h2>
+    <!-- Text below is set from js/pricing-config.js (PRICING_POLICY) by
+         js/pricing.js - edit the wording there, not here. -->
+    <p class="section-note center" id="pricingPolicyNote"></p>
+    <!-- Groups below are generated from js/pricing-config.js by js/pricing.js.
+         To change pricing (durations, Static/Motion rates, the Grand Race,
+         or session benefits), edit js/pricing-config.js only - this markup
+         never needs to change. -->
+    <div class="pricing-groups" id="pricingGroups" aria-live="polite"></div>
+    <div class="session-benefits" id="sessionBenefits"></div>
   </div>
 </section>
 
-<!-- ============ MEMBERSHIP ============ -->
-<section class="section membership" id="membership" data-reveal>
+<!-- ============ RACE PASS ============ -->
+<section class="section race-pass" id="race-pass" data-reveal>
   <div class="container">
-    <p class="kicker center">Membership</p>
-    <h2 class="center">Race More, Save More</h2>
-    <p class="section-note center">PLAY X MEMBER &amp; PLAY X PRO &mdash; final pricing and benefits coming soon.</p>
-    <!-- Cards below are generated from js/membership-config.js by
-         js/membership.js. To change tiers (fee, benefits, priority,
-         validity), edit js/membership-config.js only - this markup never
-         needs to change. -->
-    <div class="membership-grid" id="membershipGrid" aria-live="polite"></div>
+    <p class="kicker center">Race Pass</p>
+    <h2 class="center">Play X Race Pass</h2>
+    <p class="section-note center">Prepaid racing credits with bonus value &mdash; use them on any Static or Motion session.</p>
+    <!-- Cards below are generated from js/race-pass-config.js by
+         js/race-pass.js. To change or add Race Pass products, edit
+         js/race-pass-config.js only - this markup never needs to change. -->
+    <div class="race-pass-grid" id="racePassGrid" aria-live="polite"></div>
   </div>
 </section>
 
@@ -222,34 +225,68 @@
           <input type="tel" id="phone" name="phone" required>
         </div>
       </div>
-      <div class="form-row">
-        <div class="form-field">
-          <label for="email">Email</label>
-          <input type="email" id="email" name="email" required>
-        </div>
-        <div class="form-field">
-          <label for="racers">Number of Racers</label>
-          <select id="racers" name="racers" required>
-            <option value="1">1 (Individual)</option>
-            <option value="2">2 (Duo)</option>
-            <option value="3">3</option>
-            <option value="4">4 (Full Group)</option>
-          </select>
-        </div>
-      </div>
       <div class="form-field">
-        <label for="simulator">Simulator Type</label>
-        <select id="simulator" name="simulator" required>
-          <option value="" disabled selected>Select simulator type</option>
-          <option value="static">Static Simulator</option>
-          <option value="motion">Motion Simulator</option>
-          <option value="either">No preference</option>
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required>
+      </div>
+      <!-- Xperience options below are populated from js/pricing-config.js
+           (PRICING_GROUPS) by js/script.js - grouped exactly as the Pricing
+           section (Solo Racing Xperience / Race Together / Signature Group
+           Xperience), so this list, and the price it resolves to, can never
+           drift out of sync with the Pricing section. -->
+      <div class="form-field">
+        <label for="xperience">Your Xperience</label>
+        <select id="xperience" name="xperience" required>
+          <option value="" disabled selected>Select your Xperience</option>
         </select>
       </div>
+      <!-- Static/Motion choice for Solo and Duo; replaced with a locked,
+           informational option for the Grand Race (all 4 simulators) by
+           js/script.js - see setGrandRaceSimulator(). -->
+      <div class="form-field">
+        <label for="simulator">Simulator</label>
+        <select id="simulator" name="simulator" required disabled>
+          <option value="" disabled selected>Select your Xperience first</option>
+        </select>
+      </div>
+      <!-- Racer count, duration, and total price are never chosen manually -
+           they're derived from the Xperience/Simulator selection above by
+           js/script.js and mirrored here as a live summary before the
+           customer submits. -->
+      <div class="booking-summary" id="bookingSummary" hidden>
+        <p class="booking-summary-title">Your Xperience</p>
+        <p class="booking-summary-value" id="summaryXperience"></p>
+        <div class="booking-summary-grid">
+          <div class="summary-item">
+            <span>Simulator</span>
+            <strong id="summarySimulator"></strong>
+          </div>
+          <div class="summary-item">
+            <span>Duration</span>
+            <strong id="summaryDuration"></strong>
+          </div>
+          <div class="summary-item">
+            <span>Racers</span>
+            <strong id="summaryRacers"></strong>
+          </div>
+        </div>
+        <div class="booking-summary-total">
+          <span>Total</span>
+          <strong id="summaryTotal"></strong>
+        </div>
+      </div>
+      <input type="hidden" id="racersField" name="racers">
+      <input type="hidden" id="durationField" name="durationMinutes">
+      <input type="hidden" id="totalField" name="totalPrice">
+      <input type="hidden" id="xperienceNameField" name="xperienceName">
       <div class="form-row">
         <div class="form-field">
           <label for="date">Preferred Date</label>
           <input type="date" id="date" name="date" required>
+          <!-- Play X is closed on Mondays - js/script.js rejects a Monday
+               date via setCustomValidity(); this note is the proactive
+               heads-up so the customer doesn't hit that error blind. -->
+          <p class="form-hint">Play X is closed on Mondays.</p>
         </div>
         <div class="form-field">
           <label for="time">Preferred Time</label>
@@ -365,7 +402,7 @@
       <h4>Explore</h4>
       <a href="#experiences">Experiences</a>
       <a href="#pricing">Pricing</a>
-      <a href="#membership">Membership</a>
+      <a href="#race-pass">Race Pass</a>
       <a href="#cafe">Cafe</a>
     </div>
     <div>
@@ -390,8 +427,8 @@
 <script src="js/site-auth-state.js"></script>
 <script src="js/pricing-config.js"></script>
 <script src="js/pricing.js"></script>
-<script src="js/membership-config.js"></script>
-<script src="js/membership.js"></script>
+<script src="js/race-pass-config.js"></script>
+<script src="js/race-pass.js"></script>
 <script src="js/scroll-reveal.js"></script>
 <script src="js/script.js"></script>
 </body>
