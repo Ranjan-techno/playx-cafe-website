@@ -410,6 +410,22 @@ p { color: var(--text-dim); }
 .booking-summary-total strong { font-family: var(--font-head); font-size: 1.5rem; color: var(--red); }
 .form-status.success { color: #34d399; }
 
+/* Shown in place of the booking form / My Bookings list when the visitor
+   isn't logged in - booking and viewing booking history both require a Play
+   X account (see js/script.js, js/my-bookings.js). */
+.booking-login-gate { max-width: 720px; margin: 40px auto 0; background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius); padding: 36px; text-align: center; }
+.booking-login-gate p { margin-bottom: 18px; color: var(--text-dim); }
+.booking-login-gate-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+/* ===== My Bookings ===== */
+.my-bookings-list { max-width: 720px; margin: 32px auto 0; display: flex; flex-direction: column; gap: 16px; }
+.my-bookings-list .booking-summary { margin-bottom: 0; }
+.booking-status-pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg-card); border: 1px solid var(--line); }
+.booking-status-pill.pending { color: #f0b429; border-color: #f0b429; }
+.booking-status-pill.confirmed { color: #34d399; border-color: #34d399; }
+.booking-status-pill.cancelled, .booking-status-pill.no_show { color: var(--text-dim); }
+.booking-status-pill.completed { color: var(--red); border-color: var(--red); }
+
 /* ===== Footer ===== */
 .site-footer { background: var(--bg-alt); border-top: 1px solid var(--line); padding: 64px 0 28px; }
 .footer-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 32px; margin-bottom: 40px; }
@@ -484,6 +500,7 @@ p { color: var(--text-dim); }
 .link-muted { color: var(--red); font-size: 0.88rem; }
 .link-inline { background: none; border: none; color: var(--red); font-weight: 700; cursor: pointer; padding: 0; font-family: var(--font-body); font-size: 1rem; }
 .modal-switch { text-align: center; margin-top: 20px; font-size: 0.9rem; }
+.reset-code-fields { margin-top: 16px; }
 .perk-list { list-style: none; margin: 0 0 22px; }
 .perk-list li { padding-left: 26px; position: relative; margin-bottom: 8px; font-size: 0.92rem; color: var(--text); }
 .perk-list li::before { content: "\2713"; position: absolute; left: 0; color: var(--red); font-weight: 700; }

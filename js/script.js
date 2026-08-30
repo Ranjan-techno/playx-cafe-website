@@ -169,22 +169,108 @@ if (xperienceSelect && simulatorSelect && typeof PRICING_GROUPS !== 'undefined')
   setSimulatorPlaceholder('Select your Xperience first');
 }
 
-// Booking form - front-end only (no backend wired up yet)
+// Booking form - POST /bookings (backend/src/handlers/create-booking.ts).
+// Requires a logged-in Play X account: the Cognito JWT authorizer on that
+// route (infra/lib/constructs/api.ts) rejects an unauthenticated request
+// outright, so the form itself is hidden behind bookingLoginGate until
+// CognitoAuth confirms a session exists. Only productCode/bookingDate
+// (date)/startTime (time)/notes are ever sent - Name/Phone/Email above are
+// collected for the venue's own contact purposes but aren't part of that
+// route's request body, and price is never sent: the backend always looks
+// the current price up itself from the products table.
 const bookingForm = document.getElementById('bookingForm');
 const formStatus = document.getElementById('formStatus');
+const bookingLoginGate = document.getElementById('bookingLoginGate');
+const bookingResult = document.getElementById('bookingResult');
 
-bookingForm.addEventListener('submit', (e) => {
+function resolveProductCode(selection, simulatorValue) {
+  const { group, option } = selection;
+  if (group.kind === 'signature') return option.productCode;
+  return simulatorValue === 'motion' ? option.motionProductCode : option.staticProductCode;
+}
+
+async function refreshBookingGate() {
+  if (!bookingLoginGate || !bookingForm) return;
+  if (typeof CognitoAuth === 'undefined' || !CognitoAuth.isConfigured) {
+    // Not deployed/configured yet - show the form itself rather than a login
+    // gate, so the submit handler's "isn't set up yet" message (below) is
+    // what the visitor sees, same degrade-gracefully pattern as the rest of
+    // the site.
+    bookingLoginGate.hidden = true;
+    bookingForm.hidden = false;
+    return;
+  }
+  const loggedIn = await CognitoAuth.isLoggedIn();
+  bookingLoginGate.hidden = loggedIn;
+  bookingForm.hidden = !loggedIn;
+}
+refreshBookingGate();
+
+bookingForm.addEventListener('submit', async (e) => {
   e.preventDefault();
 
+  if (typeof CognitoAuth === 'undefined' || !CognitoAuth.isConfigured) {
+    formStatus.classList.remove('success');
+    formStatus.textContent = 'Booking isn\'t set up yet - add your AWS backend details in js/aws-config.js.';
+    return;
+  }
+
+  const token = await CognitoAuth.getAccessToken();
+  if (!token) {
+    // Session expired between page load and submit (refreshBookingGate should
+    // normally have already hidden the form in this case) - send the visitor
+    // to log in and bring them straight back here afterwards.
+    sessionStorage.setItem('pxPostLoginRedirect', 'index.html#booking');
+    location.href = 'auth.html?mode=login';
+    return;
+  }
+
+  const selection = getSelectedGroupOption(xperienceSelect.value);
+  const productCode = selection ? resolveProductCode(selection, simulatorSelect.value) : null;
+  if (!productCode) {
+    formStatus.classList.remove('success');
+    formStatus.textContent = 'Please select your Xperience (and Simulator, if applicable) first.';
+    return;
+  }
+
   const data = Object.fromEntries(new FormData(bookingForm).entries());
+  const submitBtn = bookingForm.querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
+  formStatus.classList.remove('success');
+  formStatus.textContent = 'Sending your booking request...';
+  bookingResult.hidden = true;
 
-  // TODO: replace with a real backend/booking API call (e.g. POST to your server,
-  // a form service like Formspree, or an embedded booking platform).
-  console.log('Booking request (not yet sent anywhere):', data);
+  try {
+    const response = await fetch(`${AWS_CONFIG.apiBaseUrl}/bookings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        productCode,
+        bookingDate: data.date,
+        startTime: data.time,
+        notes: data.notes || null
+      })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || 'Failed to create booking');
 
-  formStatus.textContent = `Thanks, ${data.name}! We've received your request for ${data.date} at ${data.time}. Our team will confirm your slot shortly.`;
-  formStatus.classList.add('success');
-  bookingForm.reset();
+    formStatus.textContent = '';
+    document.getElementById('resultXperience').textContent = getProductLabel(result.product);
+    document.getElementById('resultDate').textContent = result.date;
+    document.getElementById('resultTime').textContent = result.time;
+    document.getElementById('resultStatus').textContent = result.status.charAt(0).toUpperCase() + result.status.slice(1);
+    document.getElementById('resultPrice').textContent = formatBookingPrice(result.price);
+    bookingResult.hidden = false;
+    bookingForm.reset();
+    // Reflect the new booking in the My Bookings list (js/my-bookings.js)
+    // right away instead of waiting for the visitor to reload the page.
+    if (typeof refreshMyBookings === 'function') refreshMyBookings();
+  } catch (err) {
+    console.error('POST /bookings failed', err);
+    formStatus.textContent = err.message || 'Something went wrong - please try again.';
+  } finally {
+    submitBtn.disabled = false;
+  }
 });
 
 // bookingForm.reset() above fires a native 'reset' event - use it to put the

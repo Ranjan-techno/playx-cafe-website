@@ -214,6 +214,15 @@
   <div class="container">
     <p class="kicker center">Reservations</p>
     <h2 class="center">Book Your Session</h2>
+    <!-- Shown instead of the form when nobody is logged in - booking requires a
+         Play X account (see js/script.js's auth check on submit). -->
+    <div class="booking-login-gate" id="bookingLoginGate" hidden>
+      <p>Log in or create a free account to book a session.</p>
+      <div class="booking-login-gate-actions">
+        <a href="auth.html?mode=login" class="btn btn-outline">Log In</a>
+        <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
+      </div>
+    </div>
     <form class="booking-form" id="bookingForm">
       <div class="form-row">
         <div class="form-field">
@@ -300,6 +309,50 @@
       <button type="submit" class="btn btn-primary btn-lg">Request Booking</button>
       <p class="form-status" id="formStatus" role="status" aria-live="polite"></p>
     </form>
+    <!-- Populated by js/script.js from the POST /bookings response - never
+         from anything typed into the form above, so the price/status shown
+         here always matches what the backend actually recorded. -->
+    <div class="booking-summary" id="bookingResult" hidden>
+      <p class="booking-summary-title">Booking Requested</p>
+      <p class="booking-summary-value" id="resultXperience"></p>
+      <div class="booking-summary-grid">
+        <div class="summary-item">
+          <span>Date</span>
+          <strong id="resultDate"></strong>
+        </div>
+        <div class="summary-item">
+          <span>Time</span>
+          <strong id="resultTime"></strong>
+        </div>
+        <div class="summary-item">
+          <span>Status</span>
+          <strong id="resultStatus"></strong>
+        </div>
+      </div>
+      <div class="booking-summary-total">
+        <span>Price</span>
+        <strong id="resultPrice"></strong>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ MY BOOKINGS ============ -->
+<section class="section my-bookings" id="my-bookings" data-reveal>
+  <div class="container">
+    <p class="kicker center">Your Account</p>
+    <h2 class="center">My Bookings</h2>
+    <!-- js/my-bookings.js toggles between this gate (signed out), the status
+         line (loading / error / empty), and the list below. -->
+    <div class="booking-login-gate" id="myBookingsLoggedOut" hidden>
+      <p>Log in to view your booking history.</p>
+      <div class="booking-login-gate-actions">
+        <a href="auth.html?mode=login" class="btn btn-outline">Log In</a>
+        <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
+      </div>
+    </div>
+    <p class="form-status" id="myBookingsStatus" role="status" aria-live="polite"></p>
+    <div class="my-bookings-list" id="myBookingsList" hidden></div>
   </div>
 </section>
 
@@ -421,15 +474,17 @@
 
 <a href="https://wa.me/919944046574" class="whatsapp-float" aria-label="Chat on WhatsApp" target="_blank" rel="noopener">WhatsApp</a>
 
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script src="js/firebase-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+<script src="js/aws-config.js"></script>
+<script src="js/cognito-auth.js"></script>
 <script src="js/site-auth-state.js"></script>
 <script src="js/pricing-config.js"></script>
 <script src="js/pricing.js"></script>
+<script src="js/product-lookup.js"></script>
 <script src="js/race-pass-config.js"></script>
 <script src="js/race-pass.js"></script>
 <script src="js/scroll-reveal.js"></script>
+<script src="js/my-bookings.js"></script>
 <script src="js/script.js"></script>
 </body>
 </html>

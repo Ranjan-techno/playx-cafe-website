@@ -35,6 +35,7 @@
 //       groupNote   - optional line shown under the title (e.g. clarifying
 //                     that a price is for multiple racers, not per racer)
 //       options[]   - { name, durationMinutes, staticPrice, motionPrice,
+//                       staticProductCode, motionProductCode,
 //                       badge (optional short tag, e.g. "Most Popular") }
 //
 //   kind: 'signature'
@@ -45,7 +46,15 @@
 //       name        - product name shown as the card heading
 //       racers      - number of racers this group is for (see above)
 //       meta        - one descriptive line (e.g. racer/simulator/track count)
-//       options[]   - { durationMinutes, price }
+//       options[]   - { durationMinutes, price, productCode }
+//
+// *ProductCode fields (staticProductCode/motionProductCode/productCode)
+//   The stable `product_code` the backend's products table uses for this
+//   exact variant (database/migrations/001_initial_schema.sql) - what
+//   js/script.js sends as POST /bookings' `productCode`, and what
+//   js/product-lookup.js maps back to a display label for a booking already
+//   made. Never invent one here without a matching row in that seed data;
+//   the API resolves it server-side and 404s if there's no match.
 //
 // SESSION_BENEFITS
 //   Flat list of perks included with every eligible session, rendered as a
@@ -74,9 +83,9 @@ const PRICING_GROUPS = [
     title: 'Solo Racing Xperience',
     racers: 1,
     options: [
-      { id: 'quick', name: 'Quick Race', durationMinutes: 15, staticPrice: 399, motionPrice: 599 },
-      { id: 'pro', name: 'Pro Race', durationMinutes: 30, staticPrice: 599, motionPrice: 999, badge: 'Most Popular' },
-      { id: 'endurance', name: 'Endurance', durationMinutes: 60, staticPrice: 999, motionPrice: 1799 }
+      { id: 'quick', name: 'Quick Race', durationMinutes: 15, staticPrice: 399, motionPrice: 599, staticProductCode: 'solo-quick-static', motionProductCode: 'solo-quick-motion' },
+      { id: 'pro', name: 'Pro Race', durationMinutes: 30, staticPrice: 599, motionPrice: 999, badge: 'Most Popular', staticProductCode: 'solo-pro-static', motionProductCode: 'solo-pro-motion' },
+      { id: 'endurance', name: 'Endurance', durationMinutes: 60, staticPrice: 999, motionPrice: 1799, staticProductCode: 'solo-endurance-static', motionProductCode: 'solo-endurance-motion' }
     ]
   },
   {
@@ -86,8 +95,8 @@ const PRICING_GROUPS = [
     racers: 2,
     groupNote: 'Price is for the 2-racer Duo Xperience, not per racer.',
     options: [
-      { id: 'duo-15', name: 'Duo Xperience — 2 Racers', durationMinutes: 15, staticPrice: 699, motionPrice: 1099 },
-      { id: 'duo-30', name: 'Duo Xperience — 2 Racers', durationMinutes: 30, staticPrice: 1099, motionPrice: 1799 }
+      { id: 'duo-15', name: 'Duo Xperience — 2 Racers', durationMinutes: 15, staticPrice: 699, motionPrice: 1099, staticProductCode: 'duo-15-static', motionProductCode: 'duo-15-motion' },
+      { id: 'duo-30', name: 'Duo Xperience — 2 Racers', durationMinutes: 30, staticPrice: 1099, motionPrice: 1799, staticProductCode: 'duo-30-static', motionProductCode: 'duo-30-motion' }
     ]
   },
   {
@@ -98,8 +107,8 @@ const PRICING_GROUPS = [
     racers: 4,
     meta: '4 Racers | 4 Simulators | One Track | One Winner',
     options: [
-      { durationMinutes: 15, price: 1799 },
-      { durationMinutes: 30, price: 2799 }
+      { durationMinutes: 15, price: 1799, productCode: 'grand-race-15' },
+      { durationMinutes: 30, price: 2799, productCode: 'grand-race-30' }
     ]
   }
 ];

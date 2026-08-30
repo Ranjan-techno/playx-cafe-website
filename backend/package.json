@@ -1,0 +1,20 @@
+{
+  "name": "playx-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Play X Cafe backend API Lambda handlers. Bundled directly from source by infra's CDK NodejsFunction constructs (esbuild) — this package.json exists for dependency locking and local type-checking, not a separate build/deploy step.",
+  "scripts": {
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.162",
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.11.10",
+    "esbuild": "^0.28.2",
+    "typescript": "~7.0.2"
+  }
+}

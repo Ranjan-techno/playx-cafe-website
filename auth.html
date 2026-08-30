@@ -121,6 +121,56 @@
         </form>
         <p class="modal-switch">Already a member? <button type="button" class="link-inline" id="goToLogin">Log in</button></p>
       </div>
+
+      <!-- Email verification panel - shown right after signup (Cognito leaves a new
+           user UNCONFIRMED until the emailed code is submitted here), or when a login
+           attempt hits an unconfirmed account. -->
+      <div class="modal-view" id="viewVerify" hidden>
+        <h1>Verify Your Email</h1>
+        <p class="modal-sub">Enter the 6-digit code we emailed to <strong id="verifyEmailLabel"></strong>.</p>
+        <form id="verifyForm">
+          <div class="form-field">
+            <label for="verifyCode">Verification Code</label>
+            <input type="text" id="verifyCode" name="code" required inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+          </div>
+          <button type="submit" class="btn btn-primary btn-full" id="verifySubmitBtn">Verify Email</button>
+          <p class="form-status" id="verifyStatus" role="status" aria-live="polite"></p>
+        </form>
+        <p class="modal-switch">Didn't get a code? <button type="button" class="link-inline" id="resendCodeBtn">Resend code</button></p>
+        <p class="modal-switch"><button type="button" class="link-inline" id="verifyBackToLogin">Back to Log In</button></p>
+      </div>
+
+      <!-- Forgot password panel - two Cognito calls in one form: "Send Reset Code"
+           triggers forgotPassword() (emails a code), then the same form's code +
+           new password fields call confirmPassword(). -->
+      <div class="modal-view" id="viewReset" hidden>
+        <h1>Reset Your Password</h1>
+        <p class="modal-sub">Enter your email, then the code we send you and a new password.</p>
+        <form id="resetForm">
+          <div class="form-field">
+            <label for="resetEmail">Email</label>
+            <input type="email" id="resetEmail" name="email" required autocomplete="email">
+          </div>
+          <button type="button" class="btn btn-outline btn-full" id="sendResetCodeBtn">Send Reset Code</button>
+          <div id="resetCodeFields" class="reset-code-fields" hidden>
+            <div class="form-field">
+              <label for="resetCode">Reset Code</label>
+              <input type="text" id="resetCode" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+            </div>
+            <div class="form-field">
+              <label for="resetNewPassword">New Password</label>
+              <input type="password" id="resetNewPassword" name="newPassword" autocomplete="new-password" minlength="8">
+            </div>
+            <div class="form-field">
+              <label for="resetConfirmPassword">Confirm New Password</label>
+              <input type="password" id="resetConfirmPassword" name="confirmPassword" autocomplete="new-password" minlength="8">
+            </div>
+            <button type="submit" class="btn btn-primary btn-full" id="resetSubmitBtn">Reset Password</button>
+          </div>
+          <p class="form-status" id="resetStatus" role="status" aria-live="polite"></p>
+        </form>
+        <p class="modal-switch"><button type="button" class="link-inline" id="resetBackToLogin">Back to Log In</button></p>
+      </div>
     </div>
 
     <!-- Success state (shown after any login/signup action completes) -->
@@ -146,9 +196,9 @@
   <p class="auth-hero-caption">Inside Play X Cafe &mdash; professional rigs, real telemetry, real racing.</p>
 </section>
 
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-<script src="js/firebase-config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+<script src="js/aws-config.js"></script>
+<script src="js/cognito-auth.js"></script>
 <script src="js/auth.js"></script>
 </body>
 </html>
