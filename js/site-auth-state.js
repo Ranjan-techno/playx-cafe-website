@@ -13,9 +13,13 @@ if (CognitoAuth.isConfigured) {
 
   function renderLoggedIn() {
     authAreas.forEach((el) => {
-      const btnSize = el.id === 'desktopAuthArea' ? 'btn btn-sm btn-text auth-btn-desktop' : 'btn btn-outline';
-      const outBtnSize = el.id === 'desktopAuthArea' ? 'btn btn-sm btn-outline auth-btn-desktop' : 'btn btn-primary';
-      el.innerHTML = `<a href="#my-bookings" class="${btnSize}">My Account</a><button type="button" class="${outBtnSize} logout-btn">Log Out</button>`;
+      // "My Account" keeps the same button treatment Log In/Sign Up had in
+      // this slot. "Log Out" is deliberately not a .btn (that reads as a
+      // big, bright, primary-looking action) - it's a plain subtle nav-style
+      // link/button, matching the site's dark/red nav aesthetic (see
+      // .logout-btn in css/style.css).
+      const accountBtnClass = el.id === 'desktopAuthArea' ? 'btn btn-sm btn-text auth-btn-desktop' : 'btn btn-outline';
+      el.innerHTML = `<a href="#my-bookings" class="${accountBtnClass}">My Account</a><button type="button" class="logout-btn">Log Out</button>`;
       el.querySelector('.logout-btn').addEventListener('click', () => {
         CognitoAuth.signOut();
         // No auth-state listener exists for Cognito the way Firebase's

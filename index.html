@@ -26,18 +26,18 @@
         <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
       </div>
       <a href="#top">Home</a>
-      <a href="#experiences">Experiences</a>
+      <a href="#race">Race</a>
+      <a href="#xperience-card">Xperience</a>
+      <a href="#hangout">Hangout</a>
       <a href="#pricing">Pricing</a>
-      <a href="#race-pass">Race Pass</a>
-      <a href="#cafe">Cafe</a>
-      <a href="#visit">Visit Us</a>
+      <a href="#location">Location</a>
     </nav>
     <div class="header-actions">
       <span id="desktopAuthArea" class="desktop-auth-area">
         <a href="auth.html?mode=login" class="btn btn-sm btn-text auth-btn-desktop">Log In</a>
         <a href="auth.html?mode=signup" class="btn btn-sm btn-outline auth-btn-desktop">Sign Up</a>
       </span>
-      <a href="#booking" class="btn btn-sm btn-primary">Book a Session</a>
+      <a href="#booking" class="btn btn-sm btn-primary">Book a Race</a>
       <button class="nav-toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">
         <span></span><span></span><span></span>
       </button>
@@ -147,7 +147,7 @@
   </div>
 </section>
 
-<!-- ============ CAFE (ATMOSPHERE) ============ -->
+<!-- ============ CAFE (RACE / XPERIENCE / HANGOUT SHOWCASE) ============ -->
 <section class="section cafe" id="cafe" data-reveal>
   <div class="container">
     <p class="kicker center">Step Inside</p>
@@ -158,53 +158,105 @@
     </h2>
     <p class="section-note center">Play X Cafe is a racing simulator experience and a premium place to hang out &mdash; pit-lane design, cafe comfort, and a space built to race with your crew.</p>
 
-    <div class="cafe-visual" aria-hidden="true">
-      <div class="cafe-visual-panel">
-        <svg class="cafe-panel-icon" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="24" cy="24" r="5" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M24 8v11M11 32l10-7M37 32l-10-7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-        <div class="cafe-panel-text">
-          <strong>Race</strong>
-          <span>The Rig Bay &mdash; Static &amp; Motion simulators</span>
+    <div class="showcase-grid">
+      <!-- RACE: assets/images/playx-race-card-crop.jpg is a cockpit-only crop
+           of assets/images/playx-race-card.jpg (the source keeps the full
+           promo banner - logo lockup - above the cockpit shot, which would
+           otherwise fight with this card's own label/title text), generated
+           via Pillow. object-fit:cover on the wide crop trims the outer
+           edges of the two side monitors evenly, keeping the wheel and
+           center screen centered at any card width. -->
+      <article class="showcase-card" id="race">
+        <div class="showcase-media">
+          <img class="showcase-img" src="assets/images/playx-race-card-crop.jpg" alt="Play X Cafe racing simulator cockpit with triple-monitor display and force-feedback wheel" loading="lazy">
+          <div class="showcase-media-scrim" aria-hidden="true"></div>
         </div>
-      </div>
-      <div class="cafe-visual-panel">
-        <svg class="cafe-panel-icon" viewBox="0 0 48 48"><path d="M22 4 9 27h9l-3 17 21-25H24z" fill="currentColor"/></svg>
-        <div class="cafe-panel-text">
-          <strong>Xperience</strong>
-          <span>Matte black, carbon texture, red light</span>
+        <div class="showcase-body">
+          <span class="showcase-label">Race</span>
+          <h3 class="showcase-title">Feel Every Turn.</h3>
+          <p class="showcase-desc">Static and Motion racing simulators built for an immersive race experience.</p>
+          <a href="#experiences" class="showcase-cta">Explore Racing
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </a>
         </div>
-      </div>
-      <div class="cafe-visual-panel">
-        <svg class="cafe-panel-icon" viewBox="0 0 48 48"><circle cx="17" cy="17" r="7" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="31" cy="17" r="7" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M6 40c0-7.5 5-13 11-13M20 40c1-7.5 6-13 11-13 6 0 11 5.5 11 13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-        <div class="cafe-panel-text">
-          <strong>Hangout</strong>
-          <span>The Lounge &mdash; relax and race with friends</span>
+      </article>
+
+      <!-- XPERIENCE: assets/images/xperience-card.jpg - two racers competing
+           side-by-side on Play X Cafe's multiplayer simulator rigs. Center
+           crop (default object-position) already frames both rigs/racers
+           well at the card's 4:3 media box, so no pre-crop was needed here
+           the way the Race card's source image needed one. -->
+      <article class="showcase-card" id="xperience-card">
+        <div class="showcase-media">
+          <img class="showcase-img" src="assets/images/xperience-card.jpg" alt="Two racers competing side-by-side on Play X Cafe's multiplayer simulator rigs" loading="lazy">
+          <div class="showcase-media-scrim" aria-hidden="true"></div>
         </div>
-      </div>
+        <div class="showcase-body">
+          <span class="showcase-label">Xperience</span>
+          <h3 class="showcase-title">Compete. Improve. Climb.</h3>
+          <p class="showcase-desc">Race together, chase personal bests and compete through lap timing and rankings.</p>
+          <a href="#pricing" class="showcase-cta">Discover the Xperience
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </a>
+        </div>
+      </article>
+
+      <!-- HANGOUT: assets/images/hangout-card.jpg - friends relaxing on the
+           couches in the Play X Cafe lounge, simulator rigs and bar visible
+           in the background. Center crop (default object-position) keeps
+           the whole group, the bar, and the screens in frame at the card's
+           4:3 media box. -->
+      <article class="showcase-card" id="hangout">
+        <div class="showcase-media">
+          <img class="showcase-img" src="assets/images/hangout-card.jpg" alt="Friends relaxing on the couches in the Play X Cafe lounge, with simulator rigs and the bar in the background" loading="lazy">
+          <div class="showcase-media-scrim" aria-hidden="true"></div>
+        </div>
+        <div class="showcase-body">
+          <span class="showcase-label">Hangout</span>
+          <h3 class="showcase-title">Race. Watch. Chill.</h3>
+          <p class="showcase-desc">A social space to race, watch, meet friends and enjoy the Play X Cafe atmosphere.</p>
+          <a href="#location" class="showcase-cta">Explore the Space
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </a>
+        </div>
+      </article>
     </div>
-    <p class="cafe-photo-note center">Real photography of the space is coming soon.</p>
   </div>
 </section>
 
-<!-- ============ VISIT US (LOCATION & CONTACT) ============ -->
-<section class="section visit" id="visit" data-reveal>
-  <div class="container two-col">
-    <div class="col-text">
-      <p class="kicker">Visit Us</p>
-      <h2>Find Play X Cafe</h2>
-      <p class="contact-line"><strong>Address:</strong> No 536, Third Floor, Sai JBM Complex, Poonamallee High Rd, SVP Nagar, Amaravathi Nagar, Arumbakkam, Chennai, Greater Chennai, Tamil Nadu 600106</p>
-      <p class="contact-line"><strong>Phone:</strong> <a href="tel:+91XXXXXXXX">+91XXXXXXXX</a></p>
-      <p class="contact-line"><strong>Email:</strong> <a href="mailto:playxcafe@gmail.com">playxcafe@gmail.com</a></p>
-      <p class="contact-line"><strong>Hours:</strong> Tue&ndash;Sun, 11:00 AM &ndash; 11:00 PM (Closed Monday)</p>
-      <div class="social-row">
-        <a href="https://wa.me/919944046574" class="social-btn" target="_blank" rel="noopener">WhatsApp</a>
-        <a href="tel:+91XXXXXXXX" class="social-btn">Call Us</a>
+<!-- ============ LOCATION (MAP & CONTACT) ============ -->
+<section class="section location" id="location" data-reveal>
+  <div class="container">
+    <p class="kicker center">Find Play X</p>
+    <h2 class="center">Your Next Race Starts Here</h2>
+
+    <div class="location-map">
+      <iframe
+        src="https://www.google.com/maps?q=Sai+JBM+Complex,+536,+Poonamallee+High+Rd,+NSK+Nagar,+Arumbakkam,+Chennai,+Tamil+Nadu+600106&output=embed"
+        title="Map showing the Play X Cafe location at Sai JBM Complex, Arumbakkam, Chennai"
+        loading="lazy"
+        referrerpolicy="no-referrer-when-downgrade"
+        allowfullscreen></iframe>
+    </div>
+
+    <div class="location-details">
+      <div class="location-detail">
+        <h4>Address</h4>
+        <p>Sai JBM Complex<br>536, Ground Floor, Poonamallee High Rd<br>Arumbakkam, Chennai<br>Tamil Nadu 600106</p>
+      </div>
+      <div class="location-detail">
+        <h4>Opening Hours</h4>
+        <p>Tuesday &ndash; Sunday<br>11:00 AM &ndash; 11:00 PM<br>Monday Closed</p>
+      </div>
+      <div class="location-detail">
+        <h4>Phone</h4>
+        <p><a href="tel:+919944046574">99XXXXXXX</a></p>
       </div>
     </div>
-    <div class="col-visual">
-      <div class="map-placeholder">
-        <p>Interactive map embed coming soon.</p>
-        <a class="btn btn-outline" href="https://www.google.com/maps/search/?api=1&query=No+536%2C+Third+Floor%2C+Sai+JBM+Complex%2C+Poonamallee+High+Rd%2C+SVP+Nagar%2C+Amaravathi+Nagar%2C+Arumbakkam%2C+Chennai%2C+Tamil+Nadu+600106" target="_blank" rel="noopener">Get Directions</a>
-      </div>
+
+    <div class="location-cta-row">
+      <a href="https://www.google.com/maps/dir/?api=1&destination=Play+X+Cafe+Sai+JBM+Complex+536+Poonamallee+High+Rd+Arumbakkam+Chennai+Tamil+Nadu+600106" class="btn btn-primary" target="_blank" rel="noopener">Get Directions</a>
+      <a href="tel:+919944046574" class="btn btn-outline">Call Play X</a>
     </div>
   </div>
 </section>
@@ -292,14 +344,24 @@
         <div class="form-field">
           <label for="date">Preferred Date</label>
           <input type="date" id="date" name="date" required>
-          <!-- Play X is closed on Mondays - js/script.js rejects a Monday
-               date via setCustomValidity(); this note is the proactive
-               heads-up so the customer doesn't hit that error blind. -->
+          <!-- Play X is closed on Mondays and can't take a past date - js/script.js
+               rejects both via setCustomValidity() and this inline message.
+               The hint below is the proactive heads-up on Mondays so the
+               customer doesn't hit that error blind. -->
           <p class="form-hint">Play X is closed on Mondays.</p>
+          <p class="form-error" id="dateError" hidden></p>
         </div>
         <div class="form-field">
           <label for="time">Preferred Time</label>
-          <input type="time" id="time" name="time" required>
+          <!-- Options are 15-minute slots within Play X's 11:00 AM-11:00 PM
+               operating hours, generated by js/script.js from the selected
+               Xperience's duration (the latest slot always leaves enough
+               time for the full session to finish by close). Labeled
+               "Preferred" rather than a confirmed slot - there's no
+               real-time availability check yet. -->
+          <select id="time" name="time" required disabled>
+            <option value="" disabled selected>Select your Xperience first</option>
+          </select>
         </div>
       </div>
       <div class="form-field">
@@ -311,9 +373,12 @@
     </form>
     <!-- Populated by js/script.js from the POST /bookings response - never
          from anything typed into the form above, so the price/status shown
-         here always matches what the backend actually recorded. -->
+         here always matches what the backend actually recorded. Says
+         "Request Received" / "Pending Confirmation" rather than "Confirmed" -
+         real-time simulator availability isn't implemented yet, so no
+         booking is actually confirmed until the venue reviews it. -->
     <div class="booking-summary" id="bookingResult" hidden>
-      <p class="booking-summary-title">Booking Requested</p>
+      <p class="booking-summary-title">Booking Request Received</p>
       <p class="booking-summary-value" id="resultXperience"></p>
       <div class="booking-summary-grid">
         <div class="summary-item">
@@ -325,14 +390,19 @@
           <strong id="resultTime"></strong>
         </div>
         <div class="summary-item">
-          <span>Status</span>
-          <strong id="resultStatus"></strong>
+          <span>Duration</span>
+          <strong id="resultDuration"></strong>
         </div>
       </div>
       <div class="booking-summary-total">
         <span>Price</span>
         <strong id="resultPrice"></strong>
       </div>
+      <div class="booking-summary-status">
+        <span>Status</span>
+        <strong><span class="booking-status-pill pending" id="resultStatus"></span></strong>
+      </div>
+      <a href="#my-bookings" class="btn btn-primary booking-result-cta">View My Bookings</a>
     </div>
   </div>
 </section>
@@ -429,7 +499,7 @@
         <li>Corporate &amp; team-building packages</li>
         <li>Birthday &amp; private party bookings</li>
       </ul>
-      <a href="#visit" class="btn btn-outline">Enquire About Events</a>
+      <a href="#location" class="btn btn-outline">Enquire About Events</a>
     </div>
     <div class="col-visual">
       <div class="events-graphic" aria-hidden="true">
@@ -453,16 +523,17 @@
     </div>
     <div>
       <h4>Explore</h4>
-      <a href="#experiences">Experiences</a>
+      <a href="#race">Race</a>
+      <a href="#xperience-card">Xperience</a>
+      <a href="#hangout">Hangout</a>
       <a href="#pricing">Pricing</a>
       <a href="#race-pass">Race Pass</a>
-      <a href="#cafe">Cafe</a>
     </div>
     <div>
       <h4>Contact</h4>
       <a href="mailto:playxcafe@gmail.com">playxcafe@gmail.com</a>
       <a href="tel:+91XXXXXXXX">+91XXXXXXXX</a>
-      <a href="#visit">Arumbakkam, Chennai</a>
+      <a href="#location">Arumbakkam, Chennai</a>
     </div>
     <div>
       <h4>Booking Policy</h4>
@@ -484,6 +555,7 @@
 <script src="js/race-pass-config.js"></script>
 <script src="js/race-pass.js"></script>
 <script src="js/scroll-reveal.js"></script>
+<script src="js/format-utils.js"></script>
 <script src="js/my-bookings.js"></script>
 <script src="js/script.js"></script>
 </body>

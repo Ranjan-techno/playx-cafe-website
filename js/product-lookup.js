@@ -8,11 +8,14 @@
 //
 // Requires js/pricing-config.js to be loaded first.
 
+function simulatorName(id) {
+  if (typeof SIMULATOR_TYPES === 'undefined') return id;
+  return (SIMULATOR_TYPES.find((t) => t.id === id) || {}).name || id;
+}
+
 const PRODUCT_LABELS = (() => {
   const labels = {};
   if (typeof PRICING_GROUPS === 'undefined') return labels;
-
-  const simulatorName = (id) => (SIMULATOR_TYPES.find((t) => t.id === id) || {}).name || id;
 
   PRICING_GROUPS.forEach((group) => {
     if (group.kind === 'matrix') {
@@ -38,4 +41,34 @@ const PRODUCT_LABELS = (() => {
 
 function getProductLabel(productCode) {
   return PRODUCT_LABELS[productCode] || productCode;
+}
+
+// Same lookup as getProductLabel, but returns the Xperience name and
+// Simulator type as separate fields instead of one combined string - the My
+// Bookings list (js/my-bookings.js) shows "Experience" and "Simulator" as
+// their own columns rather than one merged label.
+function getProductDetails(productCode) {
+  const fallback = { experienceName: productCode, simulatorType: '', durationMinutes: null };
+  if (typeof PRICING_GROUPS === 'undefined') return fallback;
+
+  for (const group of PRICING_GROUPS) {
+    if (group.kind === 'matrix') {
+      for (const option of group.options) {
+        if (option.staticProductCode === productCode) {
+          return { experienceName: option.name, simulatorType: simulatorName('static'), durationMinutes: option.durationMinutes };
+        }
+        if (option.motionProductCode === productCode) {
+          return { experienceName: option.name, simulatorType: simulatorName('motion'), durationMinutes: option.durationMinutes };
+        }
+      }
+    } else if (group.kind === 'signature') {
+      for (const option of group.options) {
+        if (option.productCode === productCode) {
+          return { experienceName: group.name, simulatorType: 'All 4 Simulators', durationMinutes: option.durationMinutes };
+        }
+      }
+    }
+  }
+
+  return fallback;
 }

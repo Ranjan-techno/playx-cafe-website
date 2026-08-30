@@ -21,9 +21,8 @@ document.querySelectorAll('.main-nav a').forEach(link => {
 // count, or price the Pricing section doesn't also show.
 // ----------------------------------------------------------------------
 
-function formatBookingPrice(amount) {
-  return '₹' + Number(amount).toLocaleString('en-IN');
-}
+// formatBookingPrice/formatDateDisplay/formatTimeDisplay/formatBookingStatus
+// come from js/format-utils.js, loaded before this file.
 
 // Builds one option's dropdown label, e.g. "Quick Race — 15 min" or
 // "Duo Xperience — 15 min — 2 Racers". Reuses the exact name/duration/racer
@@ -59,6 +58,75 @@ const racersField = document.getElementById('racersField');
 const durationField = document.getElementById('durationField');
 const totalField = document.getElementById('totalField');
 const xperienceNameField = document.getElementById('xperienceNameField');
+const timeSelect = document.getElementById('time');
+
+// ----------------------------------------------------------------------
+// Preferred Time: a fixed grid of 15-minute slots within Play X's opening
+// hours (Tuesday-Sunday, 11:00 AM-11:00 PM - see
+// backend/src/lib/opening-hours.ts, the source of truth this mirrors),
+// narrowed to the latest slot that still lets the selected Xperience's
+// session finish before closing (e.g. a 30-min session's last slot is
+// 10:30 PM, not 10:45 PM). Labeled "Preferred Time" rather than a
+// guaranteed slot on the form itself - there's no real-time availability
+// check yet, so this only rules out start times the backend would reject
+// outright.
+// ----------------------------------------------------------------------
+const OPENING_MINUTES = 11 * 60; // 11:00 AM
+const CLOSING_MINUTES = 23 * 60; // 11:00 PM
+const TIME_SLOT_MINUTES = 15;
+
+function buildTimeSlots(durationMinutes) {
+  const slots = [];
+  const latestStart = CLOSING_MINUTES - durationMinutes;
+  for (let minutes = OPENING_MINUTES; minutes <= latestStart; minutes += TIME_SLOT_MINUTES) {
+    const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
+    const mm = String(minutes % 60).padStart(2, '0');
+    const value = `${hh}:${mm}`;
+    slots.push({ value, label: formatTimeDisplay(value) });
+  }
+  return slots;
+}
+
+// Declared at top level (not inside the block below) so the booking form's
+// 'reset' handler further down can also call it to restore the starting
+// state after a submission.
+function setTimePlaceholder(text) {
+  if (!timeSelect) return;
+  timeSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  placeholder.textContent = text;
+  timeSelect.appendChild(placeholder);
+  timeSelect.disabled = true;
+  timeSelect.required = false;
+}
+
+function populateTimeOptions(durationMinutes) {
+  if (!timeSelect) return;
+  const previousValue = timeSelect.value;
+  timeSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  placeholder.textContent = 'Select a preferred time';
+  timeSelect.appendChild(placeholder);
+  buildTimeSlots(durationMinutes).forEach(({ value, label }) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    timeSelect.appendChild(opt);
+  });
+  timeSelect.disabled = false;
+  timeSelect.required = true;
+  // Keep the customer's already-picked time if it's still a valid slot for
+  // the (possibly new) duration, instead of silently clearing their choice.
+  if (previousValue && Array.from(timeSelect.options).some((opt) => opt.value === previousValue)) {
+    timeSelect.value = previousValue;
+  }
+}
 
 // Declared at top level (not inside the block below) so the booking form's
 // 'reset' handler further down can also call it to restore the starting
@@ -131,6 +199,7 @@ if (xperienceSelect && simulatorSelect && typeof PRICING_GROUPS !== 'undefined')
     xperienceNameField.value = xperienceName;
     durationField.value = option.durationMinutes;
     racersField.value = group.racers;
+    populateTimeOptions(option.durationMinutes);
 
     if (isSignature) {
       summarySimulator.textContent = 'All 4 Simulators';
@@ -167,6 +236,7 @@ if (xperienceSelect && simulatorSelect && typeof PRICING_GROUPS !== 'undefined')
   simulatorSelect.addEventListener('change', updateBookingSummary);
 
   setSimulatorPlaceholder('Select your Xperience first');
+  setTimePlaceholder('Select your Xperience first');
 }
 
 // Booking form - POST /bookings (backend/src/handlers/create-booking.ts).
@@ -256,10 +326,13 @@ bookingForm.addEventListener('submit', async (e) => {
 
     formStatus.textContent = '';
     document.getElementById('resultXperience').textContent = getProductLabel(result.product);
-    document.getElementById('resultDate').textContent = result.date;
-    document.getElementById('resultTime').textContent = result.time;
-    document.getElementById('resultStatus').textContent = result.status.charAt(0).toUpperCase() + result.status.slice(1);
+    document.getElementById('resultDate').textContent = formatDateDisplay(result.date);
+    document.getElementById('resultTime').textContent = formatTimeDisplay(result.time);
+    document.getElementById('resultDuration').textContent = `${data.durationMinutes} min`;
     document.getElementById('resultPrice').textContent = formatBookingPrice(result.price);
+    const resultStatusEl = document.getElementById('resultStatus');
+    resultStatusEl.textContent = formatBookingStatus(result.status);
+    resultStatusEl.className = `booking-status-pill ${result.status}`;
     bookingResult.hidden = false;
     bookingForm.reset();
     // Reflect the new booking in the My Bookings list (js/my-bookings.js)
@@ -279,25 +352,49 @@ bookingForm.addEventListener('submit', async (e) => {
 if (xperienceSelect && simulatorSelect) {
   bookingForm.addEventListener('reset', () => {
     setSimulatorPlaceholder('Select your Xperience first');
+    setTimePlaceholder('Select your Xperience first');
     bookingSummary.hidden = true;
   });
 }
 
-// Set minimum bookable date to today, and reject Mondays - Play X is closed
-// that day, so a date picker with no restriction would let a customer
-// request a slot that can never be honored.
+// Set minimum bookable date to "today" in IST (Play X's timezone - Chennai),
+// computed the same way as backend/src/lib/opening-hours.ts's todayInIst()
+// so this can't disagree with the backend about what "today" is just
+// because a visitor's device clock is in a different timezone. Also reject
+// Mondays - Play X is closed that day, so a date picker with no restriction
+// would let a customer request a slot that can never be honored.
 const dateInput = document.getElementById('date');
+const dateError = document.getElementById('dateError');
+const MONDAY_MESSAGE = 'Play X is closed on Mondays. Please select another date.';
+const PAST_DATE_MESSAGE = 'Please select a date from today onwards.';
+
+function todayIsoInIst() {
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const shifted = new Date(Date.now() + IST_OFFSET_MS);
+  const year = shifted.getUTCFullYear();
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 if (dateInput) {
-  const today = new Date().toISOString().split('T')[0];
-  dateInput.setAttribute('min', today);
+  const todayIso = todayIsoInIst();
+  dateInput.setAttribute('min', todayIso);
 
   dateInput.addEventListener('input', () => {
     if (!dateInput.value) {
       dateInput.setCustomValidity('');
+      if (dateError) dateError.hidden = true;
       return;
     }
     const [y, m, d] = dateInput.value.split('-').map(Number);
     const isMonday = new Date(y, m - 1, d).getDay() === 1;
-    dateInput.setCustomValidity(isMonday ? 'Play X Cafe is closed on Mondays - please choose another date.' : '');
+    const isPast = dateInput.value < todayIso;
+    const message = isMonday ? MONDAY_MESSAGE : isPast ? PAST_DATE_MESSAGE : '';
+    dateInput.setCustomValidity(message);
+    if (dateError) {
+      dateError.textContent = message;
+      dateError.hidden = !message;
+    }
   });
 }

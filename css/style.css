@@ -62,8 +62,13 @@ p { color: var(--text-dim); }
   margin-bottom: 8px;
 }
 
-.section { padding: 96px 0; border-top: 1px solid var(--line); }
+.section { padding: 96px 0; border-top: 1px solid var(--line); scroll-margin-top: 84px; }
 .section-note { font-size: 0.95rem; margin-top: -6px; margin-bottom: 34px; }
+
+/* Anchor targets nested inside a section (nav links to individual
+   Race/Xperience/Hangout cards) need their own scroll-margin so the sticky
+   header doesn't cover them when jumped to directly. */
+.showcase-card[id] { scroll-margin-top: 100px; }
 
 .two-col {
   display: grid;
@@ -122,7 +127,12 @@ p { color: var(--text-dim); }
 .auth-divider { display: flex; align-items: center; gap: 12px; margin: 4px 0 20px; color: var(--text-dim); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
-/* ===== Header ===== */
+/* ===== Header =====
+   Three-column grid (logo / centered nav / actions) rather than a plain
+   space-between flex row - a centered .main-nav needs a column of its own
+   so it centers against the header's full width, not just the leftover
+   space next to the logo. Height target ~76-82px comes from the 44px logo
+   plus 18px of vertical padding on each side. */
 .site-header {
   position: sticky;
   top: 0;
@@ -134,18 +144,26 @@ p { color: var(--text-dim); }
 .header-inner {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 14px 24px;
-  display: flex;
+  padding: 18px 32px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  column-gap: 24px;
 }
 .logo { display: flex; align-items: center; flex-shrink: 0; }
 .logo-img { height: 44px; width: auto; }
 .logo-img-footer { height: 60px; width: auto; margin-bottom: 14px; }
 
-.main-nav { display: flex; gap: 20px; flex-wrap: wrap; }
+.main-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(28px, 2.4vw, 36px);
+  flex-wrap: wrap;
+}
 .main-nav a {
+  position: relative;
+  padding: 8px 1px;
   font-weight: 600;
   font-size: 0.8rem;
   color: var(--text-dim);
@@ -154,9 +172,21 @@ p { color: var(--text-dim); }
   white-space: nowrap;
   transition: color 0.15s ease;
 }
-.main-nav a:hover { color: var(--red); }
+.main-nav a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 2px;
+  background: var(--red);
+  transform: scaleX(0);
+  transition: transform 0.2s ease;
+}
+.main-nav a:hover, .main-nav a:focus-visible, .main-nav a.active { color: var(--red); }
+.main-nav a:hover::after, .main-nav a:focus-visible::after, .main-nav a.active::after { transform: scaleX(1); }
 
-.header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.header-actions { display: flex; align-items: center; gap: 16px; flex-shrink: 0; justify-self: end; }
 .desktop-auth-area { display: inline-flex; align-items: center; gap: 6px; }
 .header-greeting { font-weight: 600; font-size: 0.85rem; color: var(--text-dim); }
 .nav-toggle { display: none; flex-direction: column; justify-content: center; align-items: center; gap: 5px; background: none; border: none; cursor: pointer; width: 44px; height: 44px; padding: 0; }
@@ -164,6 +194,22 @@ p { color: var(--text-dim); }
 
 .mobile-auth-row { display: none; }
 .mobile-auth-row .header-greeting { display: block; margin-bottom: 10px; }
+
+/* Log Out: a subtle secondary nav action next to "My Account", not a large
+   filled/outlined button - same dim-text-that-reddens-on-hover treatment as
+   the main nav links (.main-nav a) rather than the .btn styles. */
+.logout-btn {
+  background: none;
+  border: none;
+  padding: 8px 4px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+.logout-btn:hover { color: var(--red); }
 
 /* ===== Hero =====
    Full-bleed, not boxed: the racing silhouette is a large background layer
@@ -340,46 +386,78 @@ p { color: var(--text-dim); }
 .cafe-headline { line-height: 1.08; }
 .cafe-headline span { display: block; }
 .cafe-headline .accent { color: var(--red); }
-.cafe-visual { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 44px; }
-.cafe-visual-panel {
-  position: relative; aspect-ratio: 4 / 5; border-radius: var(--radius); overflow: hidden;
-  background: linear-gradient(155deg, #1c1d20 0%, #101012 70%);
-  display: flex; flex-direction: column; justify-content: space-between; padding: 22px;
+
+/* ===== Race / Xperience / Hangout showcase cards =====
+   Image-led cards: .showcase-media holds the photo (or, until a real photo
+   exists for Xperience/Hangout, a placeholder empty state) and is sized via
+   aspect-ratio so it reads as roughly 55-60% of the card at the default
+   3-column desktop width, with .showcase-body (title/description/CTA)
+   filling the rest. Consistent aspect-ratio + flex body keeps all three
+   cards the same height regardless of copy length. */
+.showcase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-top: 44px; }
+.showcase-card {
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; display: flex; flex-direction: column;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
-.cafe-visual-panel::before {
+.showcase-card:hover { border-color: rgba(226,35,26,0.4); transform: translateY(-4px); box-shadow: 0 18px 40px rgba(0,0,0,0.35); }
+.showcase-media {
+  position: relative; aspect-ratio: 4 / 3; overflow: hidden;
+  background: linear-gradient(155deg, #1c1d20 0%, #101012 70%);
+}
+.showcase-img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s ease; }
+.showcase-card:hover .showcase-img { transform: scale(1.06); }
+.showcase-media-scrim {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, rgba(0,0,0,0) 45%, rgba(0,0,0,0.55) 100%);
+}
+/* Placeholder shown for Xperience/Hangout until real photography exists -
+   see the HTML comments above each card for the expected filename. */
+.showcase-media-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; color: var(--text-dim);
+}
+.showcase-media-empty::before {
   content: ""; position: absolute; inset: 0;
   background-image:
     repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0 2px, transparent 2px 5px),
     repeating-linear-gradient(-45deg, rgba(255,255,255,0.02) 0 2px, transparent 2px 5px);
 }
-.cafe-visual-panel::after {
-  content: ""; position: absolute; inset: 0;
-  background: radial-gradient(circle at 20% 100%, rgba(226,35,26,0.22), transparent 55%);
+.showcase-media-empty svg { position: relative; width: 32px; height: 32px; color: var(--red); opacity: 0.85; }
+.showcase-media-empty span { position: relative; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.showcase-body { position: relative; padding: 26px 26px 28px; flex: 1; display: flex; flex-direction: column; }
+.showcase-label {
+  display: inline-block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--red); background: rgba(226,35,26,0.12); border: 1px solid rgba(226,35,26,0.35);
+  border-radius: 20px; padding: 4px 12px; margin-bottom: 14px;
 }
-.cafe-panel-icon { position: relative; z-index: 1; width: 32px; height: 32px; color: var(--red); }
-.cafe-panel-text { position: relative; z-index: 1; }
-.cafe-panel-text strong {
-  display: block; font-family: var(--font-head); font-size: 1.05rem;
-  letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 4px;
+.showcase-title { font-size: 1.35rem; margin-bottom: 10px; }
+.showcase-desc { font-size: 0.95rem; margin-bottom: 22px; flex: 1; }
+.showcase-cta {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  font-weight: 700; font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text); transition: color 0.15s ease;
 }
-.cafe-panel-text span { display: block; font-size: 0.85rem; color: var(--text-dim); }
-.cafe-photo-note { font-size: 0.85rem; margin-top: 24px; }
+.showcase-cta svg { width: 14px; height: 14px; transition: transform 0.15s ease; }
+.showcase-cta:hover { color: var(--red); }
+.showcase-cta:hover svg { transform: translateX(3px); }
 
-/* ===== Visit Us (location + contact) ===== */
-.contact-line { color: var(--text); margin-bottom: 14px; }
-.contact-line a { color: var(--red); }
-.social-row { display: flex; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
-.social-btn {
-  display: inline-flex; align-items: center;
-  border: 1px solid var(--line); border-radius: 6px; padding: 12px 18px; font-weight: 600; font-size: 0.9rem;
+/* ===== Location (map + contact) ===== */
+.location-map {
+  margin: 36px auto 40px; max-width: 900px;
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  background: var(--bg-card);
 }
-.social-btn:hover { border-color: var(--red); color: var(--red); }
-.map-placeholder {
-  border: 1px solid var(--line); border-radius: var(--radius); min-height: 260px; padding: 24px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
-  text-align: center; color: var(--text-dim); background: var(--bg-card);
+.location-map iframe { width: 100%; height: 380px; border: 0; display: block; }
+.location-details {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px;
+  margin-top: 8px; padding-top: 32px; border-top: 1px solid var(--line);
 }
-.map-placeholder p { margin: 0; font-size: 0.95rem; }
+.location-detail h4 { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--red); margin-bottom: 10px; }
+.location-detail p { color: var(--text); font-size: 0.98rem; line-height: 1.6; }
+.location-detail p a { color: var(--red); }
+.location-cta-row { display: flex; gap: 16px; justify-content: center; margin-top: 32px; flex-wrap: wrap; }
 
 /* ===== Booking form ===== */
 .booking-form { max-width: 720px; margin: 40px auto 0; background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius); padding: 36px; }
@@ -393,6 +471,7 @@ p { color: var(--text-dim); }
 .form-field input:focus, .form-field select:focus, .form-field textarea:focus { outline: none; border-color: var(--red); }
 .form-field select:disabled { opacity: 0.6; cursor: not-allowed; }
 .form-hint { font-size: 0.78rem; color: var(--text-dim); margin-top: 6px; }
+.form-error { font-size: 0.78rem; color: var(--red); margin-top: 6px; font-weight: 600; }
 .booking-form .btn { width: 100%; margin-top: 6px; }
 .form-status { margin-top: 16px; text-align: center; font-weight: 600; min-height: 1.4em; }
 
@@ -408,6 +487,11 @@ p { color: var(--text-dim); }
 .booking-summary-total { display: flex; align-items: center; justify-content: space-between; }
 .booking-summary-total span { font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
 .booking-summary-total strong { font-family: var(--font-head); font-size: 1.5rem; color: var(--red); }
+/* Status row - same layout rhythm as .booking-summary-total, but the value
+   is a .booking-status-pill badge rather than a large price figure. */
+.booking-summary-status { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.booking-summary-status span { font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+.booking-result-cta { display: block; width: 100%; text-align: center; margin-top: 20px; }
 .form-status.success { color: #34d399; }
 
 /* Shown in place of the booking form / My Bookings list when the visitor
@@ -507,31 +591,38 @@ p { color: var(--text-dim); }
 
 /* ===== Responsive ===== */
 @media (max-width: 900px) {
+  .header-inner { padding: 14px 20px; }
   .main-nav { display: none; }
   .nav-toggle { display: flex; }
   .site-header.nav-open .main-nav {
-    display: flex; flex-direction: column; position: absolute; top: 100%; left: 0; right: 0;
+    display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px;
+    position: absolute; top: 100%; left: 0; right: 0;
     background: var(--bg); padding: 20px 24px; border-bottom: 1px solid var(--line);
   }
+  .site-header.nav-open .main-nav a { padding: 12px 2px; }
+  .site-header.nav-open .main-nav a::after { display: none; }
   .mobile-auth-row { display: flex; gap: 12px; padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
   .mobile-auth-row .btn { flex: 1; text-align: center; }
   .header-actions .auth-btn-desktop { display: none; }
   .two-col { grid-template-columns: 1fr; }
-  .experience-grid, .cafe-visual { grid-template-columns: repeat(2, 1fr); }
-  .cafe-visual-panel:last-child { grid-column: span 2; }
+  .experience-grid { grid-template-columns: repeat(2, 1fr); }
+  .showcase-grid { grid-template-columns: repeat(2, 1fr); }
+  .showcase-card:last-child { grid-column: span 2; }
   .footer-grid { grid-template-columns: repeat(2, 1fr); }
   .hero { min-height: 560px; }
   .hero-content { text-align: center; margin: 0 auto; }
   .hero-cta { justify-content: center; }
   .hero-visual svg { right: -12%; bottom: 0; width: 90%; min-width: 0; opacity: 0.5; }
   .hero-scrim { background: rgba(12,12,13,0.6); }
+  .location-map iframe { height: 320px; }
+  .location-details { grid-template-columns: 1fr 1fr; gap: 22px; }
 }
 
 @media (max-width: 600px) {
   body { font-size: 16px; }
   .section { padding: 64px 0; }
   .logo-img { height: 36px; }
-  .experience-grid, .cafe-visual,
+  .experience-grid, .showcase-grid,
   .form-row, .footer-grid { grid-template-columns: 1fr; }
   .hero { padding: 120px 20px 70px; min-height: 520px; }
   .hero-visual svg { width: 115%; opacity: 0.4; }
@@ -551,6 +642,9 @@ p { color: var(--text-dim); }
   .signature-options { gap: 24px; }
   .race-pass-card { flex-basis: 100%; padding: 32px 24px; }
   .race-pass-value { gap: 14px; }
+  .location-map iframe { height: 260px; }
+  .location-details { grid-template-columns: 1fr; gap: 20px; }
+  .location-cta-row .btn { flex: 1; text-align: center; }
 }
 
 /* ================================================================

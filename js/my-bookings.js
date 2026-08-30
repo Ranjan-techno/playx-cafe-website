@@ -1,39 +1,36 @@
 // My Bookings section (#my-bookings) - GET /bookings/me for the signed-in
-// customer. Requires js/aws-config.js + js/cognito-auth.js (auth) and
-// js/product-lookup.js (productCode -> display label) to be loaded first.
-
-function formatBookingPriceInr(amount) {
-  return '₹' + Number(amount).toLocaleString('en-IN');
-}
-
-function formatBookingDate(yyyyMmDd) {
-  const [year, month, day] = yyyyMmDd.split('-').map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-}
+// customer. Requires js/aws-config.js + js/cognito-auth.js (auth),
+// js/format-utils.js (date/time/price/status display formatting), and
+// js/product-lookup.js (productCode -> experience/simulator) to be loaded
+// first.
 
 function renderBookingItem(booking) {
-  const statusLabel = booking.status.replace('_', ' ');
+  const { experienceName, simulatorType } = getProductDetails(booking.product);
   return `
     <div class="booking-summary">
       <p class="booking-summary-title">Booking</p>
-      <p class="booking-summary-value">${getProductLabel(booking.product)}</p>
+      <p class="booking-summary-value">${experienceName}</p>
       <div class="booking-summary-grid">
         <div class="summary-item">
+          <span>Simulator</span>
+          <strong>${simulatorType}</strong>
+        </div>
+        <div class="summary-item">
           <span>Date</span>
-          <strong>${formatBookingDate(booking.date)}</strong>
+          <strong>${formatDateDisplay(booking.date)}</strong>
         </div>
         <div class="summary-item">
           <span>Time</span>
-          <strong>${booking.time}</strong>
-        </div>
-        <div class="summary-item">
-          <span>Status</span>
-          <strong><span class="booking-status-pill ${booking.status}">${statusLabel}</span></strong>
+          <strong>${formatTimeDisplay(booking.time)}</strong>
         </div>
       </div>
       <div class="booking-summary-total">
         <span>Price</span>
-        <strong>${formatBookingPriceInr(booking.price)}</strong>
+        <strong>${formatBookingPrice(booking.price)}</strong>
+      </div>
+      <div class="booking-summary-status">
+        <span>Status</span>
+        <strong><span class="booking-status-pill ${booking.status}">${formatBookingStatus(booking.status)}</span></strong>
       </div>
     </div>
   `;
