@@ -3,6 +3,8 @@ import { Construct } from 'constructs';
 import { EnvironmentConfig } from './config/environment-config';
 import { createResourceNamer } from './config/naming';
 import { applyStandardTags } from './config/tags';
+import { networkConfigs } from './config/network-config';
+import { NetworkConstruct } from './constructs/network';
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 export interface InfraStackProps extends cdk.StackProps {
@@ -15,9 +17,17 @@ export class InfraStack extends cdk.Stack {
 
     applyStandardTags(this, props.envConfig);
     const resourceName = createResourceNamer(props.envConfig);
-    void resourceName; // ready for future constructs — no resources created this phase
 
-    // Future resources will be created here, named via resourceName('vpc'), resourceName('db'), etc.
+    // Story 2.1: networking only. PRIVATE_ISOLATED subnets, no NAT — see constructs/network.ts.
+    const networkConfig = networkConfigs[props.envConfig.environmentCode];
+    new NetworkConstruct(this, 'Network', {
+      vpcName: resourceName('vpc'),
+      vpcCidr: networkConfig.vpcCidr,
+      maxAzs: networkConfig.maxAzs,
+    });
+
+    // Future resources (RDS, Lambda, API Gateway, ...) will be created here,
+    // named via resourceName('db'), resourceName('booking-function'), etc.
 
     // example resource
     // const queue = new sqs.Queue(this, resourceName('queue'), {
