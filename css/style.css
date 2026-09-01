@@ -475,6 +475,29 @@ p { color: var(--text-dim); }
 .booking-form .btn { width: 100%; margin-top: 6px; }
 .form-status { margin-top: 16px; text-align: center; font-weight: 600; min-height: 1.4em; }
 
+/* Groups the form's three subsections (Your Race / Your Session / Your
+   Details). The divider only applies from the second subsection onward via
+   the adjacent-sibling combinator, so the first subsection - sitting right
+   under the form's own top padding - doesn't need a separate "no border"
+   class. */
+.booking-form-section + .booking-form-section {
+  margin-top: 28px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+}
+.booking-form-kicker {
+  color: var(--red);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+/* Guest-only nudge shown above the submit button - hidden by js/script.js
+   once a Cognito session is confirmed. Reuses .form-hint's look, just
+   centered since it sits below the full-width form, not under one field. */
+.booking-guest-hint { text-align: center; margin-top: 4px; margin-bottom: 4px; }
+
 /* Live price summary shown once an Xperience is selected - values are set
    by js/script.js from js/pricing-config.js, never hardcoded here. */
 .booking-summary { margin-bottom: 22px; padding: 22px 24px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }

@@ -266,109 +266,118 @@
   <div class="container">
     <p class="kicker center">Reservations</p>
     <h2 class="center">Book Your Session</h2>
-    <!-- Shown instead of the form when nobody is logged in - booking requires a
-         Play X account (see js/script.js's auth check on submit). -->
-    <div class="booking-login-gate" id="bookingLoginGate" hidden>
-      <p>Log in or create a free account to book a session.</p>
-      <div class="booking-login-gate-actions">
-        <a href="auth.html?mode=login" class="btn btn-outline">Log In</a>
-        <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
-      </div>
-    </div>
+    <!-- The full form is visible to every visitor, signed in or not - see
+         js/script.js's comment above the submit handler for why (auth is
+         only enforced at the moment of submit, not before). -->
     <form class="booking-form" id="bookingForm">
-      <div class="form-row">
+      <div class="booking-form-section">
+        <p class="booking-form-kicker">Your Race</p>
+        <!-- Xperience options below are populated from js/pricing-config.js
+             (PRICING_GROUPS) by js/script.js - grouped exactly as the Pricing
+             section (Solo Racing Xperience / Race Together / Signature Group
+             Xperience), so this list, and the price it resolves to, can never
+             drift out of sync with the Pricing section. -->
         <div class="form-field">
-          <label for="name">Full Name</label>
-          <input type="text" id="name" name="name" required>
+          <label for="xperience">Your Xperience</label>
+          <select id="xperience" name="xperience" required>
+            <option value="" disabled selected>Select your Xperience</option>
+          </select>
         </div>
+        <!-- Static/Motion choice for Solo and Duo; replaced with a locked,
+             informational option for the Grand Race (all 4 simulators) by
+             js/script.js - see setGrandRaceSimulator(). -->
         <div class="form-field">
-          <label for="phone">Phone Number</label>
-          <input type="tel" id="phone" name="phone" required>
-        </div>
-      </div>
-      <div class="form-field">
-        <label for="email">Email</label>
-        <input type="email" id="email" name="email" required>
-      </div>
-      <!-- Xperience options below are populated from js/pricing-config.js
-           (PRICING_GROUPS) by js/script.js - grouped exactly as the Pricing
-           section (Solo Racing Xperience / Race Together / Signature Group
-           Xperience), so this list, and the price it resolves to, can never
-           drift out of sync with the Pricing section. -->
-      <div class="form-field">
-        <label for="xperience">Your Xperience</label>
-        <select id="xperience" name="xperience" required>
-          <option value="" disabled selected>Select your Xperience</option>
-        </select>
-      </div>
-      <!-- Static/Motion choice for Solo and Duo; replaced with a locked,
-           informational option for the Grand Race (all 4 simulators) by
-           js/script.js - see setGrandRaceSimulator(). -->
-      <div class="form-field">
-        <label for="simulator">Simulator</label>
-        <select id="simulator" name="simulator" required disabled>
-          <option value="" disabled selected>Select your Xperience first</option>
-        </select>
-      </div>
-      <!-- Racer count, duration, and total price are never chosen manually -
-           they're derived from the Xperience/Simulator selection above by
-           js/script.js and mirrored here as a live summary before the
-           customer submits. -->
-      <div class="booking-summary" id="bookingSummary" hidden>
-        <p class="booking-summary-title">Your Xperience</p>
-        <p class="booking-summary-value" id="summaryXperience"></p>
-        <div class="booking-summary-grid">
-          <div class="summary-item">
-            <span>Simulator</span>
-            <strong id="summarySimulator"></strong>
-          </div>
-          <div class="summary-item">
-            <span>Duration</span>
-            <strong id="summaryDuration"></strong>
-          </div>
-          <div class="summary-item">
-            <span>Racers</span>
-            <strong id="summaryRacers"></strong>
-          </div>
-        </div>
-        <div class="booking-summary-total">
-          <span>Total</span>
-          <strong id="summaryTotal"></strong>
-        </div>
-      </div>
-      <input type="hidden" id="racersField" name="racers">
-      <input type="hidden" id="durationField" name="durationMinutes">
-      <input type="hidden" id="totalField" name="totalPrice">
-      <input type="hidden" id="xperienceNameField" name="xperienceName">
-      <div class="form-row">
-        <div class="form-field">
-          <label for="date">Preferred Date</label>
-          <input type="date" id="date" name="date" required>
-          <!-- Play X is closed on Mondays and can't take a past date - js/script.js
-               rejects both via setCustomValidity() and this inline message.
-               The hint below is the proactive heads-up on Mondays so the
-               customer doesn't hit that error blind. -->
-          <p class="form-hint">Play X is closed on Mondays.</p>
-          <p class="form-error" id="dateError" hidden></p>
-        </div>
-        <div class="form-field">
-          <label for="time">Preferred Time</label>
-          <!-- Options are 15-minute slots within Play X's 11:00 AM-11:00 PM
-               operating hours, generated by js/script.js from the selected
-               Xperience's duration (the latest slot always leaves enough
-               time for the full session to finish by close). Labeled
-               "Preferred" rather than a confirmed slot - there's no
-               real-time availability check yet. -->
-          <select id="time" name="time" required disabled>
+          <label for="simulator">Simulator</label>
+          <select id="simulator" name="simulator" required disabled>
             <option value="" disabled selected>Select your Xperience first</option>
           </select>
         </div>
+        <!-- Racer count, duration, and total price are never chosen manually -
+             they're derived from the Xperience/Simulator selection above by
+             js/script.js and mirrored here as a live summary before the
+             customer submits. -->
+        <div class="booking-summary" id="bookingSummary" hidden>
+          <p class="booking-summary-title">Your Xperience</p>
+          <p class="booking-summary-value" id="summaryXperience"></p>
+          <div class="booking-summary-grid">
+            <div class="summary-item">
+              <span>Simulator</span>
+              <strong id="summarySimulator"></strong>
+            </div>
+            <div class="summary-item">
+              <span>Duration</span>
+              <strong id="summaryDuration"></strong>
+            </div>
+            <div class="summary-item">
+              <span>Racers</span>
+              <strong id="summaryRacers"></strong>
+            </div>
+          </div>
+          <div class="booking-summary-total">
+            <span>Total</span>
+            <strong id="summaryTotal"></strong>
+          </div>
+        </div>
+        <input type="hidden" id="racersField" name="racers">
+        <input type="hidden" id="durationField" name="durationMinutes">
+        <input type="hidden" id="totalField" name="totalPrice">
+        <input type="hidden" id="xperienceNameField" name="xperienceName">
       </div>
-      <div class="form-field">
-        <label for="notes">Notes (optional)</label>
-        <textarea id="notes" name="notes" rows="3" placeholder="Birthday party, corporate event, etc."></textarea>
+      <div class="booking-form-section">
+        <p class="booking-form-kicker">Your Session</p>
+        <div class="form-row">
+          <div class="form-field">
+            <label for="date">Preferred Date</label>
+            <input type="date" id="date" name="date" required>
+            <!-- Play X is closed on Mondays and can't take a past date - js/script.js
+                 rejects both via setCustomValidity() and this inline message.
+                 The hint below is the proactive heads-up on Mondays so the
+                 customer doesn't hit that error blind. -->
+            <p class="form-hint">Play X is closed on Mondays.</p>
+            <p class="form-error" id="dateError" hidden></p>
+          </div>
+          <div class="form-field">
+            <label for="time">Preferred Time</label>
+            <!-- Options are 15-minute slots within Play X's 11:00 AM-11:00 PM
+                 operating hours, generated by js/script.js from the selected
+                 Xperience's duration (the latest slot always leaves enough
+                 time for the full session to finish by close). Labeled
+                 "Preferred" rather than a confirmed slot - there's no
+                 real-time availability check yet. -->
+            <select id="time" name="time" required disabled>
+              <option value="" disabled selected>Select your Xperience first</option>
+            </select>
+          </div>
+        </div>
       </div>
-      <button type="submit" class="btn btn-primary btn-lg">Request Booking</button>
+      <div class="booking-form-section">
+        <p class="booking-form-kicker">Your Details</p>
+        <div class="form-row">
+          <div class="form-field">
+            <label for="name">Full Name</label>
+            <input type="text" id="name" name="name" required>
+          </div>
+          <div class="form-field">
+            <label for="phone">Phone Number</label>
+            <input type="tel" id="phone" name="phone" required>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" required>
+        </div>
+        <div class="form-field">
+          <label for="notes">Notes (optional)</label>
+          <textarea id="notes" name="notes" rows="3" placeholder="Birthday party, corporate event, etc."></textarea>
+        </div>
+      </div>
+      <!-- Hidden for a signed-in visitor by js/script.js - booking still
+           needs a Play X account (the API's Cognito authorizer isn't going
+           away), this just says so without blocking the form itself. -->
+      <p class="form-hint booking-guest-hint" id="bookingGuestHint">
+        Quick log in or free sign-up to confirm — takes less than a minute.
+      </p>
+      <button type="submit" class="btn btn-primary btn-lg">Reserve My Session</button>
       <p class="form-status" id="formStatus" role="status" aria-live="polite"></p>
     </form>
     <!-- Populated by js/script.js from the POST /bookings response - never
