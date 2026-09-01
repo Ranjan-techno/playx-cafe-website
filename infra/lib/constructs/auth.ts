@@ -63,6 +63,15 @@ export class AuthConstruct extends Construct {
       // above), so it's the only channel Cognito should use for "Forgot password".
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
 
+      // Send verification/forgot-password emails via the already-verified SES identity
+      // (see auth-config.ts) instead of Cognito's built-in low-volume sender. SES identity
+      // verification itself is managed outside CDK, not by this construct.
+      email: cognito.UserPoolEmail.withSES({
+        fromEmail: authConfig.sesFromEmail,
+        fromName: authConfig.sesFromName,
+        sesRegion: authConfig.sesRegion,
+      }),
+
       deletionProtection: authConfig.deletionProtection,
       removalPolicy: authConfig.removalPolicy,
     });
