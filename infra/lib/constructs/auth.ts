@@ -42,6 +42,23 @@ export class AuthConstruct extends Construct {
       // until then. This is what makes email verification required, not optional.
       autoVerify: { email: true },
 
+      // Explicit rather than relying on the "ESSENTIALS for a newly created pool" default —
+      // this pool already exists at ESSENTIALS in live AWS, and choice-based sign-in below
+      // (EMAIL_OTP as a first factor) requires ESSENTIALS or PLUS, so pin it rather than
+      // inherit a default that could silently change under us.
+      featurePlan: cognito.FeaturePlan.ESSENTIALS,
+
+      // Passwordless infra layer only (see plan): let EMAIL_OTP stand alongside PASSWORD as a
+      // first-factor option. PASSWORD must stay listed — Cognito rejects disabling it outright
+      // — so existing password sign-in (SRP, via the WebClient below) is unaffected. No
+      // frontend flow calls EMAIL_OTP yet; that's a separate, later change.
+      signInPolicy: {
+        allowedFirstAuthFactors: {
+          password: true,
+          emailOtp: true,
+        },
+      },
+
       standardAttributes: {
         email: { required: true, mutable: true },
         fullname: { required: true, mutable: true },
@@ -83,9 +100,14 @@ export class AuthConstruct extends Construct {
       // A secret embedded in browser JS isn't a secret — mandatory false for a public client.
       generateSecret: false,
 
-      // SRP only: the password itself never goes over the wire, unlike USER_PASSWORD_AUTH.
-      // The right default for a public client with no other flow required yet.
-      authFlows: { userSrp: true },
+      // SRP stays enabled: the password itself never goes over the wire, unlike
+      // USER_PASSWORD_AUTH. `user: true` adds ALLOW_USER_AUTH (Cognito's choice-based /
+      // USER_AUTH challenge flow, required for a client to start an EMAIL_OTP first factor) —
+      // it does not replace SRP, both are still offered. ALLOW_REFRESH_TOKEN_AUTH is added
+      // automatically by CDK whenever any authFlows are set, so it's preserved without being
+      // listed explicitly here. Native `user` support in this CDK version (2.267.0) makes the
+      // CfnUserPoolClient escape hatch unnecessary.
+      authFlows: { userSrp: true, user: true },
 
       // Don't let a failed sign-in or forgot-password call reveal whether an email is
       // registered.
