@@ -64,17 +64,28 @@ export class InfraStack extends cdk.Stack {
     // Story 2.4: Cognito User Pool + public web app client for customer signup/login. Not
     // VPC-scoped (Cognito is regional, not a VPC resource). Wired into the Story 2.6 API below
     // as the JWT authorizer's source of truth — see constructs/auth.ts.
+    //
+    // Guest-first passwordless auth adds the three CUSTOM_AUTH challenge trigger Lambdas
+    // (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse) that back POST
+    // /auth/start and POST /auth/verify below — see constructs/auth.ts.
     const authConfig = authConfigs[props.envConfig.environmentCode];
     const auth = new AuthConstruct(this, 'Auth', {
       authConfig,
       userPoolName: resourceName('users'),
       webClientName: resourceName('web-client'),
+      defineAuthChallengeFunctionName: resourceName('auth-define-challenge'),
+      createAuthChallengeFunctionName: resourceName('auth-create-challenge'),
+      verifyAuthChallengeFunctionName: resourceName('auth-verify-challenge'),
     });
 
     // Story 2.5/2.6: the backend API — an API Gateway HTTP API with a public GET /health and
     // GET /products, plus Cognito-JWT-protected POST /bookings and GET /bookings/me. The
     // booking/products Lambdas are VPC-attached (reusing the Story 2.2 lambda security group) to
     // reach the database. See constructs/api.ts and backend/src/handlers/.
+    //
+    // Guest-first passwordless auth adds two more public routes, POST /auth/start and
+    // POST /auth/verify, driving the Story 2.4 User Pool's CUSTOM_AUTH challenge (see the Auth
+    // construct above).
     const apiConfig = apiConfigs[props.envConfig.environmentCode];
     const api = new ApiConstruct(this, 'Api', {
       apiConfig,
@@ -83,6 +94,8 @@ export class InfraStack extends cdk.Stack {
       productsFunctionName: resourceName('products'),
       createBookingFunctionName: resourceName('create-booking'),
       listMyBookingsFunctionName: resourceName('bookings-me'),
+      authStartFunctionName: resourceName('auth-start'),
+      authVerifyFunctionName: resourceName('auth-verify'),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,
       databaseSecret,
