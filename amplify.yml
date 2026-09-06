@@ -1,0 +1,25 @@
+# AWS Amplify Hosting build spec for the Play X Cafe static frontend.
+#
+# This is a plain HTML/CSS/JS site with no package manager, bundler, or npm
+# dependencies (see CLAUDE.md) - so there is nothing to `npm install`. The
+# "build" phase runs scripts/build-dist.sh, which copies an explicit
+# allowlist of customer-facing files (index.html, auth.html, css/, js/, and
+# the image/logo assets actually referenced from HTML) into dist/. Amplify
+# then publishes only that directory - backend/, infra/, database/, docs/,
+# git files, and dev-only assets never reach the CDN. See
+# scripts/build-dist.sh for exactly what is included/excluded and why.
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - echo "Static site - no dependencies to install"
+    build:
+      commands:
+        - bash scripts/build-dist.sh
+  artifacts:
+    baseDirectory: dist
+    files:
+      - '**/*'
+  cache:
+    paths: []
