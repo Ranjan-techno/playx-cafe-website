@@ -104,7 +104,11 @@ p { color: var(--text-dim); }
 .btn:hover { transform: translateY(-2px); }
 .btn-primary { background: var(--red); color: #fff; box-shadow: 0 4px 22px rgba(226,35,26,0.28); }
 .btn-primary:hover { background: var(--red-dark); box-shadow: 0 6px 28px rgba(226,35,26,0.4); }
-.btn-outline { border-color: rgba(255,255,255,0.22); color: var(--text); }
+/* background: none is explicit (not just "no rule") because every existing
+   .btn-outline is an <a>, which has no UA background to begin with - a
+   <button class="btn btn-outline"> (e.g. Reservation Review's Edit Details)
+   would otherwise pick up the browser's default gray button face. */
+.btn-outline { background: none; border-color: rgba(255,255,255,0.22); color: var(--text); }
 .btn-outline:hover { border-color: var(--red); color: var(--red); }
 .btn-lg { padding: 16px 36px; font-size: 1.05rem; }
 .btn-text { background: none; padding: 12px 4px; color: var(--text-dim); }
@@ -475,6 +479,29 @@ p { color: var(--text-dim); }
 .booking-form .btn { width: 100%; margin-top: 6px; }
 .form-status { margin-top: 16px; text-align: center; font-weight: 600; min-height: 1.4em; }
 
+/* Groups the form's three subsections (Your Race / Your Session / Your
+   Details). The divider only applies from the second subsection onward via
+   the adjacent-sibling combinator, so the first subsection - sitting right
+   under the form's own top padding - doesn't need a separate "no border"
+   class. */
+.booking-form-section + .booking-form-section {
+  margin-top: 28px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+}
+.booking-form-kicker {
+  color: var(--red);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+/* Guest-only nudge shown above the submit button - hidden by js/script.js
+   once a Cognito session is confirmed. Reuses .form-hint's look, just
+   centered since it sits below the full-width form, not under one field. */
+.booking-guest-hint { text-align: center; margin-top: 4px; margin-bottom: 4px; }
+
 /* Live price summary shown once an Xperience is selected - values are set
    by js/script.js from js/pricing-config.js, never hardcoded here. */
 .booking-summary { margin-bottom: 22px; padding: 22px 24px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
@@ -491,19 +518,94 @@ p { color: var(--text-dim); }
    is a .booking-status-pill badge rather than a large price figure. */
 .booking-summary-status { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
 .booking-summary-status span { font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
-.booking-result-cta { display: block; width: 100%; text-align: center; margin-top: 20px; }
+/* Booking reference on the final "You're On The Grid" confirmation
+   (#bookingResult) - a quiet line between the status row and the
+   View My Bookings/Back to Home actions, only shown when the backend
+   returned an id (see js/script.js's submitBookingRequest()). Reused as-is
+   on each My Bookings list item (js/my-bookings.js's renderBookingItem()). */
+.booking-reference { margin: 14px 0 0; font-size: 0.8rem; color: var(--text-dim); }
+/* A booking's own free-text notes, shown on its My Bookings list item only
+   when present (js/my-bookings.js). Sits above .booking-reference, same
+   dashed-divider rhythm as .booking-summary-status. */
+.booking-notes { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); font-size: 0.88rem; color: var(--text-dim); }
+.booking-notes span { display: block; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 4px; }
 .form-status.success { color: #34d399; }
+
+/* Reservation Review screen - shown in place of the booking form after
+   submit, before any verification/API step exists (see js/script.js's
+   showReservationReview()). Inherits .booking-form's card/padding, so only
+   the parts that differ from a plain form need their own rules. */
+.reservation-review-title { text-align: center; font-family: var(--font-head); font-size: 1.4rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 24px; }
+.reservation-review-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; padding-bottom: 16px; border-bottom: 1px dashed var(--line); margin-bottom: 16px; }
+.reservation-review-contact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.reservation-review-section { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--line); }
+.reservation-review-section p#reviewNotes { color: var(--text-dim); }
+.reservation-review-hint { text-align: center; margin-top: 22px; margin-bottom: 4px; }
+.reservation-review-actions { display: flex; gap: 12px; margin-top: 18px; }
+.reservation-review-actions .btn { width: auto; flex: 1; margin-top: 0; }
+
+/* Visually hidden but still readable by screen readers - used for the
+   #otpInputGroup fieldset's <legend>, which would otherwise duplicate the
+   copy already shown above it. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* OTP verification - replaces reservationReviewActions once POST /auth/start
+   succeeds (see js/script.js's showOtpVerification()). Sits inside the same
+   .reservation-review card, so no border/background of its own is needed. */
+.otp-verification-copy { text-align: center; color: var(--text-dim); margin-bottom: 20px; line-height: 1.5; }
+.otp-verification-copy strong { color: var(--text); font-family: var(--font-head); font-size: 1rem; }
+.otp-input-group {
+  display: flex; justify-content: center; gap: 10px; border: none; padding: 0; margin: 0 0 20px;
+}
+/* .otp-digit is the booking flow's 6-digit boxes (js/script.js); .mb-otp-digit
+   is the identical-looking set on the My Bookings sign-in gate below - kept
+   as a separate class only so document.querySelectorAll('.otp-digit') in
+   js/script.js's booking flow never picks up the other form's inputs. */
+.otp-digit, .mb-otp-digit {
+  width: 100%; max-width: 52px; aspect-ratio: 1; text-align: center;
+  font-family: var(--font-head); font-size: 1.3rem; padding: 0;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+}
+.otp-digit:focus, .mb-otp-digit:focus { outline: none; border-color: var(--red); }
+.otp-verification .btn { width: 100%; margin-top: 0; }
+.otp-secondary-actions { display: flex; justify-content: center; gap: 24px; margin-top: 16px; flex-wrap: wrap; }
 
 /* Shown in place of the booking form / My Bookings list when the visitor
    isn't logged in - booking and viewing booking history both require a Play
    X account (see js/script.js, js/my-bookings.js). */
 .booking-login-gate { max-width: 720px; margin: 40px auto 0; background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius); padding: 36px; text-align: center; }
+/* Passwordless "Verify your email" sign-in form on that gate - Play X has no
+   password login left in the customer-facing journey (see
+   js/script.js's My Bookings gate section). Reuses .form-field for the email
+   input, same as the booking form, so only the layout/button width need
+   their own rules here. */
+.my-bookings-auth-form { max-width: 360px; margin: 0 auto; text-align: left; }
+.my-bookings-auth-form .btn { width: 100%; margin-top: 4px; }
 .booking-login-gate p { margin-bottom: 18px; color: var(--text-dim); }
-.booking-login-gate-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 
 /* ===== My Bookings ===== */
+/* Upcoming/History toggle above the list (js/my-bookings.js) - same
+   segmented-control look as .modal-tabs/.modal-tab on auth.html. */
+.my-bookings-tabs { display: flex; gap: 6px; max-width: 360px; margin: 28px auto 0; background: var(--bg); border-radius: 8px; padding: 4px; }
+.my-bookings-tab {
+  flex: 1; padding: 10px; border: none; border-radius: 6px; background: none;
+  color: var(--text-dim); font-family: var(--font-body); font-weight: 700; font-size: 0.9rem;
+  text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer;
+}
+.my-bookings-tab.active { background: var(--red); color: #fff; }
 .my-bookings-list { max-width: 720px; margin: 32px auto 0; display: flex; flex-direction: column; gap: 16px; }
 .my-bookings-list .booking-summary { margin-bottom: 0; }
+/* Both rules above set their own `display` (flex), which otherwise beats the
+   browser's default `[hidden] { display: none }` UA rule - author CSS always
+   wins over UA CSS regardless of selector specificity. Without this, setting
+   el.hidden = true from js/my-bookings.js left the tabs/list visibly laid
+   out (just empty) instead of actually hidden - exactly what let the
+   Upcoming/History toggle and its empty-state text show through before a
+   customer had signed in. */
+.my-bookings-tabs[hidden], .my-bookings-list[hidden] { display: none; }
 .booking-status-pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg-card); border: 1px solid var(--line); }
 .booking-status-pill.pending { color: #f0b429; border-color: #f0b429; }
 .booking-status-pill.confirmed { color: #34d399; border-color: #34d399; }
@@ -632,6 +734,10 @@ p { color: var(--text-dim); }
   .booking-form .btn-lg { padding: 16px 20px; }
   .booking-summary { padding: 18px 16px; }
   .booking-summary-grid { gap: 10px; }
+  .reservation-review-grid, .reservation-review-contact-grid { grid-template-columns: 1fr; }
+  .reservation-review-actions { flex-direction: column; }
+  .otp-input-group { gap: 8px; }
+  .otp-digit { max-width: 44px; font-size: 1.1rem; }
   .auth-card { padding: 30px 22px; }
   .auth-page { padding: 36px 16px; }
   .pricing-groups { gap: 40px; }

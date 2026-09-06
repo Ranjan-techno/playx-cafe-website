@@ -10,22 +10,51 @@
 // js/firebase-config.js's isFirebaseConfigured pattern) so callers only need
 // to check CognitoAuth.isConfigured once, not before every call.
 //
-// Persistent auth state: CognitoUserPool stores tokens in window.localStorage
-// by default (amazon-cognito-identity-js's own behavior, not configured
-// here), and getSession() below transparently refreshes an expired access/ID
-// token using the stored refresh token. That combination is what makes a
-// signed-in visitor stay signed in across page loads and browser restarts
-// with no extra code here.
+// Persistent auth state: CognitoUserPool is explicitly pointed at
+// window.localStorage below (rather than relying on amazon-cognito-identity-js's
+// own default storage detection), and every CognitoUser this file creates is
+// pointed at that same object. getSession() then transparently refreshes an
+// expired access/ID token using the stored refresh token. That combination is
+// what makes a signed-in visitor stay signed in across page loads and browser
+// restarts with no extra code here - and why every construction below must
+// share the one Storage, not just the one Pool: amazon-cognito-identity-js
+// keys its CognitoIdentityServiceProvider.* storage entries off Pool/Client/
+// Username, but a CognitoUser built with a *different* Storage object reads
+// and writes an entirely separate store, so a mismatch here silently behaves
+// like storage was never persisted at all.
+function cognitoStorage() {
+  try {
+    // Access, not just typeof-check: Safari private mode and some locked-down
+    // embeds expose window.localStorage but throw on first use.
+    const probeKey = '__playx_cognito_storage_probe__';
+    window.localStorage.setItem(probeKey, '1');
+    window.localStorage.removeItem(probeKey);
+    return window.localStorage;
+  } catch (e) {
+    return null;
+  }
+}
 
-const userPool = isAwsConfigured
-  ? new AmazonCognitoIdentity.CognitoUserPool({
-      UserPoolId: AWS_CONFIG.userPoolId,
-      ClientId: AWS_CONFIG.userPoolClientId
-    })
-  : null;
+const COGNITO_STORAGE = isAwsConfigured ? cognitoStorage() : null;
+if (isAwsConfigured && !COGNITO_STORAGE) {
+  console.error('Cognito storage unavailable: window.localStorage is not usable in this browser context.');
+}
+
+const userPool =
+  isAwsConfigured && COGNITO_STORAGE
+    ? new AmazonCognitoIdentity.CognitoUserPool({
+        UserPoolId: AWS_CONFIG.userPoolId,
+        ClientId: AWS_CONFIG.userPoolClientId,
+        Storage: COGNITO_STORAGE
+      })
+    : null;
 
 function cognitoUserFor(email) {
-  return new AmazonCognitoIdentity.CognitoUser({ Username: email, Pool: userPool });
+  return new AmazonCognitoIdentity.CognitoUser({
+    Username: email,
+    Pool: userPool,
+    Storage: COGNITO_STORAGE
+  });
 }
 
 // Cognito's `phone_number` attribute requires strict E.164 (+<country
@@ -156,6 +185,95 @@ async function getIdTokenClaims() {
   return session ? session.getIdToken().decodePayload() : null;
 }
 
+// backend/src/lib/email.ts's normalizeEmail() (trim + lowercase) is what
+// AdminCreateUser/AdminGetUser/AdminInitiateAuth (auth-start.ts) and
+// AdminRespondToAuthChallenge (auth-verify.ts) actually use as the Cognito
+// Username - so that normalized form is the ONLY version of an email
+// guaranteed to match the account a passwordless /auth/verify just
+// authenticated against. Mirrored here (not shared - this project has no
+// build step to import backend/ code from) so installPasswordlessSession()
+// below never caches a session under a differently-cased Username than the
+// one Cognito itself is using.
+function normalizePasswordlessEmail(email) {
+  return (email || '').trim().toLowerCase();
+}
+
+/** Installs the tokens a passwordless POST /auth/verify (js/script.js's
+ *  callAuthVerify() - both the booking OTP flow and the My Bookings OTP flow
+ *  call this same helper afterward) returns into this same CognitoUserPool's
+ *  own localStorage-backed session storage, in the exact shape
+ *  amazon-cognito-identity-js expects. Once this resolves, getSession()/
+ *  isLoggedIn()/getAccessToken()/getIdTokenClaims() above - and every caller
+ *  of them (js/site-auth-state.js, js/my-bookings.js, js/script.js's own
+ *  attemptDraftAutoCompletion()) - transparently treat the visitor as signed
+ *  in, exactly as if they'd signed in with a password, with no second,
+ *  incompatible session mechanism to keep track of. `authResult` is the
+ *  plain { idToken, accessToken, refreshToken, expiresIn } POST /auth/verify
+ *  returns; never the OTP itself, and never logged.
+ *
+ *  ROOT CAUSE this replaces: amazon-cognito-identity-js's own
+ *  CognitoUser.cacheTokens() (called by setSignInUserSession() below)
+ *  unconditionally calls signInUserSession.getRefreshToken().getToken() with
+ *  no null check. The old persistSession() built the session with
+ *  `RefreshToken: undefined` whenever its `tokens` argument had no
+ *  refreshToken, which made cacheTokens() throw a TypeError partway through
+ *  - AFTER it had already written the idToken/accessToken storage keys but
+ *  BEFORE it reached the LastAuthUser key, which is the very first thing
+ *  getCurrentUser() looks up. That half-written state is exactly what made
+ *  the UI fall back to "verify your email" right after a verify that had, in
+ *  fact, just succeeded - and because every caller wrapped this in a
+ *  try/catch that either swallowed the error entirely or folded it into a
+ *  generic "please try again" message, nothing ever surfaced why. This
+ *  version refuses to build a session missing any of the three tokens (see
+ *  the guard clause below) and never treats a caught exception as success.
+ *
+ *  Throws - rather than returning null - if AWS isn't configured, a token is
+ *  missing, or a programmatic check right after installing it
+ *  (userPool.getCurrentUser() + this same file's getSession()) can't confirm
+ *  the session actually took, so a caller's own catch block sees a real
+ *  failure instead of silently proceeding as if the visitor were signed in. */
+async function installPasswordlessSession(email, authResult) {
+  if (isAwsConfigured && !COGNITO_STORAGE) {
+    throw new Error('Cognito storage unavailable.');
+  }
+  if (!userPool) {
+    throw new Error('AWS is not configured.');
+  }
+  if (!authResult || !authResult.idToken || !authResult.accessToken || !authResult.refreshToken) {
+    throw new Error('Sign-in did not return a complete session.');
+  }
+
+  const username = normalizePasswordlessEmail(email);
+  const session = new AmazonCognitoIdentity.CognitoUserSession({
+    IdToken: new AmazonCognitoIdentity.CognitoIdToken({ IdToken: authResult.idToken }),
+    AccessToken: new AmazonCognitoIdentity.CognitoAccessToken({ AccessToken: authResult.accessToken }),
+    RefreshToken: new AmazonCognitoIdentity.CognitoRefreshToken({ RefreshToken: authResult.refreshToken })
+  });
+  const cognitoUser = new AmazonCognitoIdentity.CognitoUser({
+    Username: username,
+    Pool: userPool,
+    Storage: COGNITO_STORAGE
+  });
+  cognitoUser.setSignInUserSession(session);
+
+  // Verify programmatically rather than trusting that the call above worked
+  // - see the ROOT CAUSE note. getCurrentUser() re-reads storage from
+  // scratch (a fresh CognitoUser, not the one constructed above), and
+  // getSession() re-derives a CognitoUserSession from whatever actually
+  // landed in storage - so both together are a real end-to-end check, not
+  // just re-inspecting the in-memory object just built. Each stage below
+  // throws a distinct, secret-free diagnostic so a failure here says *where*
+  // persistence broke instead of a single generic message.
+  if (!userPool.getCurrentUser()) {
+    throw new Error('Cognito current user was not cached.');
+  }
+  const confirmedSession = await getSession();
+  if (!confirmedSession) {
+    throw new Error('Cognito cached session was not valid.');
+  }
+  return confirmedSession;
+}
+
 const CognitoAuth = {
   isConfigured: isAwsConfigured,
   signUp,
@@ -169,5 +287,6 @@ const CognitoAuth = {
   isLoggedIn,
   getAccessToken,
   getIdTokenClaims,
+  installPasswordlessSession,
   normalizeIndianMobileToE164
 };

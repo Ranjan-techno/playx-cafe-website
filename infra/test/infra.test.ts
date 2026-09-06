@@ -19,12 +19,14 @@ test('Story 2.1: VPC created with isolated-only subnets and no NAT Gateway', () 
   // 2 AZs, PRIVATE_ISOLATED only.
   template.resourceCountIs('AWS::EC2::Subnet', 2);
 
-  // No NAT Gateway. Exactly five Lambdas: Story 2.3's migration function, Story 2.5's
-  // health-check function, and Story 2.6's products/create-booking/bookings-me functions — not
-  // the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays guarded
+  // No NAT Gateway. Exactly ten Lambdas: Story 2.3's migration function, Story 2.5's
+  // health-check function, Story 2.6's products/create-booking/bookings-me functions, guest-
+  // first passwordless auth's auth-start/auth-verify functions, and its three Cognito CUSTOM_AUTH
+  // triggers (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse) — not the
+  // restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays guarded
   // against separately (that flag is explicitly disabled for this VPC — see constructs/network.ts).
   template.resourceCountIs('AWS::EC2::NatGateway', 0);
-  template.resourceCountIs('AWS::Lambda::Function', 5);
+  template.resourceCountIs('AWS::Lambda::Function', 10);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -86,10 +88,12 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   });
   const template = Template.fromStack(stack);
 
-  // Five Lambda functions exist in the stack (this one, Story 2.5's health-check function, and
-  // Story 2.6's products/create-booking/bookings-me functions — see below), but the health
-  // function is the only one of the five that does NOT sit in the VPC.
-  template.resourceCountIs('AWS::Lambda::Function', 5);
+  // Ten Lambda functions exist in the stack (this one, Story 2.5's health-check function,
+  // Story 2.6's products/create-booking/bookings-me functions, guest-first passwordless auth's
+  // auth-start/auth-verify functions, and its three CUSTOM_AUTH triggers — see below), but
+  // health/auth-start/auth-verify/the three triggers are the six of the ten that do NOT sit in
+  // the VPC.
+  template.resourceCountIs('AWS::Lambda::Function', 10);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -156,14 +160,37 @@ test('Story 2.4: Cognito User Pool for email sign-in, self-signup, and a secret-
     ]),
   });
 
-  // Exactly one app client: the public web client. No secret, SRP-only.
+  // Exactly one app client: the public web client. No secret, fully passwordless — only
+  // ALLOW_CUSTOM_AUTH (guest-first passwordless auth's CUSTOM_AUTH challenge) and the
+  // automatically-added ALLOW_REFRESH_TOKEN_AUTH, with no password-based flow of any kind
+  // reachable (see the "CUSTOM_AUTH challenge triggers wired to the User Pool" test below for the
+  // rest of that architecture decision's wiring).
   template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
   template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
     ClientName: 'playx-dev-web-client',
     GenerateSecret: false,
-    ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_SRP_AUTH']),
+    // Checked one at a time (each element trivially satisfies Match.arrayWith) since CDK doesn't
+    // guarantee ExplicitAuthFlows' relative order, only that it's a superset of these two.
+    ExplicitAuthFlows: Match.arrayWith(['ALLOW_CUSTOM_AUTH']),
     PreventUserExistenceErrors: 'ENABLED',
   });
+  template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+    ExplicitAuthFlows: Match.arrayWith(['ALLOW_REFRESH_TOKEN_AUTH']),
+  });
+  // No password-based flow survives: not SRP (ALLOW_USER_SRP_AUTH), not plaintext
+  // ALLOW_USER_PASSWORD_AUTH/ALLOW_ADMIN_USER_PASSWORD_AUTH, and not the choice-based
+  // ALLOW_USER_AUTH (which would let a caller pick PASSWORD — or Cognito's native
+  // uncontrollable-length EMAIL_OTP — directly, bypassing auth-start.ts).
+  for (const removedFlow of [
+    'ALLOW_USER_SRP_AUTH',
+    'ALLOW_USER_PASSWORD_AUTH',
+    'ALLOW_ADMIN_USER_PASSWORD_AUTH',
+    'ALLOW_USER_AUTH',
+  ]) {
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      ExplicitAuthFlows: Match.not(Match.arrayWith([removedFlow])),
+    });
+  }
 
   // The User Pool ID and App Client ID are surfaced as stack outputs.
   template.hasOutput('*', Match.objectLike({ Description: 'Play X Cognito User Pool ID' }));
@@ -173,7 +200,7 @@ test('Story 2.4: Cognito User Pool for email sign-in, self-signup, and a secret-
   );
 });
 
-test('Story 2.5: HTTP API with a GET /health route, CORS-scoped to the GitHub Pages origin', () => {
+test('Story 2.5: HTTP API with a GET /health route, CORS-scoped to the production GitHub Pages origin and the localhost development origin', () => {
   const app = new cdk.App();
   const stack = new InfraStack(app, 'TestInfraStack', {
     envConfig: environments.dev,
@@ -182,15 +209,16 @@ test('Story 2.5: HTTP API with a GET /health route, CORS-scoped to the GitHub Pa
   const template = Template.fromStack(stack);
 
   // Exactly one HTTP API (not a REST API/RestApi — see the Story 2.3 test above), CORS
-  // restricted to the GitHub Pages origin index.html/auth.html are served from. AllowMethods now
-  // includes POST too (Story 2.6's POST /bookings), so this is arrayWith rather than an exact
-  // match.
+  // restricted to the production GitHub Pages origin index.html/auth.html are served from, plus
+  // the localhost development origin used when serving the site locally with
+  // `python3 -m http.server 8000`. AllowMethods now includes POST too (Story 2.6's POST
+  // /bookings), so this is arrayWith rather than an exact match.
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
   template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
     Name: 'playx-dev-api',
     ProtocolType: 'HTTP',
     CorsConfiguration: Match.objectLike({
-      AllowOrigins: ['https://ranjan-techno.github.io'],
+      AllowOrigins: ['https://ranjan-techno.github.io', 'http://localhost:8000'],
       AllowMethods: Match.arrayWith(['GET']),
     }),
   });
@@ -234,10 +262,11 @@ test('Story 2.6: authenticated booking APIs — Cognito JWT authorizer on POST /
     IdentitySource: ['$request.header.Authorization'],
   });
 
-  // Four routes total: GET /health (Story 2.5), plus GET /products, POST /bookings, and
-  // GET /bookings/me (this story). Four integrations, one per route.
-  template.resourceCountIs('AWS::ApiGatewayV2::Route', 4);
-  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 4);
+  // Six routes total: GET /health (Story 2.5), GET /products, POST /bookings, and
+  // GET /bookings/me (this story), plus POST /auth/start and POST /auth/verify (guest-first
+  // passwordless auth, checked separately below). Six integrations, one per route.
+  template.resourceCountIs('AWS::ApiGatewayV2::Route', 6);
+  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 6);
 
   // GET /products is public: no authorizer attached (CloudFormation emits AuthorizationType:
   // 'NONE' explicitly for an unauthenticated route, rather than omitting the property).
@@ -272,6 +301,148 @@ test('Story 2.6: authenticated booking APIs — Cognito JWT authorizer on POST /
         Match.objectLike({
           Action: Match.arrayWith(['secretsmanager:GetSecretValue']),
           Effect: 'Allow',
+        }),
+      ]),
+    }),
+  });
+});
+
+test('Guest-first passwordless auth: public POST /auth/start and POST /auth/verify, scoped Cognito IAM', () => {
+  const app = new cdk.App();
+  const stack = new InfraStack(app, 'TestInfraStack', {
+    envConfig: environments.dev,
+    env: { region: 'ap-south-1' },
+  });
+  const template = Template.fromStack(stack);
+
+  // Both routes are public: the caller has no token yet, so neither carries the Story 2.6 JWT
+  // authorizer (CloudFormation emits AuthorizationType: 'NONE' explicitly, same as GET /products).
+  template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+    RouteKey: 'POST /auth/start',
+    AuthorizationType: 'NONE',
+  });
+  template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+    RouteKey: 'POST /auth/verify',
+    AuthorizationType: 'NONE',
+  });
+
+  // Neither function is VPC-attached (unlike products/create-booking/bookings-me): they only
+  // call Cognito's regional Admin* APIs, never the database.
+  for (const functionName of ['playx-dev-auth-start', 'playx-dev-auth-verify']) {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: functionName,
+      Runtime: 'nodejs22.x',
+      VpcConfig: Match.absent(),
+    });
+  }
+
+  // IAM scoped to exactly the two documented action sets, each on the User Pool's own ARN — no
+  // wildcard resource, mirroring the databaseSecret.grantRead() policies checked above.
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: Match.objectLike({
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: Match.arrayWith([
+            'cognito-idp:AdminGetUser',
+            'cognito-idp:AdminCreateUser',
+            'cognito-idp:AdminInitiateAuth',
+          ]),
+          Effect: 'Allow',
+        }),
+      ]),
+    }),
+  });
+  // auth-verify.ts also best-effort marks email_verified=true after a successful CUSTOM_CHALLENGE
+  // (see auth-verify.ts's header) — CUSTOM_AUTH has no built-in equivalent of what Cognito's
+  // native EMAIL_OTP first factor used to do automatically.
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: Match.objectLike({
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: Match.arrayWith([
+            'cognito-idp:AdminRespondToAuthChallenge',
+            'cognito-idp:AdminUpdateUserAttributes',
+          ]),
+          Effect: 'Allow',
+        }),
+      ]),
+    }),
+  });
+});
+
+test('Guest-first passwordless auth: CUSTOM_AUTH challenge triggers wired to the User Pool, six-digit OTP emailed via scoped SES IAM', () => {
+  const app = new cdk.App();
+  const stack = new InfraStack(app, 'TestInfraStack', {
+    envConfig: environments.dev,
+    env: { region: 'ap-south-1' },
+  });
+  const template = Template.fromStack(stack);
+
+  // The three CUSTOM_AUTH triggers are wired directly into the User Pool's LambdaConfig, not
+  // exposed through API Gateway — Cognito invokes them itself during AdminInitiateAuth/
+  // AdminRespondToAuthChallenge (see auth-start.ts/auth-verify.ts).
+  template.hasResourceProperties('AWS::Cognito::UserPool', {
+    LambdaConfig: Match.objectLike({
+      DefineAuthChallenge: Match.anyValue(),
+      CreateAuthChallenge: Match.anyValue(),
+      VerifyAuthChallengeResponse: Match.anyValue(),
+    }),
+  });
+
+  // Play X is fully passwordless from launch: EMAIL_OTP is an allowed first factor at the User
+  // Pool level (this is what lets auth-start.ts's AdminCreateUser provision a brand-new customer
+  // with no TemporaryPassword at all — see constructs/auth.ts's signInPolicy comment for the AWS
+  // doc citation), and PASSWORD sign-in is not reachable through any client flow (see the
+  // ExplicitAuthFlows checks in the Story 2.4 test above). PASSWORD still appears structurally in
+  // this list — CDK's UserPool L2 construct hard-fails synthesis if allowedFirstAuthFactors is
+  // set at all without `password: true` ("The password authentication cannot be disabled",
+  // aws-cdk-lib/aws-cognito/lib/user-pool.js) — so this asserts what CDK actually allows setting,
+  // not a literal absence of the string "PASSWORD" from the array.
+  template.hasResourceProperties('AWS::Cognito::UserPool', {
+    Policies: Match.objectLike({
+      SignInPolicy: Match.objectLike({
+        AllowedFirstAuthFactors: Match.arrayWith(['EMAIL_OTP']),
+      }),
+    }),
+  });
+
+  // Short-lived CUSTOM_AUTH session token (in minutes) on the web client, bounding how long a
+  // captured/leaked Session value from /auth/start could be replayed against.
+  template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+    AuthSessionValidity: 3,
+  });
+
+  // None of the three trigger functions is VPC-attached: DefineAuthChallenge/
+  // VerifyAuthChallengeResponse call no AWS APIs at all, and CreateAuthChallenge only calls SES.
+  for (const functionName of [
+    'playx-dev-auth-define-challenge',
+    'playx-dev-auth-create-challenge',
+    'playx-dev-auth-verify-challenge',
+  ]) {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: functionName,
+      Runtime: 'nodejs22.x',
+      VpcConfig: Match.absent(),
+    });
+  }
+
+  // The email OTP is sent via SES with the minimum permission needed (ses:SendEmail). SES
+  // authorizes SendEmail against the *recipient* identity, not the sender's, so scoping the
+  // resource to our own sender identity ARN would reject every send (recipients are arbitrary
+  // Play X customers, never a fixed identity) — the resource is necessarily "*", with the sender
+  // instead locked down via the ses:FromAddress condition key.
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: Match.objectLike({
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: 'ses:SendEmail',
+          Effect: 'Allow',
+          Resource: '*',
+          Condition: {
+            StringEquals: {
+              'ses:FromAddress': 'playxcafesupport@gmail.com',
+            },
+          },
         }),
       ]),
     }),

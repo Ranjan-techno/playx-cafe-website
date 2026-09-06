@@ -5,6 +5,7 @@ import * as apigwv2Authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -23,6 +24,10 @@ export interface ApiConstructProps {
   createBookingFunctionName: string;
   /** Full resource name for the list-my-bookings Lambda, e.g. 'playx-dev-bookings-me'. */
   listMyBookingsFunctionName: string;
+  /** Full resource name for the passwordless auth-start Lambda, e.g. 'playx-dev-auth-start'. */
+  authStartFunctionName: string;
+  /** Full resource name for the passwordless auth-verify Lambda, e.g. 'playx-dev-auth-verify'. */
+  authVerifyFunctionName: string;
 
   /** Story 2.1 VPC — the products/booking Lambdas need this to reach the Story 2.2 database. */
   vpc: ec2.IVpc;
@@ -50,6 +55,13 @@ export interface ApiConstructProps {
  * migration function's networking, and reusing the same Secrets Manager VPC interface endpoint
  * MigrationConstruct already provisions (they're on the same security group, so they already
  * satisfy its self-referencing 443 ingress rule; no new endpoint is created here).
+ *
+ * Guest-first passwordless auth adds POST /auth/start and POST /auth/verify (both public — the
+ * caller has no token yet, that's the whole point). Like healthFunction, neither is VPC-attached:
+ * they only call Cognito's regional Admin* APIs, never the database. See backend/src/handlers/
+ * auth-start.ts and auth-verify.ts for the CUSTOM_AUTH flow itself (a Cognito CUSTOM_AUTH
+ * challenge driving Play X's own six-digit OTP — see constructs/auth.ts's `lambdaTriggers` and
+ * backend/src/lib/otp.ts for why this isn't Cognito's native EMAIL_OTP first factor).
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
@@ -57,6 +69,8 @@ export class ApiConstruct extends Construct {
   public readonly productsFunction: lambdaNodejs.NodejsFunction;
   public readonly createBookingFunction: lambdaNodejs.NodejsFunction;
   public readonly listMyBookingsFunction: lambdaNodejs.NodejsFunction;
+  public readonly authStartFunction: lambdaNodejs.NodejsFunction;
+  public readonly authVerifyFunction: lambdaNodejs.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: ApiConstructProps) {
     super(scope, id);
@@ -116,6 +130,53 @@ export class ApiConstruct extends Construct {
     });
     props.databaseSecret.grantRead(this.listMyBookingsFunction);
 
+    // Not VPC-attached, same as healthFunction: these only call Cognito's regional Admin* APIs,
+    // never the database.
+    const authFunctionDefaults = {
+      depsLockFilePath: path.join(__dirname, '../../../backend/package-lock.json'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      environment: {
+        USER_POOL_ID: props.userPool.userPoolId,
+        WEB_CLIENT_ID: props.webClient.userPoolClientId,
+      },
+      bundling: {
+        externalModules: ['@aws-sdk/*'],
+      },
+    };
+
+    this.authStartFunction = new lambdaNodejs.NodejsFunction(this, 'AuthStartFunction', {
+      ...authFunctionDefaults,
+      functionName: props.authStartFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/auth-start.ts'),
+    });
+    // Scoped to exactly this one User Pool's ARN — no wildcard resource — mirroring this
+    // codebase's databaseSecret.grantRead() philosophy. Cognito's CDK UserPool construct has no
+    // equivalent .grant() helper for Admin* actions, so this is a hand-written PolicyStatement.
+    this.authStartFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminCreateUser', 'cognito-idp:AdminInitiateAuth'],
+        resources: [props.userPool.userPoolArn],
+      }),
+    );
+
+    this.authVerifyFunction = new lambdaNodejs.NodejsFunction(this, 'AuthVerifyFunction', {
+      ...authFunctionDefaults,
+      functionName: props.authVerifyFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/auth-verify.ts'),
+    });
+    this.authVerifyFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        // AdminUpdateUserAttributes: best-effort, marks email_verified=true after a successful
+        // CUSTOM_CHALLENGE (see auth-verify.ts) — CUSTOM_AUTH has no built-in equivalent of what
+        // native EMAIL_OTP used to do automatically as a side effect.
+        actions: ['cognito-idp:AdminRespondToAuthChallenge', 'cognito-idp:AdminUpdateUserAttributes'],
+        resources: [props.userPool.userPoolArn],
+      }),
+    );
+
     this.httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: props.httpApiName,
       corsPreflight: {
@@ -154,6 +215,20 @@ export class ApiConstruct extends Construct {
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2Integrations.HttpLambdaIntegration('ListMyBookingsIntegration', this.listMyBookingsFunction),
       authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/auth/start',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AuthStartIntegration', this.authStartFunction),
+      // No authorizer: this is how an unauthenticated visitor begins signing in.
+    });
+
+    this.httpApi.addRoutes({
+      path: '/auth/verify',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AuthVerifyIntegration', this.authVerifyFunction),
+      // No authorizer: the caller doesn't have a token yet — this route issues the first one.
     });
 
     new cdk.CfnOutput(this, 'UrlOutput', {

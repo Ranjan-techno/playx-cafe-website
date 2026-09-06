@@ -1,31 +1,61 @@
 import type { APIGatewayProxyHandlerV2WithJWTAuthorizer } from 'aws-lambda';
 import { getDb, resetDb } from '../lib/db';
+import { normalizeEmail } from '../lib/email';
 import { errorResponse, jsonResponse } from '../lib/http';
 import { istPartsToUtcDate, parseTimeToMinutes, validateBookingSchedule } from '../lib/opening-hours';
+import { normalizeIndianPhone } from '../lib/phone';
 
 // Story 2.6: POST /bookings — creates a pending booking for the authenticated Cognito user.
 //
 // Requires the Cognito JWT authorizer (see infra/lib/constructs/api.ts): the caller's identity
 // is the verified "sub" claim API Gateway attaches to event.requestContext.authorizer.jwt.claims
 // after validating the token's signature/issuer/audience — never a user id from the request
-// body, which this route doesn't even accept.
+// body. The body is parsed field-by-field (parseBody below), so even if a client stuffs a
+// cognitoSub/userId/price/status field into the JSON, those keys are simply never read.
 //
 // The price stored is always looked up from the products table, never trusted from the client
 // (the request body has no price field to begin with). Booking status is always the literal
 // 'pending' — never accepted as input.
+//
+// customer_name/customer_phone/customer_email are a contact-details *snapshot* taken at booking
+// time (the reservation form collects them alongside the Xperience/date/time) — distinct from the
+// Cognito identity above, which is what actually owns/authorizes the booking. Two different guests
+// signed into the same Cognito account, or a guest booking on someone else's behalf, is why these
+// aren't just read off the JWT/User Pool profile.
 
 const PRODUCT_CODE_RE = /^[a-z0-9-]+$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
+const NAME_MAX_LENGTH = 100;
+const NOTES_MAX_LENGTH = 500;
 
-interface CreateBookingBody {
+export interface CreateBookingBody {
   productCode: string;
   bookingDate: string;
   startTime: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string;
   notes: string | null;
 }
 
-function parseBody(raw: string | undefined): CreateBookingBody | null {
+/** Trims `raw`, rejecting non-strings, empty-after-trim, and anything past `maxLength`. */
+function normalizeName(raw: unknown, maxLength: number): string | null {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > maxLength) {
+    return null;
+  }
+  return trimmed;
+}
+
+// Exported for create-booking.test.ts: this handler's only AWS/DB-free logic is request-body
+// validation, so that's what's unit-tested directly (same pattern as auth-define-challenge.ts/
+// auth-verify-challenge.ts, whose tests only cover triggers with no outbound AWS calls) rather
+// than mocking getDb()/db.query for the handler as a whole.
+export function parseBody(raw: string | undefined): CreateBookingBody | null {
   if (!raw) {
     return null;
   }
@@ -40,7 +70,7 @@ function parseBody(raw: string | undefined): CreateBookingBody | null {
   }
   const body = parsed as Record<string, unknown>;
 
-  const { productCode, bookingDate, startTime, notes } = body;
+  const { productCode, bookingDate, startTime, customerName, customerPhone, customerEmail, notes } = body;
   if (typeof productCode !== 'string' || !PRODUCT_CODE_RE.test(productCode)) {
     return null;
   }
@@ -50,11 +80,41 @@ function parseBody(raw: string | undefined): CreateBookingBody | null {
   if (typeof startTime !== 'string' || !TIME_RE.test(startTime)) {
     return null;
   }
-  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+
+  const name = normalizeName(customerName, NAME_MAX_LENGTH);
+  if (!name) {
+    return null;
+  }
+  const phone = normalizeIndianPhone(customerPhone);
+  if (!phone) {
+    return null;
+  }
+  const email = normalizeEmail(customerEmail);
+  if (!email) {
     return null;
   }
 
-  return { productCode, bookingDate, startTime, notes: (notes as string | undefined) ?? null };
+  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+    return null;
+  }
+  let trimmedNotes: string | null = null;
+  if (typeof notes === 'string') {
+    const t = notes.trim();
+    if (t.length > NOTES_MAX_LENGTH) {
+      return null;
+    }
+    trimmedNotes = t.length > 0 ? t : null;
+  }
+
+  return {
+    productCode,
+    bookingDate,
+    startTime,
+    customerName: name,
+    customerPhone: phone,
+    customerEmail: email,
+    notes: trimmedNotes,
+  };
 }
 
 interface ProductRow {
@@ -80,7 +140,8 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
     return errorResponse(
       400,
       'invalid_request',
-      'Expected { productCode: string, bookingDate: "YYYY-MM-DD", startTime: "HH:MM", notes?: string }',
+      'Expected { productCode: string, bookingDate: "YYYY-MM-DD", startTime: "HH:MM", ' +
+        'customerName: string, customerPhone: string, customerEmail: string, notes?: string }',
     );
   }
 
@@ -120,13 +181,16 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
           racers, duration_minutes, simulator_type, price_inr, status,
           scheduled_start_at, scheduled_end_at, notes)
        VALUES
-         ($1, $2, NULL, NULL, NULL,
-          $3, $4, $5, $6, 'pending',
-          $7, $8, $9)
+         ($1, $2, $3, $4, $5,
+          $6, $7, $8, $9, 'pending',
+          $10, $11, $12)
        RETURNING id`,
       [
         product.id,
         sub,
+        body.customerName,
+        body.customerPhone,
+        body.customerEmail,
         product.racers,
         product.duration_minutes,
         product.simulator_type,

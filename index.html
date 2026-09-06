@@ -21,9 +21,13 @@
       <img src="assets/brand/playx-logo-light.png" alt="Play X Cafe" class="logo-img">
     </a>
     <nav class="main-nav" id="mainNav">
+      <!-- Play X is fully passwordless - there is no Log In/Sign Up journey
+           left, so the only auth-area action here is My Bookings (which
+           drives its own POST /auth/start -> OTP -> POST /auth/verify gate,
+           see #my-bookings below). js/site-auth-state.js swaps this markup
+           for a My Bookings + Sign Out pair once a Cognito session exists. -->
       <div class="mobile-auth-row" id="mobileAuthArea">
-        <a href="auth.html?mode=login" class="btn btn-outline">Log In</a>
-        <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
+        <a href="#my-bookings" class="btn btn-primary">My Bookings</a>
       </div>
       <a href="#top">Home</a>
       <a href="#race">Race</a>
@@ -33,9 +37,11 @@
       <a href="#location">Location</a>
     </nav>
     <div class="header-actions">
+      <!-- See the matching comment on #mobileAuthArea above - same
+           passwordless-only My Bookings action, styled for the desktop
+           header slot. -->
       <span id="desktopAuthArea" class="desktop-auth-area">
-        <a href="auth.html?mode=login" class="btn btn-sm btn-text auth-btn-desktop">Log In</a>
-        <a href="auth.html?mode=signup" class="btn btn-sm btn-outline auth-btn-desktop">Sign Up</a>
+        <a href="#my-bookings" class="btn btn-sm btn-text auth-btn-desktop">My Bookings</a>
       </span>
       <a href="#booking" class="btn btn-sm btn-primary">Book a Race</a>
       <button class="nav-toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">
@@ -266,121 +272,269 @@
   <div class="container">
     <p class="kicker center">Reservations</p>
     <h2 class="center">Book Your Session</h2>
-    <!-- Shown instead of the form when nobody is logged in - booking requires a
-         Play X account (see js/script.js's auth check on submit). -->
-    <div class="booking-login-gate" id="bookingLoginGate" hidden>
-      <p>Log in or create a free account to book a session.</p>
-      <div class="booking-login-gate-actions">
-        <a href="auth.html?mode=login" class="btn btn-outline">Log In</a>
-        <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
-      </div>
-    </div>
+    <!-- The full form is visible to every visitor, signed in or not - see
+         js/script.js's comment above the submit handler for why (auth is
+         only enforced at the moment of submit, not before). -->
     <form class="booking-form" id="bookingForm">
-      <div class="form-row">
+      <div class="booking-form-section">
+        <p class="booking-form-kicker">Your Race</p>
+        <!-- Xperience options below are populated from js/pricing-config.js
+             (PRICING_GROUPS) by js/script.js - grouped exactly as the Pricing
+             section (Solo Racing Xperience / Race Together / Signature Group
+             Xperience), so this list, and the price it resolves to, can never
+             drift out of sync with the Pricing section. -->
         <div class="form-field">
-          <label for="name">Full Name</label>
-          <input type="text" id="name" name="name" required>
+          <label for="xperience">Your Xperience</label>
+          <select id="xperience" name="xperience" required>
+            <option value="" disabled selected>Select your Xperience</option>
+          </select>
         </div>
+        <!-- Static/Motion choice for Solo and Duo; replaced with a locked,
+             informational option for the Grand Race (all 4 simulators) by
+             js/script.js - see setGrandRaceSimulator(). -->
         <div class="form-field">
-          <label for="phone">Phone Number</label>
-          <input type="tel" id="phone" name="phone" required>
-        </div>
-      </div>
-      <div class="form-field">
-        <label for="email">Email</label>
-        <input type="email" id="email" name="email" required>
-      </div>
-      <!-- Xperience options below are populated from js/pricing-config.js
-           (PRICING_GROUPS) by js/script.js - grouped exactly as the Pricing
-           section (Solo Racing Xperience / Race Together / Signature Group
-           Xperience), so this list, and the price it resolves to, can never
-           drift out of sync with the Pricing section. -->
-      <div class="form-field">
-        <label for="xperience">Your Xperience</label>
-        <select id="xperience" name="xperience" required>
-          <option value="" disabled selected>Select your Xperience</option>
-        </select>
-      </div>
-      <!-- Static/Motion choice for Solo and Duo; replaced with a locked,
-           informational option for the Grand Race (all 4 simulators) by
-           js/script.js - see setGrandRaceSimulator(). -->
-      <div class="form-field">
-        <label for="simulator">Simulator</label>
-        <select id="simulator" name="simulator" required disabled>
-          <option value="" disabled selected>Select your Xperience first</option>
-        </select>
-      </div>
-      <!-- Racer count, duration, and total price are never chosen manually -
-           they're derived from the Xperience/Simulator selection above by
-           js/script.js and mirrored here as a live summary before the
-           customer submits. -->
-      <div class="booking-summary" id="bookingSummary" hidden>
-        <p class="booking-summary-title">Your Xperience</p>
-        <p class="booking-summary-value" id="summaryXperience"></p>
-        <div class="booking-summary-grid">
-          <div class="summary-item">
-            <span>Simulator</span>
-            <strong id="summarySimulator"></strong>
-          </div>
-          <div class="summary-item">
-            <span>Duration</span>
-            <strong id="summaryDuration"></strong>
-          </div>
-          <div class="summary-item">
-            <span>Racers</span>
-            <strong id="summaryRacers"></strong>
-          </div>
-        </div>
-        <div class="booking-summary-total">
-          <span>Total</span>
-          <strong id="summaryTotal"></strong>
-        </div>
-      </div>
-      <input type="hidden" id="racersField" name="racers">
-      <input type="hidden" id="durationField" name="durationMinutes">
-      <input type="hidden" id="totalField" name="totalPrice">
-      <input type="hidden" id="xperienceNameField" name="xperienceName">
-      <div class="form-row">
-        <div class="form-field">
-          <label for="date">Preferred Date</label>
-          <input type="date" id="date" name="date" required>
-          <!-- Play X is closed on Mondays and can't take a past date - js/script.js
-               rejects both via setCustomValidity() and this inline message.
-               The hint below is the proactive heads-up on Mondays so the
-               customer doesn't hit that error blind. -->
-          <p class="form-hint">Play X is closed on Mondays.</p>
-          <p class="form-error" id="dateError" hidden></p>
-        </div>
-        <div class="form-field">
-          <label for="time">Preferred Time</label>
-          <!-- Options are 15-minute slots within Play X's 11:00 AM-11:00 PM
-               operating hours, generated by js/script.js from the selected
-               Xperience's duration (the latest slot always leaves enough
-               time for the full session to finish by close). Labeled
-               "Preferred" rather than a confirmed slot - there's no
-               real-time availability check yet. -->
-          <select id="time" name="time" required disabled>
+          <label for="simulator">Simulator</label>
+          <select id="simulator" name="simulator" required disabled>
             <option value="" disabled selected>Select your Xperience first</option>
           </select>
         </div>
+        <!-- Racer count, duration, and total price are never chosen manually -
+             they're derived from the Xperience/Simulator selection above by
+             js/script.js and mirrored here as a live summary before the
+             customer submits. -->
+        <div class="booking-summary" id="bookingSummary" hidden>
+          <p class="booking-summary-title">Your Xperience</p>
+          <p class="booking-summary-value" id="summaryXperience"></p>
+          <div class="booking-summary-grid">
+            <div class="summary-item">
+              <span>Simulator</span>
+              <strong id="summarySimulator"></strong>
+            </div>
+            <div class="summary-item">
+              <span>Duration</span>
+              <strong id="summaryDuration"></strong>
+            </div>
+            <div class="summary-item">
+              <span>Racers</span>
+              <strong id="summaryRacers"></strong>
+            </div>
+          </div>
+          <div class="booking-summary-total">
+            <span>Total</span>
+            <strong id="summaryTotal"></strong>
+          </div>
+        </div>
+        <input type="hidden" id="racersField" name="racers">
+        <input type="hidden" id="durationField" name="durationMinutes">
+        <input type="hidden" id="totalField" name="totalPrice">
+        <input type="hidden" id="xperienceNameField" name="xperienceName">
       </div>
-      <div class="form-field">
-        <label for="notes">Notes (optional)</label>
-        <textarea id="notes" name="notes" rows="3" placeholder="Birthday party, corporate event, etc."></textarea>
+      <div class="booking-form-section">
+        <p class="booking-form-kicker">Your Session</p>
+        <div class="form-row">
+          <div class="form-field">
+            <label for="date">Preferred Date</label>
+            <input type="date" id="date" name="date" required>
+            <!-- Play X is closed on Mondays and can't take a past date - js/script.js
+                 rejects both via setCustomValidity() and this inline message.
+                 The hint below is the proactive heads-up on Mondays so the
+                 customer doesn't hit that error blind. -->
+            <p class="form-hint">Play X is closed on Mondays.</p>
+            <p class="form-error" id="dateError" hidden></p>
+          </div>
+          <div class="form-field">
+            <label for="time">Preferred Time</label>
+            <!-- Options are 15-minute slots within Play X's 11:00 AM-11:00 PM
+                 operating hours, generated by js/script.js from the selected
+                 Xperience's duration (the latest slot always leaves enough
+                 time for the full session to finish by close). Labeled
+                 "Preferred" rather than a confirmed slot - there's no
+                 real-time availability check yet. -->
+            <select id="time" name="time" required disabled>
+              <option value="" disabled selected>Select your Xperience first</option>
+            </select>
+          </div>
+        </div>
       </div>
-      <button type="submit" class="btn btn-primary btn-lg">Request Booking</button>
+      <div class="booking-form-section">
+        <p class="booking-form-kicker">Your Details</p>
+        <div class="form-row">
+          <div class="form-field">
+            <label for="name">Full Name</label>
+            <input type="text" id="name" name="name" required>
+          </div>
+          <div class="form-field">
+            <label for="phone">Phone Number</label>
+            <input type="tel" id="phone" name="phone" required>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" required>
+        </div>
+        <div class="form-field">
+          <label for="notes">Notes (optional)</label>
+          <textarea id="notes" name="notes" rows="3" placeholder="Birthday party, corporate event, etc."></textarea>
+        </div>
+      </div>
+      <!-- Hidden for a signed-in visitor by js/script.js - booking still
+           needs a Play X account (the API's Cognito authorizer isn't going
+           away), this just says so without blocking the form itself. -->
+      <p class="form-hint booking-guest-hint" id="bookingGuestHint">
+        No account needed to start. Review your race details before verification.
+      </p>
+      <button type="submit" class="btn btn-primary btn-lg">Review My Reservation</button>
       <p class="form-status" id="formStatus" role="status" aria-live="polite"></p>
     </form>
+
+    <!-- ============ RESERVATION REVIEW ============ -->
+    <!-- Shown in place of the form above once it's submitted - see
+         js/script.js's showReservationReview()/showBookingFormForEdit(). The
+         form itself is only hidden, never reset, so "Edit Details" returns to
+         it with every field exactly as the customer left it. Populated from
+         the same normalized draft that's saved to sessionStorage under
+         PENDING_BOOKING_STORAGE_KEY ('playx_pending_booking'), not re-read
+         from the form fields, so this always reflects what was actually
+         saved. "Reserve My Race" calls beginReservationVerification()
+         (js/script.js), which starts the real passwordless OTP flow -
+         POST /auth/start, then inline 6-digit code entry -> POST
+         /auth/verify (the #otpVerification block below) -> automatically
+         POST /bookings (the #bookingCreationPanel block below) once that
+         succeeds. -->
+    <div class="booking-form reservation-review" id="reservationReview" tabindex="-1" hidden>
+      <h3 class="reservation-review-title">Your Race Is Ready</h3>
+
+      <div class="booking-summary">
+        <p class="booking-summary-title">Your Xperience</p>
+        <p class="booking-summary-value" id="reviewXperience"></p>
+        <div class="reservation-review-grid">
+          <div class="summary-item">
+            <span>Simulator</span>
+            <strong id="reviewSimulator"></strong>
+          </div>
+          <div class="summary-item">
+            <span>Duration</span>
+            <strong id="reviewDuration"></strong>
+          </div>
+          <div class="summary-item">
+            <span>Date</span>
+            <strong id="reviewDate"></strong>
+          </div>
+          <div class="summary-item">
+            <span>Time</span>
+            <strong id="reviewTime"></strong>
+          </div>
+        </div>
+        <!-- Frontend preview only - the backend always looks the current
+             price up itself from the products table at booking time (see
+             js/script.js's submitBookingRequest()), so this figure is never
+             sent to, or trusted from, this screen. -->
+        <div class="booking-summary-total">
+          <span>Total (Preview)</span>
+          <strong id="reviewPrice"></strong>
+        </div>
+      </div>
+
+      <div class="reservation-review-section">
+        <p class="booking-form-kicker">Customer</p>
+        <div class="reservation-review-contact-grid">
+          <div class="summary-item">
+            <span>Name</span>
+            <strong id="reviewName"></strong>
+          </div>
+          <div class="summary-item">
+            <span>Phone</span>
+            <strong id="reviewPhone"></strong>
+          </div>
+          <div class="summary-item">
+            <span>Email</span>
+            <strong id="reviewEmail"></strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="reservation-review-section" id="reviewNotesSection" hidden>
+        <p class="booking-form-kicker">Notes</p>
+        <p id="reviewNotes"></p>
+      </div>
+
+      <p class="form-hint reservation-review-hint">
+        Prices are tax-inclusive and confirmed by Play X once your reservation is submitted.
+      </p>
+
+      <div class="reservation-review-actions" id="reservationReviewActions">
+        <button type="button" class="btn btn-outline" id="editReservationBtn">Edit Details</button>
+        <button type="button" class="btn btn-primary" id="reserveRaceBtn">Reserve My Race</button>
+      </div>
+      <p class="form-status" id="reservationReviewStatus" role="status" aria-live="polite"></p>
+
+      <!-- ============ OTP VERIFICATION (Phase 2) ============ -->
+      <!-- Shown in place of reservationReviewActions once POST /auth/start
+           succeeds - see js/script.js's beginReservationVerification()/
+           showOtpVerification(). Uses the email/name/phone already saved in
+           the playx_pending_booking draft above; the customer never re-types
+           contact details here. No booking is created from this screen - a
+           successful /auth/verify hands off to #bookingCreationPanel below,
+           which does that automatically. -->
+      <div class="otp-verification" id="otpVerification" hidden>
+        <p class="booking-form-kicker">Verify Your Reservation</p>
+        <p class="otp-verification-copy">
+          We've sent a 6-digit Play X code to:<br>
+          <strong id="otpEmail"></strong>
+        </p>
+        <fieldset class="otp-input-group" id="otpInputGroup">
+          <legend class="sr-only">Enter the 6-digit verification code</legend>
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="1" class="otp-digit" aria-label="Digit 1 of 6" data-otp-index="0">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="otp-digit" aria-label="Digit 2 of 6" data-otp-index="1">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="otp-digit" aria-label="Digit 3 of 6" data-otp-index="2">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="otp-digit" aria-label="Digit 4 of 6" data-otp-index="3">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="otp-digit" aria-label="Digit 5 of 6" data-otp-index="4">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="otp-digit" aria-label="Digit 6 of 6" data-otp-index="5">
+        </fieldset>
+        <button type="button" class="btn btn-primary" id="verifyOtpBtn">Verify Code</button>
+        <p class="form-status" id="otpStatus" role="status" aria-live="polite"></p>
+        <div class="otp-secondary-actions">
+          <button type="button" class="link-inline" id="resendOtpBtn">Resend code</button>
+          <button type="button" class="link-inline" id="otpEditReservationBtn">Edit reservation</button>
+        </div>
+      </div>
+
+      <!-- ============ RESERVATION CREATION (Phase 3) ============ -->
+      <!-- Shown in place of otpVerification the instant POST /auth/verify
+           succeeds - see js/script.js's showBookingCreationPanel()/
+           createBookingAfterVerification(). No further click is needed to
+           reach this screen or to fire POST /bookings from it. A failed
+           attempt leaves the reservation draft and the just-verified Cognito
+           session untouched and offers Retry Reservation instead of asking
+           for a fresh OTP. -->
+      <div class="otp-verification" id="bookingCreationPanel" hidden>
+        <p class="booking-form-kicker">Almost There</p>
+        <p class="form-status" id="bookingCreationStatus" role="status" aria-live="polite">Creating your reservation...</p>
+        <button type="button" class="btn btn-primary" id="retryReservationBtn" hidden>Retry Reservation</button>
+      </div>
+    </div>
+
     <!-- Populated by js/script.js from the POST /bookings response - never
-         from anything typed into the form above, so the price/status shown
-         here always matches what the backend actually recorded. Says
-         "Request Received" / "Pending Confirmation" rather than "Confirmed" -
-         real-time simulator availability isn't implemented yet, so no
-         booking is actually confirmed until the venue reviews it. -->
-    <div class="booking-summary" id="bookingResult" hidden>
+         from anything typed into the form above, so the Xperience/Simulator/
+         duration/price/status shown here always match what the backend
+         actually recorded (see submitBookingRequest()'s use of
+         getProductDetails(result.product)). Says "Request Received" /
+         "Pending Confirmation" rather than "Confirmed" - real-time simulator
+         availability isn't implemented yet, so no booking is actually
+         confirmed until the venue reviews it. -->
+    <div class="booking-summary" id="bookingResult" tabindex="-1" hidden>
+      <h3 class="reservation-review-title">You're On The Grid</h3>
       <p class="booking-summary-title">Booking Request Received</p>
       <p class="booking-summary-value" id="resultXperience"></p>
-      <div class="booking-summary-grid">
+      <div class="reservation-review-grid">
+        <div class="summary-item">
+          <span>Simulator</span>
+          <strong id="resultSimulator"></strong>
+        </div>
+        <div class="summary-item">
+          <span>Duration</span>
+          <strong id="resultDuration"></strong>
+        </div>
         <div class="summary-item">
           <span>Date</span>
           <strong id="resultDate"></strong>
@@ -388,10 +542,6 @@
         <div class="summary-item">
           <span>Time</span>
           <strong id="resultTime"></strong>
-        </div>
-        <div class="summary-item">
-          <span>Duration</span>
-          <strong id="resultDuration"></strong>
         </div>
       </div>
       <div class="booking-summary-total">
@@ -402,7 +552,13 @@
         <span>Status</span>
         <strong><span class="booking-status-pill pending" id="resultStatus"></span></strong>
       </div>
-      <a href="#my-bookings" class="btn btn-primary booking-result-cta">View My Bookings</a>
+      <!-- Only shown when POST /bookings returns an id - "if useful" per the
+           Phase 3 spec, so a backend response without one just hides this. -->
+      <p class="booking-reference" id="resultReference" hidden></p>
+      <div class="reservation-review-actions">
+        <a href="#my-bookings" class="btn btn-outline">View My Bookings</a>
+        <a href="#top" class="btn btn-primary">Back to Home</a>
+      </div>
     </div>
   </div>
 </section>
@@ -413,13 +569,58 @@
     <p class="kicker center">Your Account</p>
     <h2 class="center">My Bookings</h2>
     <!-- js/my-bookings.js toggles between this gate (signed out), the status
-         line (loading / error / empty), and the list below. -->
+         line (loading / error / empty), and the list below. Play X is fully
+         passwordless now - this gate never links to auth.html; it's the same
+         POST /auth/start -> 6-digit OTP -> POST /auth/verify sequence
+         Reserve My Race uses (see js/script.js's My Bookings gate section,
+         right after the booking OTP code), just without a booking to create
+         afterward. A customer who just completed a booking in this same
+         session already has a valid Cognito session from that flow, so this
+         gate is skipped entirely (js/my-bookings.js's refreshMyBookings()
+         only shows it when there's genuinely no valid/refreshable session). -->
     <div class="booking-login-gate" id="myBookingsLoggedOut" hidden>
-      <p>Log in to view your booking history.</p>
-      <div class="booking-login-gate-actions">
-        <a href="auth.html?mode=login" class="btn btn-outline">Log In</a>
-        <a href="auth.html?mode=signup" class="btn btn-primary">Sign Up</a>
+      <p>Verify your email to view your bookings.</p>
+
+      <form class="my-bookings-auth-form" id="myBookingsAuthForm">
+        <div class="form-field">
+          <label for="myBookingsEmail" class="sr-only">Email</label>
+          <input type="email" id="myBookingsEmail" name="email" placeholder="you@example.com" required>
+        </div>
+        <button type="submit" class="btn btn-primary" id="myBookingsSendCodeBtn">Send 6-Digit Code</button>
+      </form>
+      <p class="form-status" id="myBookingsAuthStatus" role="status" aria-live="polite"></p>
+
+      <!-- Shown in place of myBookingsAuthForm once POST /auth/start succeeds -
+           see js/script.js's showMyBookingsOtp(). Reuses .otp-verification's
+           styling (input group, digit boxes, secondary actions) wholesale. -->
+      <div class="otp-verification" id="myBookingsOtp" hidden>
+        <p class="otp-verification-copy">
+          We've sent a 6-digit Play X code to:<br>
+          <strong id="myBookingsOtpEmail"></strong>
+        </p>
+        <fieldset class="otp-input-group" id="myBookingsOtpGroup">
+          <legend class="sr-only">Enter the 6-digit verification code</legend>
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="1" class="mb-otp-digit" aria-label="Digit 1 of 6" data-otp-index="0">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="mb-otp-digit" aria-label="Digit 2 of 6" data-otp-index="1">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="mb-otp-digit" aria-label="Digit 3 of 6" data-otp-index="2">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="mb-otp-digit" aria-label="Digit 4 of 6" data-otp-index="3">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="mb-otp-digit" aria-label="Digit 5 of 6" data-otp-index="4">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="mb-otp-digit" aria-label="Digit 6 of 6" data-otp-index="5">
+        </fieldset>
+        <button type="button" class="btn btn-primary" id="myBookingsVerifyBtn">Verify Code</button>
+        <p class="form-status" id="myBookingsOtpStatus" role="status" aria-live="polite"></p>
+        <div class="otp-secondary-actions">
+          <button type="button" class="link-inline" id="myBookingsResendBtn">Resend code</button>
+          <button type="button" class="link-inline" id="myBookingsChangeEmailBtn">Use a different email</button>
+        </div>
       </div>
+    </div>
+    <!-- Shown only once bookings have actually loaded (js/my-bookings.js) -
+         Upcoming vs History is a client-side split of one GET /bookings/me
+         response, not two separate requests. Upcoming is the default view. -->
+    <div class="my-bookings-tabs" id="myBookingsTabs" hidden>
+      <button type="button" class="my-bookings-tab active" id="myBookingsTabUpcoming" data-view="upcoming">Upcoming</button>
+      <button type="button" class="my-bookings-tab" id="myBookingsTabHistory" data-view="history">History</button>
     </div>
     <p class="form-status" id="myBookingsStatus" role="status" aria-live="polite"></p>
     <div class="my-bookings-list" id="myBookingsList" hidden></div>
