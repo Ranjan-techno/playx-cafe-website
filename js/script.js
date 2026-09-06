@@ -267,10 +267,88 @@ const emailInput = document.getElementById('email');
 const notesInput = document.getElementById('notes');
 const guestSubmitHint = document.getElementById('bookingGuestHint');
 
+// ----------------------------------------------------------------------
+// Reservation Review - shown in place of the booking form once it's
+// submitted (Phase 1 of the guest-first flow: form -> review -> [Phase 2:
+// OTP verify] -> [Phase 3: POST /bookings]). No API call happens from this
+// screen itself; see beginReservationVerification() further down.
+// ----------------------------------------------------------------------
+const reservationReview = document.getElementById('reservationReview');
+const reservationReviewStatus = document.getElementById('reservationReviewStatus');
+const editReservationBtn = document.getElementById('editReservationBtn');
+const reserveRaceBtn = document.getElementById('reserveRaceBtn');
+const reviewNotesSection = document.getElementById('reviewNotesSection');
+const reservationReviewActions = document.getElementById('reservationReviewActions');
+
+// ----------------------------------------------------------------------
+// OTP verification (Phase 2) - shown in place of reservationReviewActions
+// once POST /auth/start succeeds. See beginReservationVerification()/
+// showOtpVerification() further down for the flow this drives.
+// ----------------------------------------------------------------------
+const otpVerification = document.getElementById('otpVerification');
+const otpEmailEl = document.getElementById('otpEmail');
+const otpDigitInputs = Array.from(document.querySelectorAll('.otp-digit'));
+const verifyOtpBtn = document.getElementById('verifyOtpBtn');
+const resendOtpBtn = document.getElementById('resendOtpBtn');
+const otpEditReservationBtn = document.getElementById('otpEditReservationBtn');
+const otpStatus = document.getElementById('otpStatus');
+
+// ----------------------------------------------------------------------
+// Booking creation (Phase 3) - shown in place of otpVerification the instant
+// POST /auth/verify succeeds. See createBookingAfterVerification()/
+// showBookingCreationPanel() further down for the flow this drives.
+// ----------------------------------------------------------------------
+const bookingCreationPanel = document.getElementById('bookingCreationPanel');
+const bookingCreationStatus = document.getElementById('bookingCreationStatus');
+const retryReservationBtn = document.getElementById('retryReservationBtn');
+
 // Namespaced so it's unambiguous in DevTools/sessionStorage what this key
-// holds. Only ever holds the 7 plain fields built below - never a password,
-// Cognito token, AWS credential, or any other secret.
+// holds. Only ever holds the plain booking/contact fields built below (see
+// the submit handler's draft object) plus display-only copy for the Review
+// screen - never a password, Cognito token, AWS credential, or any other
+// secret.
 const PENDING_BOOKING_STORAGE_KEY = 'playx_pending_booking';
+
+// Holds only the Cognito CUSTOM_AUTH challenge session between POST
+// /auth/start and POST /auth/verify - { email, session, createdAt }. Never
+// the OTP itself, and never a token: those only ever exist in
+// `pendingAuthResult` below, in memory. Namespaced the same way as
+// PENDING_BOOKING_STORAGE_KEY above.
+const OTP_SESSION_STORAGE_KEY = 'playx_otp_session';
+
+function saveOtpSession(email, session) {
+  try {
+    sessionStorage.setItem(OTP_SESSION_STORAGE_KEY, JSON.stringify({ email, session, createdAt: Date.now() }));
+  } catch (err) {
+    // sessionStorage can throw in rare private-browsing edge cases - the OTP
+    // screen still works off the in-memory response either way; only "resume
+    // after a reload" is lost, same tradeoff as PENDING_BOOKING_STORAGE_KEY.
+  }
+}
+
+function readOtpSession() {
+  const raw = sessionStorage.getItem(OTP_SESSION_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    sessionStorage.removeItem(OTP_SESSION_STORAGE_KEY);
+    return null;
+  }
+}
+
+function clearOtpSession() {
+  sessionStorage.removeItem(OTP_SESSION_STORAGE_KEY);
+}
+
+// Holds the tokens POST /auth/verify returns, in memory only - never written
+// to localStorage/sessionStorage, never logged. createBookingAfterVerification()
+// (further down) reads this both as its "verification just succeeded" guard
+// and as a fallback token source (the real Bearer token it prefers comes from
+// CognitoAuth's own persisted session - see verifyOtpBtn's click handler).
+// Reset whenever the customer backs out to edit their reservation, a fresh
+// verification attempt starts, or a booking is actually created.
+let pendingAuthResult = null;
 
 function resolveProductCode(selection, simulatorValue) {
   const { group, option } = selection;
@@ -321,59 +399,100 @@ function clearPendingBookingDraft() {
 }
 
 // The one place that actually calls POST /bookings and renders the outcome -
-// used both by an already-signed-in visitor's ordinary submit and by
-// attemptDraftAutoCompletion() below, so the fetch/render logic only exists
-// once. Never touches sessionStorage itself: each caller decides what
-// "success" means for its own draft bookkeeping. Returns { ok: true, result }
-// or { ok: false } rather than throwing, so neither caller needs its own
-// try/catch.
-async function submitBookingRequest({ token, productCode, bookingDate, startTime, notes, durationMinutes, submitBtn }) {
+// used both by an already-signed-in visitor's ordinary submit
+// (attemptDraftAutoCompletion) and by the passwordless OTP flow's automatic
+// post-verification booking (createBookingAfterVerification), so the
+// fetch/render logic only exists once. Sends exactly the fields POST
+// /bookings' contract expects - productCode/bookingDate/startTime/
+// customerName/customerPhone/customerEmail/notes - and nothing
+// security-sensitive (never price, status, cognitoSub, or userId; the
+// backend alone decides those from the product row and the caller's Cognito
+// JWT). `statusEl`/`loadingText` let each caller show progress in its own
+// status line (the booking form's #formStatus for attemptDraftAutoCompletion,
+// #bookingCreationStatus for the OTP flow) rather than assuming one shared,
+// possibly-hidden element. Never touches sessionStorage itself: each caller
+// decides what "success" means for its own draft bookkeeping. Returns
+// { ok: true, result } or { ok: false, error } rather than throwing, so no
+// caller needs its own try/catch.
+async function submitBookingRequest({
+  token, productCode, bookingDate, startTime, notes,
+  customerName, customerPhone, customerEmail,
+  submitBtn, statusEl, loadingText
+}) {
+  const status = statusEl || formStatus;
   if (submitBtn) submitBtn.disabled = true;
-  formStatus.classList.remove('success');
-  formStatus.textContent = 'Sending your booking request...';
+  status.classList.remove('success');
+  status.textContent = loadingText || 'Sending your booking request...';
   bookingResult.hidden = true;
 
   try {
     const response = await fetch(`${AWS_CONFIG.apiBaseUrl}/bookings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ productCode, bookingDate, startTime, notes: notes || null })
+      body: JSON.stringify({
+        productCode, bookingDate, startTime,
+        customerName, customerPhone, customerEmail,
+        notes: notes || null
+      })
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.message || 'Failed to create booking');
 
-    formStatus.textContent = '';
-    document.getElementById('resultXperience').textContent = getProductLabel(result.product);
+    status.textContent = '';
+    // Xperience/Simulator/duration are derived from the backend's own
+    // `product` code (getProductDetails(), js/product-lookup.js) - the same
+    // source of truth js/my-bookings.js's list uses - never from whatever a
+    // caller's own draft/form happened to have selected, so this always
+    // matches what was actually booked.
+    const details = typeof getProductDetails === 'function' ? getProductDetails(result.product) : {};
+    document.getElementById('resultXperience').textContent = details.experienceName || getProductLabel(result.product);
+    document.getElementById('resultSimulator').textContent = details.simulatorType || '';
+    document.getElementById('resultDuration').textContent = details.durationMinutes ? `${details.durationMinutes} min` : '—';
     document.getElementById('resultDate').textContent = formatDateDisplay(result.date);
     document.getElementById('resultTime').textContent = formatTimeDisplay(result.time);
-    document.getElementById('resultDuration').textContent = `${durationMinutes} min`;
+    // The backend's price, never the frontend's preview price - see
+    // reviewPrice/summaryTotal elsewhere in this file, both explicitly
+    // labeled "Preview" for exactly this reason.
     document.getElementById('resultPrice').textContent = formatBookingPrice(result.price);
     const resultStatusEl = document.getElementById('resultStatus');
     resultStatusEl.textContent = formatBookingStatus(result.status);
     resultStatusEl.className = `booking-status-pill ${result.status}`;
+    const referenceEl = document.getElementById('resultReference');
+    if (referenceEl) {
+      if (result.id) {
+        referenceEl.textContent = `Booking reference: ${result.id}`;
+        referenceEl.hidden = false;
+      } else {
+        referenceEl.hidden = true;
+      }
+    }
     bookingResult.hidden = false;
+    bookingResult.focus();
     bookingForm.reset();
     // Reflect the new booking in the My Bookings list (js/my-bookings.js)
     // right away instead of waiting for the visitor to reload the page.
     if (typeof refreshMyBookings === 'function') refreshMyBookings();
     return { ok: true, result };
   } catch (err) {
-    console.error('POST /bookings failed', err);
-    formStatus.textContent = err.message || 'Something went wrong - please try again.';
-    return { ok: false };
+    console.error('POST /bookings failed', err.message || 'unknown_error');
+    status.textContent = err.message || 'Something went wrong - please try again.';
+    return { ok: false, error: err };
   } finally {
     if (submitBtn) submitBtn.disabled = false;
   }
 }
 
 // Completes a booking that was started as a guest, now that a session
-// exists - no extra click needed. getProductDetails() (js/product-lookup.js)
-// supplies the duration for the result card since there's no live form fill
-// to read it from (the draft was saved on an earlier visit). The draft is
-// only cleared on success; a failure leaves it in place so it can be
-// retried, e.g. by reloading the page.
+// exists - no extra click needed. This is also the fallback path if the
+// passwordless flow's own automatic booking (createBookingAfterVerification,
+// further down) failed and the customer reloaded before hitting Retry
+// Reservation: the draft is still in sessionStorage, and the Cognito session
+// installed via CognitoAuth.installPasswordlessSession() at verification
+// time is still valid, so this picks the attempt back up with no fresh OTP
+// needed either.
+// The draft is only cleared on success; a failure leaves it in place so it
+// can be retried again.
 async function attemptDraftAutoCompletion(token, draft) {
-  const details = typeof getProductDetails === 'function' ? getProductDetails(draft.productCode) : null;
   const submitBtn = bookingForm.querySelector('button[type="submit"]');
   const outcome = await submitBookingRequest({
     token,
@@ -381,7 +500,9 @@ async function attemptDraftAutoCompletion(token, draft) {
     bookingDate: draft.bookingDate,
     startTime: draft.startTime,
     notes: draft.notes,
-    durationMinutes: details ? details.durationMinutes : null,
+    customerName: draft.customerName,
+    customerPhone: draft.customerPhone,
+    customerEmail: draft.customerEmail,
     submitBtn
   });
   if (outcome.ok) clearPendingBookingDraft();
@@ -414,16 +535,441 @@ async function initBookingFormGuestUX() {
   }
 }
 
-bookingForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
+// Fills the Reservation Review screen from a saved draft (never re-read from
+// the form fields, so the review always reflects exactly what was saved to
+// sessionStorage). `draft.display` carries the human-readable copy
+// (Xperience name, Simulator label, formatted date/time, preview price) -
+// it's cached at submit time rather than recomputed here so Review still
+// renders correctly even if PRICING_GROUPS' shape ever changes later.
+function renderReservationReview(draft) {
+  const display = draft.display || {};
+  document.getElementById('reviewXperience').textContent = display.xperienceName || '';
+  document.getElementById('reviewSimulator').textContent = display.simulatorType || '';
+  document.getElementById('reviewDuration').textContent = display.durationMinutes ? `${display.durationMinutes} min` : '—';
+  document.getElementById('reviewDate').textContent = display.dateDisplay || formatDateDisplay(draft.bookingDate);
+  document.getElementById('reviewTime').textContent = display.timeDisplay || formatTimeDisplay(draft.startTime);
+  document.getElementById('reviewPrice').textContent = typeof display.price === 'number' ? formatBookingPrice(display.price) : '—';
+  document.getElementById('reviewName').textContent = draft.customerName || '';
+  document.getElementById('reviewPhone').textContent = draft.customerPhone || '';
+  document.getElementById('reviewEmail').textContent = draft.customerEmail || '';
 
-  if (typeof CognitoAuth === 'undefined' || !CognitoAuth.isConfigured) {
-    formStatus.classList.remove('success');
-    formStatus.textContent = 'Booking isn\'t set up yet - add your AWS backend details in js/aws-config.js.';
+  if (draft.notes) {
+    document.getElementById('reviewNotes').textContent = draft.notes;
+    reviewNotesSection.hidden = false;
+  } else {
+    reviewNotesSection.hidden = true;
+  }
+}
+
+// Swaps the booking form out for the Reservation Review screen, showing the
+// "Edit Details"/"Reserve My Race" actions rather than the OTP UI (a fresh or
+// re-edited draft always starts from there, never mid-verification). The
+// form is only hidden here, never reset - "Edit Details" (showBookingFormForEdit
+// below) can bring it back exactly as the customer left it.
+function showReservationReview(draft) {
+  renderReservationReview(draft);
+  reservationReviewStatus.classList.remove('success');
+  reservationReviewStatus.textContent = '';
+  formStatus.textContent = '';
+  hideOtpVerification();
+  bookingForm.hidden = true;
+  reservationReview.hidden = false;
+  reservationReview.focus();
+}
+
+// "Edit Details"/"Edit reservation" - back to the form, with every field
+// exactly as the customer left it (nothing here touches form values, only
+// visibility). Also abandons any in-flight OTP challenge: a customer who
+// changes their reservation details shouldn't come back to a stale
+// session/half-entered code, and the tokens from an already-completed
+// verification are for the reservation as it was, not as it's about to be
+// edited.
+function showBookingFormForEdit() {
+  clearOtpSession();
+  pendingAuthResult = null;
+  hideOtpVerification();
+  reservationReview.hidden = true;
+  bookingForm.hidden = false;
+  xperienceSelect.focus();
+}
+
+editReservationBtn.addEventListener('click', showBookingFormForEdit);
+otpEditReservationBtn.addEventListener('click', showBookingFormForEdit);
+
+// ----------------------------------------------------------------------
+// POST /auth/start and POST /auth/verify - the real passwordless OTP flow
+// (backend/src/handlers/auth-start.ts, auth-verify.ts). Both throw a plain
+// Error on failure (never the raw fetch Response) carrying the backend's
+// machine-readable `error` code as `.code`, so callers can branch on it
+// (e.g. "expired_session", "invalid_code") without re-parsing anything.
+// Neither function - nor any caller below - ever logs the OTP, the challenge
+// session, or a token: only the short `error` code, which is never secret.
+// ----------------------------------------------------------------------
+async function callAuthStart(email, name, phone) {
+  const response = await fetch(`${AWS_CONFIG.apiBaseUrl}/auth/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, name, phone })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.error('POST /auth/start failed', body.error || 'unknown_error');
+    const err = new Error(body.message || 'Unable to send your verification code. Please try again.');
+    err.code = body.error;
+    throw err;
+  }
+  return body; // { challenge, session }
+}
+
+async function callAuthVerify(email, code, session) {
+  const response = await fetch(`${AWS_CONFIG.apiBaseUrl}/auth/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, code, session })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.error('POST /auth/verify failed', body.error || 'unknown_error');
+    const err = new Error(body.message || 'Unable to verify your code. Please try again.');
+    err.code = body.error;
+    // Only present alongside "invalid_code" - Cognito rotates the challenge
+    // session on every wrong-but-not-locked-out attempt, so the caller must
+    // retry with this one, never the one it just sent. Never logged above.
+    err.session = body.session;
+    throw err;
+  }
+  return body; // { idToken, accessToken, refreshToken, expiresIn }
+}
+
+// ----------------------------------------------------------------------
+// OTP digit boxes - six single-character inputs standing in for one 6-digit
+// field: digit-only, auto-advance on entry, backspace steps back into the
+// previous (now-cleared) box once the current one is already empty, and a
+// paste anywhere in the group fills every box from the pasted digits at
+// once (a customer pasting a code copied from their email/SMS app).
+// ----------------------------------------------------------------------
+function getOtpCode() {
+  return otpDigitInputs.map((input) => input.value).join('');
+}
+
+function clearOtpDigits(focusFirst) {
+  otpDigitInputs.forEach((input) => { input.value = ''; });
+  if (focusFirst && otpDigitInputs[0]) otpDigitInputs[0].focus();
+}
+
+otpDigitInputs.forEach((input, index) => {
+  input.addEventListener('input', () => {
+    // Keep only the last digit typed - covers a mobile keyboard briefly
+    // showing more than one character mid-composition.
+    input.value = input.value.replace(/\D/g, '').slice(-1);
+    if (input.value && index < otpDigitInputs.length - 1) {
+      otpDigitInputs[index + 1].focus();
+    }
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Backspace' && !input.value && index > 0) {
+      e.preventDefault();
+      otpDigitInputs[index - 1].value = '';
+      otpDigitInputs[index - 1].focus();
+    } else if (e.key === 'ArrowLeft' && index > 0) {
+      otpDigitInputs[index - 1].focus();
+    } else if (e.key === 'ArrowRight' && index < otpDigitInputs.length - 1) {
+      otpDigitInputs[index + 1].focus();
+    }
+  });
+
+  input.addEventListener('paste', (e) => {
+    const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+    if (!pasted) return;
+    e.preventDefault();
+    pasted.slice(0, otpDigitInputs.length).split('').forEach((digit, i) => {
+      otpDigitInputs[i].value = digit;
+    });
+    const lastFilledIndex = Math.min(pasted.length, otpDigitInputs.length) - 1;
+    otpDigitInputs[Math.max(lastFilledIndex, 0)].focus();
+  });
+});
+
+// Reveals the OTP UI in place of reservationReviewActions once POST
+// /auth/start has succeeded.
+function showOtpVerification(email) {
+  otpEmailEl.textContent = email;
+  reservationReviewActions.hidden = true;
+  otpVerification.hidden = false;
+  otpStatus.classList.remove('success');
+  otpStatus.textContent = '';
+  verifyOtpBtn.disabled = false;
+  resendOtpBtn.disabled = false;
+  otpEditReservationBtn.disabled = false;
+  clearOtpDigits(true);
+}
+
+// Reverses showOtpVerification() - used whenever the customer backs out to
+// edit their reservation (showBookingFormForEdit) or a fresh Review screen
+// is shown (showReservationReview), so neither leaves stale OTP UI state
+// behind for next time.
+function hideOtpVerification() {
+  otpVerification.hidden = true;
+  bookingCreationPanel.hidden = true;
+  reservationReviewActions.hidden = false;
+  otpStatus.classList.remove('success');
+  otpStatus.textContent = '';
+  verifyOtpBtn.disabled = false;
+  resendOtpBtn.disabled = false;
+  otpEditReservationBtn.disabled = false;
+  clearOtpDigits(false);
+}
+
+// "Reserve My Race" - starts the real passwordless OTP flow: POST
+// /auth/start using the contact details already in the booking draft (never
+// re-asked here), then - on success - shows the inline 6-digit code entry.
+// A failure restores the button and leaves the draft/review screen exactly
+// as they were (requirement: never lose the draft on a failed start).
+async function beginReservationVerification(draft) {
+  reserveRaceBtn.disabled = true;
+  reservationReviewStatus.classList.remove('success');
+  reservationReviewStatus.textContent = 'Sending code...';
+
+  try {
+    const { session } = await callAuthStart(draft.customerEmail, draft.customerName, draft.customerPhone);
+    saveOtpSession(draft.customerEmail, session);
+    reservationReviewStatus.textContent = '';
+    showOtpVerification(draft.customerEmail);
+  } catch (err) {
+    reservationReviewStatus.textContent = err.message || 'Unable to send your verification code. Please try again.';
+  } finally {
+    reserveRaceBtn.disabled = false;
+  }
+}
+
+// Reveals the "Almost There" panel in place of otpVerification and kicks off
+// createBookingAfterVerification() - called once, right after a successful
+// POST /auth/verify (see the click handler below), never in response to a
+// second click.
+function showBookingCreationPanel() {
+  otpVerification.hidden = true;
+  bookingCreationPanel.hidden = false;
+  retryReservationBtn.hidden = true;
+  retryReservationBtn.disabled = false;
+  bookingCreationStatus.classList.remove('success');
+  bookingCreationStatus.textContent = 'Creating your reservation...';
+}
+
+// Guards createBookingAfterVerification() against overlapping calls - e.g. a
+// customer clicking Retry Reservation more than once before the first
+// request returns - so at most one POST /bookings is ever in flight.
+let isCreatingBooking = false;
+
+// The automatic POST /bookings that follows a successful /auth/verify - and
+// also what Retry Reservation (below) calls again on a failed attempt. Never
+// re-verifies the OTP: it reads the access token from the Cognito session
+// CognitoAuth.installPasswordlessSession() installed right after
+// verification succeeded (falling back to the raw token /auth/verify
+// returned, held in pendingAuthResult, only if that somehow didn't install),
+// so a retry - even
+// after a reload, via attemptDraftAutoCompletion() above - never asks the
+// customer to enter a fresh code. A failed attempt leaves
+// playx_pending_booking and the verified session exactly as they are;
+// only a 201 clears Phase 3's own state.
+async function createBookingAfterVerification(draft) {
+  if (isCreatingBooking || !pendingAuthResult) return;
+  isCreatingBooking = true;
+  retryReservationBtn.disabled = true;
+  retryReservationBtn.hidden = true;
+
+  const token = (CognitoAuth.isConfigured && (await CognitoAuth.getAccessToken())) || pendingAuthResult.accessToken;
+  const outcome = await submitBookingRequest({
+    token,
+    productCode: draft.productCode,
+    bookingDate: draft.bookingDate,
+    startTime: draft.startTime,
+    notes: draft.notes,
+    customerName: draft.customerName,
+    customerPhone: draft.customerPhone,
+    customerEmail: draft.customerEmail,
+    statusEl: bookingCreationStatus,
+    loadingText: 'Creating your reservation...'
+  });
+
+  isCreatingBooking = false;
+
+  if (outcome.ok) {
+    // Only now - a real 201 - is any of Phase 3's own state cleared. The
+    // authenticated session itself (CognitoAuth's persisted tokens) is
+    // deliberately left alone: My Bookings (js/my-bookings.js) needs it next.
+    clearPendingBookingDraft();
+    clearOtpSession();
+    clearOtpDigits(false);
+    pendingAuthResult = null;
+    bookingCreationPanel.hidden = true;
+    reservationReview.hidden = true;
+  } else {
+    bookingCreationStatus.classList.remove('success');
+    bookingCreationStatus.textContent = "We verified your email, but couldn't create your reservation.";
+    retryReservationBtn.hidden = false;
+    retryReservationBtn.disabled = false;
+  }
+}
+
+// "Retry Reservation" - shown only after a failed automatic booking attempt.
+// Reuses the same draft and verified session; never re-asks for an OTP.
+retryReservationBtn.addEventListener('click', () => {
+  const draft = readPendingBookingDraft();
+  if (!draft || !pendingAuthResult) {
+    // Shouldn't happen in normal use - both are only cleared once a booking
+    // actually succeeds - but a cleared/corrupt draft (or a session that
+    // somehow never got set) shouldn't leave the customer stuck retrying
+    // something that no longer exists.
+    bookingCreationPanel.hidden = true;
+    showBookingFormForEdit();
+    formStatus.textContent = 'Your reservation details were lost - please review them again.';
+    return;
+  }
+  createBookingAfterVerification(draft);
+});
+
+// "Verify Code" - POST /auth/verify with the entered digits and the stored
+// challenge session. On success it installs the returned tokens into the
+// project's existing Cognito session storage (CognitoAuth.
+// installPasswordlessSession() - the same helper the My Bookings OTP flow
+// below uses, backed by the same getSession()/getAccessToken() everywhere
+// else in the app already reads from), tells the customer their email is
+// verified, then - with no further click - moves straight into
+// createBookingAfterVerification() to actually create the reservation.
+verifyOtpBtn.addEventListener('click', async () => {
+  const draft = readPendingBookingDraft();
+  if (!draft) {
+    // Shouldn't happen in normal use - the draft is only cleared once Phase
+    // 3 actually creates the booking, which doesn't exist yet - but a
+    // cleared/corrupt sessionStorage entry shouldn't leave the customer
+    // stuck verifying a reservation that no longer exists.
+    hideOtpVerification();
+    showBookingFormForEdit();
+    formStatus.textContent = 'Your reservation details were lost - please review them again.';
     return;
   }
 
-  // Validate first: only ever build a draft (or POST) once the form's
+  const code = getOtpCode();
+  if (!/^\d{6}$/.test(code)) {
+    otpStatus.classList.remove('success');
+    otpStatus.textContent = 'Enter all 6 digits of the code.';
+    return;
+  }
+
+  const otpSession = readOtpSession();
+  if (!otpSession || otpSession.email !== draft.customerEmail) {
+    otpStatus.classList.remove('success');
+    otpStatus.textContent = 'This verification code has expired. Send a new code to continue.';
+    return;
+  }
+
+  verifyOtpBtn.disabled = true;
+  otpStatus.classList.remove('success');
+  otpStatus.textContent = 'Verifying...';
+
+  try {
+    const authResult = await callAuthVerify(draft.customerEmail, code, otpSession.session);
+    // In memory only - never sessionStorage/localStorage, never logged. See
+    // the top-of-file declaration. Kept as a fallback token source and as
+    // the "verification just succeeded" guard createBookingAfterVerification()
+    // checks; the actual Bearer token it uses comes from CognitoAuth below.
+    pendingAuthResult = { ...authResult, email: draft.customerEmail };
+    clearOtpSession();
+    // The one shared helper both OTP flows use to install a passwordless
+    // /auth/verify result into the project's existing Cognito session
+    // storage (see js/cognito-auth.js) - reused here rather than inventing a
+    // second session mechanism. A failure here doesn't block booking
+    // creation - createBookingAfterVerification() below falls back to
+    // pendingAuthResult.accessToken above - but is still worth a quiet,
+    // token-free warning, since it means this visitor won't stay signed in
+    // past this page load (no My Bookings without a fresh code next time).
+    try {
+      await CognitoAuth.installPasswordlessSession(draft.customerEmail, authResult);
+    } catch (installErr) {
+      console.warn(
+        'Passwordless session install failed:',
+        installErr instanceof Error ? installErr.message : 'unknown_error'
+      );
+    }
+    // Disable every other action on this screen - a customer clicking Resend
+    // or Edit in the instant before the screen swaps below shouldn't be able
+    // to interrupt a verification that already succeeded.
+    resendOtpBtn.disabled = true;
+    otpEditReservationBtn.disabled = true;
+    otpStatus.classList.add('success');
+    otpStatus.textContent = 'Email verified.';
+    // No further click needed: briefly let "Email verified." register, then
+    // move straight into creating the reservation.
+    setTimeout(() => {
+      showBookingCreationPanel();
+      createBookingAfterVerification(draft);
+    }, 600);
+  } catch (err) {
+    otpStatus.classList.remove('success');
+    verifyOtpBtn.disabled = false;
+
+    if (err.code === 'expired_session') {
+      clearOtpSession();
+      otpStatus.textContent = `${err.message} Send a new code to continue.`;
+    } else if (err.code === 'invalid_code') {
+      // Cognito rotates the challenge session on every wrong attempt -
+      // replace the stored one so a retry uses the current session, never
+      // the stale one that was just rejected (see callAuthVerify above).
+      if (err.session) saveOtpSession(draft.customerEmail, err.session);
+      otpStatus.textContent = err.message || 'The code you entered is incorrect.';
+      clearOtpDigits(true);
+    } else {
+      otpStatus.textContent = err.message || 'Unable to verify your code. Please try again.';
+    }
+  }
+});
+
+// "Resend code" - calls /auth/start again and replaces the stored challenge
+// session with the new one; the old session is never reused.
+resendOtpBtn.addEventListener('click', async () => {
+  const draft = readPendingBookingDraft();
+  if (!draft) {
+    hideOtpVerification();
+    showBookingFormForEdit();
+    formStatus.textContent = 'Your reservation details were lost - please review them again.';
+    return;
+  }
+
+  resendOtpBtn.disabled = true;
+  otpStatus.classList.remove('success');
+  otpStatus.textContent = 'Sending a new code...';
+
+  try {
+    const { session } = await callAuthStart(draft.customerEmail, draft.customerName, draft.customerPhone);
+    saveOtpSession(draft.customerEmail, session);
+    clearOtpDigits(true);
+    verifyOtpBtn.disabled = false;
+    otpStatus.textContent = 'A new code is on its way to your email.';
+  } catch (err) {
+    otpStatus.textContent = err.message || 'Unable to send a new code. Please try again.';
+  } finally {
+    resendOtpBtn.disabled = false;
+  }
+});
+
+reserveRaceBtn.addEventListener('click', () => {
+  const draft = readPendingBookingDraft();
+  if (!draft) {
+    // Shouldn't happen in normal use (the draft is written right before this
+    // screen is shown), but a cleared/corrupt sessionStorage entry shouldn't
+    // leave the customer stuck on a review screen with nothing to reserve.
+    reservationReviewStatus.textContent = 'Your reservation details were lost - please review them again.';
+    showBookingFormForEdit();
+    return;
+  }
+  beginReservationVerification(draft);
+});
+
+bookingForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+
+  // Validate first: only ever build a draft once the form's
   // Xperience/Simulator selection actually resolves to a real product.
   // Every other required field already blocks the native 'submit' event
   // from firing at all via HTML5 constraint validation.
@@ -435,48 +981,53 @@ bookingForm.addEventListener('submit', async (e) => {
     return;
   }
 
-  const token = await CognitoAuth.getAccessToken();
-  if (!token) {
-    // Guest (or an expired session) - save a normalized draft of exactly
-    // what's needed to complete this booking once signed in, then send the
-    // visitor to log in/sign up. Never POSTs on their behalf while
-    // unauthenticated - attemptDraftAutoCompletion() does that automatically
-    // on their next visit, once a session exists.
-    try {
-      const draft = {
-        productCode,
-        bookingDate: document.getElementById('date').value, // native YYYY-MM-DD, no conversion needed
-        startTime: timeSelect.value, // already HH:mm - see buildTimeSlots()
-        notes: notesInput.value || null,
-        name: nameInput.value,
-        phone: phoneInput.value,
-        email: emailInput.value
-      };
-      sessionStorage.setItem(PENDING_BOOKING_STORAGE_KEY, JSON.stringify(draft));
-    } catch (err) {
-      // sessionStorage can throw in rare private-browsing edge cases - never
-      // let that block the redirect below, just skip the auto-completion.
+  const { group, option } = selection;
+  const isSignature = group.kind === 'signature';
+  const xperienceName = isSignature ? group.name : option.name;
+  const simulatorType = isSignature
+    ? 'All 4 Simulators'
+    : ((SIMULATOR_TYPES.find((t) => t.id === simulatorSelect.value) || {}).name || simulatorSelect.value);
+  const price = isSignature
+    ? option.price
+    : (simulatorSelect.value === 'motion' ? option.motionPrice : option.staticPrice);
+  const bookingDate = document.getElementById('date').value; // native YYYY-MM-DD, no conversion needed
+  const startTime = timeSelect.value; // already HH:mm - see buildTimeSlots()
+
+  // Normalized draft, saved under the existing PENDING_BOOKING_STORAGE_KEY.
+  // productCode/bookingDate/startTime/customerName/customerPhone/
+  // customerEmail/notes match POST /bookings' request body field-for-field
+  // (see backend/src/handlers/create-booking.ts) so submitBookingRequest()
+  // can send this draft's fields straight through once a session exists -
+  // via createBookingAfterVerification() (Phase 3) or attemptDraftAutoCompletion().
+  // `display` is Review-screen-only preview copy, never sent to the API and
+  // never read by either of those.
+  const draft = {
+    productCode,
+    bookingDate,
+    startTime,
+    customerName: nameInput.value.trim(),
+    customerPhone: phoneInput.value.trim(),
+    customerEmail: emailInput.value.trim(),
+    notes: notesInput.value.trim() || null,
+    display: {
+      xperienceName,
+      simulatorType,
+      durationMinutes: option.durationMinutes,
+      price,
+      dateDisplay: formatDateDisplay(bookingDate),
+      timeDisplay: formatTimeDisplay(startTime)
     }
-    sessionStorage.setItem('pxPostLoginRedirect', 'index.html#booking');
-    location.href = 'auth.html?mode=login';
-    return;
+  };
+
+  try {
+    sessionStorage.setItem(PENDING_BOOKING_STORAGE_KEY, JSON.stringify(draft));
+  } catch (err) {
+    // sessionStorage can throw in rare private-browsing edge cases - the
+    // Review screen below still works off the in-memory draft either way;
+    // only "resume where I left off after a reload" is lost.
   }
 
-  // Already signed in - straight to booking creation, no draft detour.
-  const data = Object.fromEntries(new FormData(bookingForm).entries());
-  const submitBtn = bookingForm.querySelector('button[type="submit"]');
-  const outcome = await submitBookingRequest({
-    token,
-    productCode,
-    bookingDate: data.date,
-    startTime: data.time,
-    notes: data.notes || null,
-    durationMinutes: data.durationMinutes,
-    submitBtn
-  });
-  // Defensive cleanup only - this branch never reads a draft, but a stale
-  // one could exist from an earlier abandoned guest attempt in this tab.
-  if (outcome.ok) clearPendingBookingDraft();
+  showReservationReview(draft);
 });
 
 // bookingForm.reset() above fires a native 'reset' event - use it to put the
@@ -528,6 +1079,251 @@ if (dateInput) {
     if (dateError) {
       dateError.textContent = message;
       dateError.hidden = !message;
+    }
+  });
+}
+
+// ----------------------------------------------------------------------
+// My Bookings - passwordless sign-in gate (Phase 4). Replaces the old
+// Log In/Sign Up links to auth.html - Play X has no password login left in
+// the customer-facing journey. This is the exact same POST /auth/start ->
+// 6-digit OTP -> POST /auth/verify -> CognitoAuth.installPasswordlessSession()
+// sequence Reserve My Race uses above, just without a booking to create
+// afterward: a successful verify here goes straight to refreshMyBookings()
+// (js/my-bookings.js), which is also what decides this gate's visibility in
+// the first place - a customer who just completed a booking in this same
+// session already has a valid installed session, so they never see it.
+// ----------------------------------------------------------------------
+const myBookingsGate = document.getElementById('myBookingsLoggedOut');
+const myBookingsAuthForm = document.getElementById('myBookingsAuthForm');
+const myBookingsEmailInput = document.getElementById('myBookingsEmail');
+const myBookingsSendCodeBtn = document.getElementById('myBookingsSendCodeBtn');
+const myBookingsAuthStatus = document.getElementById('myBookingsAuthStatus');
+const myBookingsOtp = document.getElementById('myBookingsOtp');
+const myBookingsOtpEmailEl = document.getElementById('myBookingsOtpEmail');
+const myBookingsOtpDigitInputs = Array.from(document.querySelectorAll('.mb-otp-digit'));
+const myBookingsVerifyBtn = document.getElementById('myBookingsVerifyBtn');
+const myBookingsResendBtn = document.getElementById('myBookingsResendBtn');
+const myBookingsChangeEmailBtn = document.getElementById('myBookingsChangeEmailBtn');
+const myBookingsOtpStatus = document.getElementById('myBookingsOtpStatus');
+
+if (myBookingsGate && myBookingsAuthForm) {
+  // POST /auth/start (backend/src/handlers/auth-start.ts) requires a
+  // non-empty name and a valid Indian phone number on every call - it uses
+  // them only to create a brand-new Cognito user the first time an email
+  // signs in, and ignores them entirely for an email that already has one
+  // (the overwhelmingly common case here: a customer checking My Bookings
+  // has almost always already booked once via Reserve My Race, which
+  // supplies their real name/phone then). These placeholders are what the
+  // rare case of a My-Bookings-only first sign-in gets instead - harmless,
+  // since neither attribute is shown anywhere in this app besides an
+  // optional prefill on the booking form.
+  const MY_BOOKINGS_PLACEHOLDER_NAME = 'Play X Customer';
+  const MY_BOOKINGS_PLACEHOLDER_PHONE = '0000000000';
+
+  // Same auto-advance/backspace/paste behavior as the booking flow's
+  // otpDigitInputs above, wired separately (rather than shared) so this gate
+  // can't accidentally interact with that already-working flow.
+  myBookingsOtpDigitInputs.forEach((input, index) => {
+    input.addEventListener('input', () => {
+      input.value = input.value.replace(/\D/g, '').slice(-1);
+      if (input.value && index < myBookingsOtpDigitInputs.length - 1) {
+        myBookingsOtpDigitInputs[index + 1].focus();
+      }
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !input.value && index > 0) {
+        e.preventDefault();
+        myBookingsOtpDigitInputs[index - 1].value = '';
+        myBookingsOtpDigitInputs[index - 1].focus();
+      } else if (e.key === 'ArrowLeft' && index > 0) {
+        myBookingsOtpDigitInputs[index - 1].focus();
+      } else if (e.key === 'ArrowRight' && index < myBookingsOtpDigitInputs.length - 1) {
+        myBookingsOtpDigitInputs[index + 1].focus();
+      }
+    });
+    input.addEventListener('paste', (e) => {
+      const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+      if (!pasted) return;
+      e.preventDefault();
+      pasted.slice(0, myBookingsOtpDigitInputs.length).split('').forEach((digit, i) => {
+        myBookingsOtpDigitInputs[i].value = digit;
+      });
+      const lastFilledIndex = Math.min(pasted.length, myBookingsOtpDigitInputs.length) - 1;
+      myBookingsOtpDigitInputs[Math.max(lastFilledIndex, 0)].focus();
+    });
+  });
+
+  function getMyBookingsOtpCode() {
+    return myBookingsOtpDigitInputs.map((input) => input.value).join('');
+  }
+
+  function clearMyBookingsOtpDigits(focusFirst) {
+    myBookingsOtpDigitInputs.forEach((input) => { input.value = ''; });
+    if (focusFirst && myBookingsOtpDigitInputs[0]) myBookingsOtpDigitInputs[0].focus();
+  }
+
+  // Holds the Cognito CUSTOM_AUTH challenge session between POST /auth/start
+  // and POST /auth/verify for this gate only - kept separate from the
+  // booking flow's OTP_SESSION_STORAGE_KEY/otpSession above since the two
+  // verifications are otherwise unrelated. In memory only, not
+  // sessionStorage: unlike a reservation draft, there's nothing here worth
+  // surviving a reload - a customer who reloads mid-verify just requests a
+  // fresh code.
+  let myBookingsOtpSession = null;
+
+  function showMyBookingsOtp(email) {
+    myBookingsOtpEmailEl.textContent = email;
+    myBookingsAuthForm.hidden = true;
+    myBookingsOtp.hidden = false;
+    myBookingsOtpStatus.classList.remove('success');
+    myBookingsOtpStatus.textContent = '';
+    myBookingsVerifyBtn.disabled = false;
+    myBookingsResendBtn.disabled = false;
+    clearMyBookingsOtpDigits(true);
+  }
+
+  function showMyBookingsAuthForm() {
+    myBookingsOtpSession = null;
+    myBookingsOtp.hidden = true;
+    myBookingsAuthForm.hidden = false;
+    myBookingsAuthStatus.classList.remove('success');
+    myBookingsAuthStatus.textContent = '';
+    clearMyBookingsOtpDigits(false);
+  }
+
+  myBookingsChangeEmailBtn.addEventListener('click', () => {
+    showMyBookingsAuthForm();
+    myBookingsEmailInput.focus();
+  });
+
+  // "Send 6-Digit Code" - POST /auth/start with just the email this gate
+  // asks for (see the placeholder constants above for name/phone).
+  myBookingsAuthForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = myBookingsEmailInput.value.trim();
+    if (!email) return;
+
+    myBookingsSendCodeBtn.disabled = true;
+    myBookingsAuthStatus.classList.remove('success');
+    myBookingsAuthStatus.textContent = 'Sending code...';
+
+    try {
+      const { session } = await callAuthStart(email, MY_BOOKINGS_PLACEHOLDER_NAME, MY_BOOKINGS_PLACEHOLDER_PHONE);
+      myBookingsOtpSession = { email, session };
+      myBookingsAuthStatus.textContent = '';
+      showMyBookingsOtp(email);
+    } catch (err) {
+      myBookingsAuthStatus.textContent = err.message || 'Unable to send your verification code. Please try again.';
+    } finally {
+      myBookingsSendCodeBtn.disabled = false;
+    }
+  });
+
+  // "Resend code" - calls /auth/start again and replaces the stored
+  // challenge session with the new one; the old session is never reused.
+  myBookingsResendBtn.addEventListener('click', async () => {
+    if (!myBookingsOtpSession) return;
+    const { email } = myBookingsOtpSession;
+
+    myBookingsResendBtn.disabled = true;
+    myBookingsOtpStatus.classList.remove('success');
+    myBookingsOtpStatus.textContent = 'Sending a new code...';
+
+    try {
+      const { session } = await callAuthStart(email, MY_BOOKINGS_PLACEHOLDER_NAME, MY_BOOKINGS_PLACEHOLDER_PHONE);
+      myBookingsOtpSession = { email, session };
+      clearMyBookingsOtpDigits(true);
+      myBookingsVerifyBtn.disabled = false;
+      myBookingsOtpStatus.textContent = 'A new code is on its way to your email.';
+    } catch (err) {
+      myBookingsOtpStatus.textContent = err.message || 'Unable to send a new code. Please try again.';
+    } finally {
+      myBookingsResendBtn.disabled = false;
+    }
+  });
+
+  // "Verify Code" - POST /auth/verify, then install the session with the
+  // project's one existing Cognito session mechanism (CognitoAuth.
+  // installPasswordlessSession() - the same call Reserve My Race's OTP step
+  // makes) so getSession()/getAccessToken() everywhere else in the app
+  // already see this visitor as signed in. No booking to create afterward - success
+  // goes straight to refreshMyBookings() (js/my-bookings.js), which is also
+  // the single source of truth for whether this gate stays visible.
+  myBookingsVerifyBtn.addEventListener('click', async () => {
+    if (!myBookingsOtpSession) {
+      showMyBookingsAuthForm();
+      myBookingsAuthStatus.textContent = 'Your verification session expired - please send a new code.';
+      return;
+    }
+
+    const code = getMyBookingsOtpCode();
+    if (!/^\d{6}$/.test(code)) {
+      myBookingsOtpStatus.classList.remove('success');
+      myBookingsOtpStatus.textContent = 'Enter all 6 digits of the code.';
+      return;
+    }
+
+    const { email, session } = myBookingsOtpSession;
+    myBookingsVerifyBtn.disabled = true;
+    myBookingsResendBtn.disabled = true;
+    myBookingsOtpStatus.classList.remove('success');
+    myBookingsOtpStatus.textContent = 'Verifying...';
+
+    try {
+      const authResult = await callAuthVerify(email, code, session);
+      // The one shared helper both OTP flows use (see js/cognito-auth.js) -
+      // installs the tokens into the project's existing Cognito session
+      // storage so getSession()/getAccessToken() (starting with
+      // refreshMyBookings() right below) already recognize this visitor.
+      // Handled in its own try/catch, separate from the outer one below:
+      // /auth/verify has already succeeded and consumed the challenge at
+      // this point, so a failure installing the session locally is a
+      // different problem than a wrong/expired code and needs its own
+      // message rather than being folded into that logic.
+      try {
+        await CognitoAuth.installPasswordlessSession(email, authResult);
+      } catch (installErr) {
+        console.warn(
+          'Passwordless session install failed:',
+          installErr instanceof Error ? installErr.message : 'unknown_error'
+        );
+        myBookingsOtpSession = null;
+        myBookingsOtpStatus.classList.remove('success');
+        myBookingsOtpStatus.textContent = 'We verified your code, but could not sign you in. Please request a new code and try again.';
+        myBookingsVerifyBtn.disabled = false;
+        myBookingsResendBtn.disabled = false;
+        return;
+      }
+      myBookingsOtpSession = null;
+      myBookingsOtpStatus.classList.add('success');
+      myBookingsOtpStatus.textContent = 'Email verified.';
+      clearMyBookingsOtpDigits(false);
+      // Reset back to the default (email form) state for next time this
+      // gate is shown, e.g. after Log Out - refreshMyBookings() below is
+      // what actually decides whether it's visible right now, not this.
+      myBookingsOtp.hidden = true;
+      myBookingsAuthForm.hidden = false;
+      myBookingsEmailInput.value = '';
+      if (typeof refreshMyBookings === 'function') refreshMyBookings();
+    } catch (err) {
+      myBookingsOtpStatus.classList.remove('success');
+      myBookingsVerifyBtn.disabled = false;
+      myBookingsResendBtn.disabled = false;
+
+      if (err.code === 'expired_session') {
+        myBookingsOtpSession = null;
+        myBookingsOtpStatus.textContent = `${err.message} Send a new code to continue.`;
+      } else if (err.code === 'invalid_code') {
+        // Cognito rotates the challenge session on every wrong attempt -
+        // replace the stored one so a retry uses the current session, never
+        // the stale one that was just rejected.
+        if (err.session) myBookingsOtpSession = { email, session: err.session };
+        myBookingsOtpStatus.textContent = err.message || 'The code you entered is incorrect.';
+        clearMyBookingsOtpDigits(true);
+      } else {
+        myBookingsOtpStatus.textContent = err.message || 'Unable to verify your code. Please try again.';
+      }
     }
   });
 }
