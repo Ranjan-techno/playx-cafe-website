@@ -1,9 +1,11 @@
 import type { APIGatewayProxyHandlerV2WithJWTAuthorizer } from 'aws-lambda';
+import { allocateSimulators } from '../lib/allocate-simulators';
 import { getDb, resetDb } from '../lib/db';
 import { normalizeEmail } from '../lib/email';
 import { errorResponse, jsonResponse } from '../lib/http';
 import { istPartsToUtcDate, parseTimeToMinutes, validateBookingSchedule } from '../lib/opening-hours';
 import { normalizeIndianPhone } from '../lib/phone';
+import { requirementForProduct } from '../lib/simulator-allocation';
 
 // Story 2.6: POST /bookings — creates a pending booking for the authenticated Cognito user.
 //
@@ -22,12 +24,25 @@ import { normalizeIndianPhone } from '../lib/phone';
 // Cognito identity above, which is what actually owns/authorizes the booking. Two different guests
 // signed into the same Cognito account, or a guest booking on someone else's behalf, is why these
 // aren't just read off the JWT/User Pool profile.
+//
+// Phase 2 (automated simulator availability and allocation): the INSERT below now runs inside a
+// transaction, and after the booking row is written, lib/allocate-simulators.ts's
+// allocateSimulators() locks the simulator inventory and either allocates the physical rig(s) this
+// booking needs (HOLD, expiring in HOLD_MINUTES) or the whole transaction is rolled back with a
+// 409 — the frontend's own availability display (GET /availability) is never trusted; this is the
+// server-side recheck the story asks for. See allocate-simulators.ts's header for the
+// transaction/locking strategy itself.
 
 const PRODUCT_CODE_RE = /^[a-z0-9-]+$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
 const NAME_MAX_LENGTH = 100;
 const NOTES_MAX_LENGTH = 500;
+// The story's fixed HOLD lifetime: a new reservation's simulator allocation blocks inventory for
+// 15 minutes, then — with no payment/confirm step built yet (out of scope this phase, see
+// database/migrations/002_simulator_inventory.sql's header) — stops blocking it if nothing has
+// moved it out of 'hold' by then.
+const HOLD_MINUTES = 15;
 
 export interface CreateBookingBody {
   productCode: string;
@@ -145,8 +160,14 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
     );
   }
 
+  // Declared outside the try block so the catch handler can best-effort ROLLBACK an
+  // in-flight transaction below (e.g. an error between BEGIN and COMMIT) before dropping the
+  // connection — otherwise a warm Lambda's cached client (see db.ts) could be reused next
+  // invocation while still "idle in transaction" server-side.
+  let db: Awaited<ReturnType<typeof getDb>> | undefined;
+
   try {
-    const db = await getDb();
+    db = await getDb();
 
     const { rows } = await db.query<ProductRow>(
       `SELECT id, product_type, simulator_type, racers, duration_minutes, price_inr, is_active
@@ -174,6 +195,9 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
     const startMinutes = parseTimeToMinutes(body.startTime);
     const scheduledStartAt = istPartsToUtcDate(year, month, day, Math.floor(startMinutes / 60), startMinutes % 60);
     const scheduledEndAt = new Date(scheduledStartAt.getTime() + product.duration_minutes * 60_000);
+    const requirement = requirementForProduct({ simulatorType: product.simulator_type, racers: product.racers });
+
+    await db.query('BEGIN');
 
     const { rows: inserted } = await db.query<{ id: string }>(
       `INSERT INTO bookings
@@ -200,16 +224,48 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
         body.notes,
       ],
     );
+    const bookingId = inserted[0].id;
+
+    // Locks the simulator inventory and allocates the required rig(s), or returns null if the
+    // requested window can't be covered — see allocate-simulators.ts for the transaction/locking
+    // strategy that makes this safe against two concurrent requests for the same simulator.
+    const allocation = await allocateSimulators(db, {
+      bookingId,
+      requirement,
+      scheduledStartAt,
+      scheduledEndAt,
+      holdMinutes: HOLD_MINUTES,
+    });
+
+    if (!allocation) {
+      await db.query('ROLLBACK');
+      return errorResponse(
+        409,
+        'simulator_unavailable',
+        'No simulator is available for the requested date/time — please choose a different slot',
+      );
+    }
+
+    await db.query('COMMIT');
 
     return jsonResponse(201, {
-      id: inserted[0].id,
+      id: bookingId,
       product: body.productCode,
       price: Number(product.price_inr),
       date: body.bookingDate,
       time: body.startTime,
       status: 'pending',
+      // Additive field: when this HOLD (see allocate-simulators.ts) needs to be confirmed by, once
+      // a confirm/payment step exists. Existing clients that only read id/product/price/date/time/
+      // status are unaffected.
+      holdExpiresAt: allocation.holdExpiresAt.toISOString(),
     });
   } catch (err) {
+    if (db) {
+      // Best-effort: if the connection itself is what's broken, this just fails too and is
+      // ignored — resetDb() below drops it either way.
+      await db.query('ROLLBACK').catch(() => {});
+    }
     resetDb();
     console.error('POST /bookings failed', err);
     return errorResponse(500, 'internal_error', 'Failed to create booking');

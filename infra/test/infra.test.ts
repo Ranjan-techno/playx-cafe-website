@@ -19,14 +19,15 @@ test('Story 2.1: VPC created with isolated-only subnets and no NAT Gateway', () 
   // 2 AZs, PRIVATE_ISOLATED only.
   template.resourceCountIs('AWS::EC2::Subnet', 2);
 
-  // No NAT Gateway. Exactly ten Lambdas: Story 2.3's migration function, Story 2.5's
+  // No NAT Gateway. Exactly eleven Lambdas: Story 2.3's migration function, Story 2.5's
   // health-check function, Story 2.6's products/create-booking/bookings-me functions, guest-
-  // first passwordless auth's auth-start/auth-verify functions, and its three Cognito CUSTOM_AUTH
-  // triggers (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse) — not the
-  // restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays guarded
-  // against separately (that flag is explicitly disabled for this VPC — see constructs/network.ts).
+  // first passwordless auth's auth-start/auth-verify functions, its three Cognito CUSTOM_AUTH
+  // triggers (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse), and Phase 2's
+  // availability function — not the restrictDefaultSecurityGroup feature flag's custom-resource
+  // Lambda, which stays guarded against separately (that flag is explicitly disabled for this VPC
+  // — see constructs/network.ts).
   template.resourceCountIs('AWS::EC2::NatGateway', 0);
-  template.resourceCountIs('AWS::Lambda::Function', 10);
+  template.resourceCountIs('AWS::Lambda::Function', 11);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -88,12 +89,12 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   });
   const template = Template.fromStack(stack);
 
-  // Ten Lambda functions exist in the stack (this one, Story 2.5's health-check function,
+  // Eleven Lambda functions exist in the stack (this one, Story 2.5's health-check function,
   // Story 2.6's products/create-booking/bookings-me functions, guest-first passwordless auth's
-  // auth-start/auth-verify functions, and its three CUSTOM_AUTH triggers — see below), but
-  // health/auth-start/auth-verify/the three triggers are the six of the ten that do NOT sit in
-  // the VPC.
-  template.resourceCountIs('AWS::Lambda::Function', 10);
+  // auth-start/auth-verify functions, its three CUSTOM_AUTH triggers, and Phase 2's availability
+  // function — see below), but health/auth-start/auth-verify/the three triggers are the six of
+  // the eleven that do NOT sit in the VPC.
+  template.resourceCountIs('AWS::Lambda::Function', 11);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -267,11 +268,12 @@ test('Story 2.6: authenticated booking APIs — Cognito JWT authorizer on POST /
     IdentitySource: ['$request.header.Authorization'],
   });
 
-  // Six routes total: GET /health (Story 2.5), GET /products, POST /bookings, and
-  // GET /bookings/me (this story), plus POST /auth/start and POST /auth/verify (guest-first
-  // passwordless auth, checked separately below). Six integrations, one per route.
-  template.resourceCountIs('AWS::ApiGatewayV2::Route', 6);
-  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 6);
+  // Seven routes total: GET /health (Story 2.5), GET /products, POST /bookings, and
+  // GET /bookings/me (this story), POST /auth/start and POST /auth/verify (guest-first
+  // passwordless auth, checked separately below), plus GET /availability (Phase 2, checked
+  // separately further below). Seven integrations, one per route.
+  template.resourceCountIs('AWS::ApiGatewayV2::Route', 7);
+  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 7);
 
   // GET /products is public: no authorizer attached (CloudFormation emits AuthorizationType:
   // 'NONE' explicitly for an unauthenticated route, rather than omitting the property).
@@ -448,6 +450,41 @@ test('Guest-first passwordless auth: CUSTOM_AUTH challenge triggers wired to the
               'ses:FromAddress': 'playxcafesupport@gmail.com',
             },
           },
+        }),
+      ]),
+    }),
+  });
+});
+
+test('Phase 2: public GET /availability, VPC-attached with database read access, migration Lambda still the only one bundling database/migrations/', () => {
+  const app = new cdk.App();
+  const stack = new InfraStack(app, 'TestInfraStack', {
+    envConfig: environments.dev,
+    env: { region: 'ap-south-1' },
+  });
+  const template = Template.fromStack(stack);
+
+  // Public, like GET /products: no JWT authorizer, since a visitor can browse availability
+  // before signing in.
+  template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+    RouteKey: 'GET /availability',
+    AuthorizationType: 'NONE',
+  });
+
+  // VPC-attached (unlike healthFunction/auth-start/auth-verify/the three CUSTOM_AUTH triggers),
+  // since it reads the simulators/booking_allocations tables directly, with read access to the
+  // same database credentials secret as products/create-booking/bookings-me.
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    FunctionName: 'playx-dev-availability',
+    Runtime: 'nodejs22.x',
+    VpcConfig: Match.objectLike({}),
+  });
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: Match.objectLike({
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: Match.arrayWith(['secretsmanager:GetSecretValue']),
+          Effect: 'Allow',
         }),
       ]),
     }),

@@ -6,8 +6,10 @@
 // depending on the Lambda runtime's ICU/tz data being complete.
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-const OPEN_TIME = '11:00';
-const CLOSE_TIME = '23:00';
+// Exported for backend/src/handlers/availability.ts, which needs the same open/close bounds to
+// enumerate candidate slots for a day rather than validate one specific startTime.
+export const OPEN_TIME = '11:00';
+export const CLOSE_TIME = '23:00';
 
 export interface OpeningHoursViolation {
   code: 'invalid_date' | 'closed' | 'invalid_time';

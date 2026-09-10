@@ -99,6 +99,17 @@ test('server-controlled fields: price/status supplied in the body are silently d
   assert.equal('status' in result, false);
 });
 
+test('server-controlled fields: a client-supplied simulator/rig id is silently dropped, not stored', () => {
+  // parseBody has no notion of a simulator at all — which physical rig(s) a booking gets is
+  // decided entirely server-side by lib/allocate-simulators.ts, after parseBody returns. A client
+  // stuffing one of these into the body must have zero effect.
+  const result = parseBody(rawBody({ simulatorId: 'm1', simulator: 'M1', rigId: 'attacker-chosen' }));
+  assert.ok(result);
+  assert.equal('simulatorId' in result, false);
+  assert.equal('simulator' in result, false);
+  assert.equal('rigId' in result, false);
+});
+
 test('rejects a missing body entirely', () => {
   assert.equal(parseBody(undefined), null);
 });
