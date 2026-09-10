@@ -476,6 +476,20 @@ p { color: var(--text-dim); }
 .form-field select:disabled { opacity: 0.6; cursor: not-allowed; }
 .form-hint { font-size: 0.78rem; color: var(--text-dim); margin-top: 6px; }
 .form-error { font-size: 0.78rem; color: var(--red); margin-top: 6px; font-weight: 600; }
+/* Real-time availability status under Preferred Time (js/script.js's
+   refreshTimeSlotAvailability()) - reuses .form-hint/.form-error for the
+   text itself (toggled via classList depending on loading/empty/error), this
+   just sizes the "Try again" retry action to stay touch-friendly at mobile
+   widths without needing its own color/weight rules. */
+.availability-retry-btn { display: block; margin-top: 8px; font-size: 0.85rem; padding: 4px 0; }
+/* This rule's own `display: block` otherwise beats the browser's default
+   `[hidden] { display: none }` UA rule - author CSS always wins over UA CSS
+   regardless of selector specificity (same issue already solved for
+   .my-bookings-tabs/.my-bookings-list above). Without this, setting
+   availabilityRetryBtn.hidden = true from js/script.js left the red "Try
+   again" button visibly showing on initial load, before Xperience/
+   Simulator/Date were even selected. */
+.availability-retry-btn[hidden] { display: none; }
 .booking-form .btn { width: 100%; margin-top: 6px; }
 .form-status { margin-top: 16px; text-align: center; font-weight: 600; min-height: 1.4em; }
 
