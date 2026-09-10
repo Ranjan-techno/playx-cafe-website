@@ -200,7 +200,7 @@ test('Story 2.4: Cognito User Pool for email sign-in, self-signup, and a secret-
   );
 });
 
-test('Story 2.5: HTTP API with a GET /health route, CORS-scoped to the production GitHub Pages origin and the localhost development origin', () => {
+test('Story 2.5: HTTP API with a GET /health route, CORS-scoped to the production GitHub Pages origin, the localhost development origin, and the staging Amplify origin', () => {
   const app = new cdk.App();
   const stack = new InfraStack(app, 'TestInfraStack', {
     envConfig: environments.dev,
@@ -209,16 +209,21 @@ test('Story 2.5: HTTP API with a GET /health route, CORS-scoped to the productio
   const template = Template.fromStack(stack);
 
   // Exactly one HTTP API (not a REST API/RestApi — see the Story 2.3 test above), CORS
-  // restricted to the production GitHub Pages origin index.html/auth.html are served from, plus
-  // the localhost development origin used when serving the site locally with
-  // `python3 -m http.server 8000`. AllowMethods now includes POST too (Story 2.6's POST
-  // /bookings), so this is arrayWith rather than an exact match.
+  // restricted to the production GitHub Pages origin index.html/auth.html are served from, the
+  // localhost development origin used when serving the site locally with
+  // `python3 -m http.server 8000`, and the staging.playxcafe.com Amplify frontend origin.
+  // AllowMethods now includes POST too (Story 2.6's POST /bookings), so this is arrayWith
+  // rather than an exact match.
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
   template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
     Name: 'playx-dev-api',
     ProtocolType: 'HTTP',
     CorsConfiguration: Match.objectLike({
-      AllowOrigins: ['https://ranjan-techno.github.io', 'http://localhost:8000'],
+      AllowOrigins: [
+        'https://ranjan-techno.github.io',
+        'http://localhost:8000',
+        'https://staging.playxcafe.com',
+      ],
       AllowMethods: Match.arrayWith(['GET']),
     }),
   });
