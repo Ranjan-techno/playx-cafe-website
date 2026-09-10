@@ -86,6 +86,12 @@ export class InfraStack extends cdk.Stack {
     // Guest-first passwordless auth adds two more public routes, POST /auth/start and
     // POST /auth/verify, driving the Story 2.4 User Pool's CUSTOM_AUTH challenge (see the Auth
     // construct above).
+    //
+    // Phase 2 (automated simulator availability and allocation) adds a public GET /availability,
+    // backed by the new simulators/booking_allocations tables (see the Migration construct
+    // above), and POST /bookings now locks and allocates real simulator inventory server-side
+    // before it ever returns 201 — see backend/src/handlers/create-booking.ts and
+    // backend/src/lib/allocate-simulators.ts.
     const apiConfig = apiConfigs[props.envConfig.environmentCode];
     const api = new ApiConstruct(this, 'Api', {
       apiConfig,
@@ -94,6 +100,7 @@ export class InfraStack extends cdk.Stack {
       productsFunctionName: resourceName('products'),
       createBookingFunctionName: resourceName('create-booking'),
       listMyBookingsFunctionName: resourceName('bookings-me'),
+      availabilityFunctionName: resourceName('availability'),
       authStartFunctionName: resourceName('auth-start'),
       authVerifyFunctionName: resourceName('auth-verify'),
       vpc: network.vpc,

@@ -16,6 +16,7 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { Client } from 'pg';
 import schema001 from '../../../../database/migrations/001_initial_schema.sql';
+import schema002 from '../../../../database/migrations/002_simulator_inventory.sql';
 
 interface Migration {
   filename: string;
@@ -24,7 +25,12 @@ interface Migration {
 
 // Add a new migration by adding the file under database/migrations/, importing it above, and
 // appending it here — in filename order.
-const MIGRATIONS: Migration[] = [{ filename: '001_initial_schema.sql', sql: schema001 }];
+const MIGRATIONS: Migration[] = [
+  { filename: '001_initial_schema.sql', sql: schema001 },
+  // Phase 2: simulator inventory + booking_allocations (see the file's own header for why this
+  // is non-destructive — additive only, no ALTER/DROP on 001's tables).
+  { filename: '002_simulator_inventory.sql', sql: schema002 },
+];
 
 interface DbSecret {
   host: string;

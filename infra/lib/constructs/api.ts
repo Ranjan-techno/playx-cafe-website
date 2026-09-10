@@ -24,6 +24,8 @@ export interface ApiConstructProps {
   createBookingFunctionName: string;
   /** Full resource name for the list-my-bookings Lambda, e.g. 'playx-dev-bookings-me'. */
   listMyBookingsFunctionName: string;
+  /** Full resource name for the Phase 2 availability Lambda, e.g. 'playx-dev-availability'. */
+  availabilityFunctionName: string;
   /** Full resource name for the passwordless auth-start Lambda, e.g. 'playx-dev-auth-start'. */
   authStartFunctionName: string;
   /** Full resource name for the passwordless auth-verify Lambda, e.g. 'playx-dev-auth-verify'. */
@@ -62,6 +64,12 @@ export interface ApiConstructProps {
  * auth-start.ts and auth-verify.ts for the CUSTOM_AUTH flow itself (a Cognito CUSTOM_AUTH
  * challenge driving Play X's own six-digit OTP — see constructs/auth.ts's `lambdaTriggers` and
  * backend/src/lib/otp.ts for why this isn't Cognito's native EMAIL_OTP first factor).
+ *
+ * Phase 2 (automated simulator availability and allocation) adds GET /availability (public, like
+ * GET /products — a visitor can browse real inventory-backed availability before signing in).
+ * It's VPC-attached like products/create-booking/bookings-me, reading the new simulators/
+ * booking_allocations tables (database/migrations/002_simulator_inventory.sql) — see
+ * backend/src/handlers/availability.ts.
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
@@ -69,6 +77,7 @@ export class ApiConstruct extends Construct {
   public readonly productsFunction: lambdaNodejs.NodejsFunction;
   public readonly createBookingFunction: lambdaNodejs.NodejsFunction;
   public readonly listMyBookingsFunction: lambdaNodejs.NodejsFunction;
+  public readonly availabilityFunction: lambdaNodejs.NodejsFunction;
   public readonly authStartFunction: lambdaNodejs.NodejsFunction;
   public readonly authVerifyFunction: lambdaNodejs.NodejsFunction;
 
@@ -129,6 +138,13 @@ export class ApiConstruct extends Construct {
       entry: path.join(__dirname, '../../../backend/src/handlers/list-my-bookings.ts'),
     });
     props.databaseSecret.grantRead(this.listMyBookingsFunction);
+
+    this.availabilityFunction = new lambdaNodejs.NodejsFunction(this, 'AvailabilityFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.availabilityFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/availability.ts'),
+    });
+    props.databaseSecret.grantRead(this.availabilityFunction);
 
     // Not VPC-attached, same as healthFunction: these only call Cognito's regional Admin* APIs,
     // never the database.
@@ -215,6 +231,14 @@ export class ApiConstruct extends Construct {
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2Integrations.HttpLambdaIntegration('ListMyBookingsIntegration', this.listMyBookingsFunction),
       authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/availability',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AvailabilityIntegration', this.availabilityFunction),
+      // No authorizer: public, like GET /products — a visitor can browse availability before
+      // signing in.
     });
 
     this.httpApi.addRoutes({
