@@ -31,6 +31,14 @@ export interface ApiConstructProps {
   /** Full resource name for the passwordless auth-verify Lambda, e.g. 'playx-dev-auth-verify'. */
   authVerifyFunctionName: string;
 
+  /** Phase 3B: full resource names for the PLAY X ADMIN Lambdas, e.g. 'playx-dev-admin-dashboard'. */
+  adminDashboardFunctionName: string;
+  adminBookingsFunctionName: string;
+  adminBookingDetailFunctionName: string;
+  adminPaymentsFunctionName: string;
+  adminSimulatorsFunctionName: string;
+  adminBookingStatusFunctionName: string;
+
   /** Story 2.1 VPC — the products/booking Lambdas need this to reach the Story 2.2 database. */
   vpc: ec2.IVpc;
   /** The Story 2.2 Lambda security group, reused here (same pattern as constructs/migration.ts)
@@ -70,6 +78,13 @@ export interface ApiConstructProps {
  * It's VPC-attached like products/create-booking/bookings-me, reading the new simulators/
  * booking_allocations tables (database/migrations/002_simulator_inventory.sql) — see
  * backend/src/handlers/availability.ts.
+ *
+ * Phase 3B (PLAY X ADMIN backend) adds six /admin/* routes — GET /admin/dashboard, GET
+ * /admin/bookings, GET /admin/bookings/{id}, PATCH /admin/bookings/{id}/status, GET
+ * /admin/payments, GET /admin/simulators — all behind the same Cognito JWT authorizer as
+ * /bookings and GET /bookings/me, plus each handler's own backend requireAdmin() check (Cognito
+ * "admin" group membership — see constructs/auth.ts's adminGroup and
+ * backend/src/lib/admin-auth.ts). No new User Pool, no new authorizer, no new app client.
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
@@ -80,6 +95,12 @@ export class ApiConstruct extends Construct {
   public readonly availabilityFunction: lambdaNodejs.NodejsFunction;
   public readonly authStartFunction: lambdaNodejs.NodejsFunction;
   public readonly authVerifyFunction: lambdaNodejs.NodejsFunction;
+  public readonly adminDashboardFunction: lambdaNodejs.NodejsFunction;
+  public readonly adminBookingsFunction: lambdaNodejs.NodejsFunction;
+  public readonly adminBookingDetailFunction: lambdaNodejs.NodejsFunction;
+  public readonly adminPaymentsFunction: lambdaNodejs.NodejsFunction;
+  public readonly adminSimulatorsFunction: lambdaNodejs.NodejsFunction;
+  public readonly adminBookingStatusFunction: lambdaNodejs.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: ApiConstructProps) {
     super(scope, id);
@@ -146,6 +167,58 @@ export class ApiConstruct extends Construct {
     });
     props.databaseSecret.grantRead(this.availabilityFunction);
 
+    // Phase 3B: PLAY X ADMIN — six Lambdas behind /admin/*, all Cognito-JWT-protected (via
+    // cognitoAuthorizer below, the same authorizer /bookings*/ /bookings/me already use) plus a
+    // backend requireAdmin() check inside each handler (see backend/src/lib/admin-auth.ts) — the
+    // JWT authorizer alone only proves *some* signed-in Cognito user is calling, never that they're
+    // an admin. VPC-attached like products/create-booking/bookings-me/availability, since every one
+    // of these reads (and, for admin-booking-status, writes) the database directly.
+    this.adminDashboardFunction = new lambdaNodejs.NodejsFunction(this, 'AdminDashboardFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.adminDashboardFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/admin-dashboard.ts'),
+    });
+    props.databaseSecret.grantRead(this.adminDashboardFunction);
+
+    this.adminBookingsFunction = new lambdaNodejs.NodejsFunction(this, 'AdminBookingsFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.adminBookingsFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/admin-bookings.ts'),
+    });
+    props.databaseSecret.grantRead(this.adminBookingsFunction);
+
+    this.adminBookingDetailFunction = new lambdaNodejs.NodejsFunction(this, 'AdminBookingDetailFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.adminBookingDetailFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/admin-booking-detail.ts'),
+    });
+    props.databaseSecret.grantRead(this.adminBookingDetailFunction);
+
+    this.adminPaymentsFunction = new lambdaNodejs.NodejsFunction(this, 'AdminPaymentsFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.adminPaymentsFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/admin-payments.ts'),
+    });
+    props.databaseSecret.grantRead(this.adminPaymentsFunction);
+
+    this.adminSimulatorsFunction = new lambdaNodejs.NodejsFunction(this, 'AdminSimulatorsFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.adminSimulatorsFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/admin-simulators.ts'),
+    });
+    props.databaseSecret.grantRead(this.adminSimulatorsFunction);
+
+    // The only admin route that writes (PATCH .../status) — still just databaseSecret.grantRead()
+    // (read access to the DB *credentials* secret), same as every other Lambda here; the actual
+    // UPDATE permission is a Postgres-level grant on the credentials' own DB role, not an IAM
+    // action, so no additional IAM policy is needed for this one to write.
+    this.adminBookingStatusFunction = new lambdaNodejs.NodejsFunction(this, 'AdminBookingStatusFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.adminBookingStatusFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/admin-booking-status.ts'),
+    });
+    props.databaseSecret.grantRead(this.adminBookingStatusFunction);
+
     // Not VPC-attached, same as healthFunction: these only call Cognito's regional Admin* APIs,
     // never the database.
     const authFunctionDefaults = {
@@ -197,7 +270,8 @@ export class ApiConstruct extends Construct {
       apiName: props.httpApiName,
       corsPreflight: {
         allowOrigins: props.apiConfig.corsAllowedOrigins,
-        allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
+        // PATCH added by Phase 3B's PATCH /admin/bookings/{id}/status.
+        allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST, apigwv2.CorsHttpMethod.PATCH],
         allowHeaders: ['Content-Type', 'Authorization'],
       },
     });
@@ -253,6 +327,52 @@ export class ApiConstruct extends Construct {
       methods: [apigwv2.HttpMethod.POST],
       integration: new apigwv2Integrations.HttpLambdaIntegration('AuthVerifyIntegration', this.authVerifyFunction),
       // No authorizer: the caller doesn't have a token yet — this route issues the first one.
+    });
+
+    // Phase 3B: PLAY X ADMIN routes. Every one carries the same Cognito JWT authorizer as
+    // POST /bookings and GET /bookings/me (proves a signed-in Cognito user is calling) plus each handler's
+    // own requireAdmin() check (proves that user is in the "admin" group) — defense in depth, per
+    // this phase's brief: JWT authentication alone must never be enough to reach an /admin/* route.
+    this.httpApi.addRoutes({
+      path: '/admin/dashboard',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AdminDashboardIntegration', this.adminDashboardFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/admin/bookings',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AdminBookingsIntegration', this.adminBookingsFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/admin/bookings/{id}',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AdminBookingDetailIntegration', this.adminBookingDetailFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/admin/bookings/{id}/status',
+      methods: [apigwv2.HttpMethod.PATCH],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AdminBookingStatusIntegration', this.adminBookingStatusFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/admin/payments',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AdminPaymentsIntegration', this.adminPaymentsFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/admin/simulators',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AdminSimulatorsIntegration', this.adminSimulatorsFunction),
+      authorizer: cognitoAuthorizer,
     });
 
     new cdk.CfnOutput(this, 'UrlOutput', {
