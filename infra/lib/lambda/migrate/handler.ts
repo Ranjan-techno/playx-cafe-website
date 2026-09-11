@@ -17,6 +17,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-sec
 import { Client } from 'pg';
 import schema001 from '../../../../database/migrations/001_initial_schema.sql';
 import schema002 from '../../../../database/migrations/002_simulator_inventory.sql';
+import schema003 from '../../../../database/migrations/003_payment_foundation.sql';
 
 interface Migration {
   filename: string;
@@ -30,6 +31,9 @@ const MIGRATIONS: Migration[] = [
   // Phase 2: simulator inventory + booking_allocations (see the file's own header for why this
   // is non-destructive — additive only, no ALTER/DROP on 001's tables).
   { filename: '002_simulator_inventory.sql', sql: schema002 },
+  // Phase 3A: payment foundation — the `payments` table (see the file's own header for the
+  // backward-compatibility decisions this migration makes, additive only).
+  { filename: '003_payment_foundation.sql', sql: schema003 },
 ];
 
 interface DbSecret {
