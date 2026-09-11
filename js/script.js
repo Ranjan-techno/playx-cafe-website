@@ -67,8 +67,13 @@ const availabilityRetryBtn = document.getElementById('availabilityRetryBtn');
 // (backend/src/handlers/availability.ts) is the only source of which start
 // times are actually selectable for the chosen product/date - the frontend
 // never manufactures a slot itself. Play X's opening hours (11:00 AM-11:00 PM,
-// closed Mondays) live only on the backend now (backend/src/lib/opening-hours.ts);
-// this file just renders whatever `availableSlots` comes back.
+// closed Mondays) - and the Grand Opening launch restriction (no session
+// bookable before 25 Sep 2026, 3:00 PM IST) - live only on the backend now
+// (backend/src/lib/opening-hours.ts); this file just renders whatever
+// `availableSlots` comes back, which is why the Grand Opening date is
+// selectable in the date picker (see GRAND_OPENING_DATE/minSelectableDate
+// below) but 3:00 PM as the earliest *time* on that date is never hardcoded
+// here - it's simply the earliest slot GET /availability ever returns for it.
 //
 // Flow: whenever Xperience, Simulator, or Date changes, the previously
 // selected time is cleared immediately (a stale selection must never carry
@@ -1254,6 +1259,16 @@ const dateInput = document.getElementById('date');
 const dateError = document.getElementById('dateError');
 const MONDAY_MESSAGE = 'Play X is closed on Mondays. Please select another date.';
 const PAST_DATE_MESSAGE = 'Please select a date from today onwards.';
+// Grand Opening: 25 Sep 2026, 3:00 PM IST. Mirrors backend/src/lib/opening-hours.ts's
+// GRAND_OPENING_DATE - that file is the one real source of truth (GET /availability and POST
+// /bookings both enforce it server-side regardless of what this page does), but a no-build static
+// site with no shared module system can't literally import it, so this constant exists to keep the
+// date picker's `min` (and this validation message) from disagreeing with the backend. It only
+// ever gates *which date* is selectable - never a bookable *time*, which always comes from GET
+// /availability itself (see refreshTimeSlotAvailability() above), so the two can't drift on that
+// half of the rule even if this constant is ever forgotten in an update.
+const GRAND_OPENING_DATE = '2026-09-25';
+const BEFORE_OPENING_MESSAGE = 'Play X Cafe opens 25 Sep 2026 at 3:00 PM. Please select that date or later.';
 
 function todayIsoInIst() {
   const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -1266,7 +1281,12 @@ function todayIsoInIst() {
 
 if (dateInput) {
   const todayIso = todayIsoInIst();
-  dateInput.setAttribute('min', todayIso);
+  // The earliest selectable date is whichever of "today" or the Grand Opening date is later -
+  // once the Grand Opening date itself has passed, this naturally reverts to plain "today" with no
+  // launch restriction left to apply (Play X's normal operating-hours rules take over entirely,
+  // same as the backend's isBeforeGrandOpeningDate()/GRAND_OPENING_DATE compare).
+  const minSelectableDate = todayIso > GRAND_OPENING_DATE ? todayIso : GRAND_OPENING_DATE;
+  dateInput.setAttribute('min', minSelectableDate);
 
   dateInput.addEventListener('input', () => {
     if (!dateInput.value) {
@@ -1281,7 +1301,10 @@ if (dateInput) {
     const [y, m, d] = dateInput.value.split('-').map(Number);
     const isMonday = new Date(y, m - 1, d).getDay() === 1;
     const isPast = dateInput.value < todayIso;
-    const message = isMonday ? MONDAY_MESSAGE : isPast ? PAST_DATE_MESSAGE : '';
+    const isBeforeOpening = dateInput.value < GRAND_OPENING_DATE;
+    // Same check order as backend/src/lib/opening-hours.ts's validateBookingSchedule: past-date,
+    // then the Grand Opening launch restriction, then Monday-closed.
+    const message = isPast ? PAST_DATE_MESSAGE : isBeforeOpening ? BEFORE_OPENING_MESSAGE : isMonday ? MONDAY_MESSAGE : '';
     dateInput.setCustomValidity(message);
     if (dateError) {
       dateError.textContent = message;

@@ -186,6 +186,11 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
       return errorResponse(400, 'product_not_bookable', `Product "${body.productCode}" cannot be booked as a session`);
     }
 
+    // Also enforces the Grand Opening launch restriction (opening-hours.ts's GRAND_OPENING_DATE/
+    // GRAND_OPENING_TIME) — a date before 25 Sep 2026, or a startTime before 15:00 on 25 Sep 2026
+    // itself, is rejected here (code 'not_yet_open' or 'invalid_time') the same way a Monday or a
+    // past date is, regardless of what GET /availability showed or whether the request even called
+    // it — a direct POST /bookings can't bypass this by skipping the frontend.
     const violation = validateBookingSchedule(body.bookingDate, body.startTime, product.duration_minutes);
     if (violation) {
       return errorResponse(400, violation.code, violation.message);
