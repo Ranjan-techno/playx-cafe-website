@@ -55,44 +55,33 @@
 <section class="hero">
   <div class="hero-bg" aria-hidden="true"></div>
 
-  <!-- Original, hand-drawn open-wheel racing silhouette - not a real car,
-       team livery, or licensed asset. Stands in for real motorsport
-       photography until that exists (see assets/cafe/SPECS.md for the
-       same approach used elsewhere on the site). -->
+  <!-- Grand Opening hero car - a taller, full-hero-height crop containing only the
+       car/light-trail artwork (no logo, nav, or CTA button baked into the pixels, so it never
+       duplicates the real site logo/nav or renders a non-functional "button" image). Exported as
+       a PNG with a built-in alpha fade on the top/left edges so it blends into the hero's black
+       background with no hard boundary. -->
   <div class="hero-visual" aria-hidden="true">
-    <svg viewBox="0 0 420 170" preserveAspectRatio="xMidYMax slice">
-      <g stroke="#f5f3f0" stroke-width="2.5" stroke-linecap="round" opacity="0.4">
-        <line x1="0" y1="108" x2="30" y2="108"/>
-        <line x1="0" y1="118" x2="22" y2="118"/>
-        <line x1="4" y1="98" x2="26" y2="98"/>
-      </g>
-      <path d="M0,150 Q140,168 220,150 T420,132" fill="none" stroke="#e2231a" stroke-width="1.5" opacity="0.45"/>
-      <path d="M395,118 C385,108 375,100 365,96 C350,90 330,85 310,80 Q290,60 270,55 Q255,50 240,52 Q228,55 222,62 C200,68 170,72 140,76 C115,80 95,85 78,92 L58,99 C48,103 40,106 34,110 C40,116 55,121 78,124 L300,128 C330,127 355,124 378,120 Z" fill="#f5f3f0"/>
-      <path d="M223,55 Q244,18 266,55" fill="none" stroke="#f5f3f0" stroke-width="3.5" stroke-linecap="round"/>
-      <g stroke="#f5f3f0" stroke-linecap="round">
-        <line x1="72" y1="98" x2="72" y2="46" stroke-width="3"/>
-        <path d="M46,46 Q73,36 102,46" fill="none" stroke-width="4"/>
-        <line x1="46" y1="32" x2="46" y2="55" stroke-width="3"/>
-        <line x1="102" y1="32" x2="102" y2="55" stroke-width="3"/>
-      </g>
-      <g stroke="#f5f3f0" stroke-linecap="round">
-        <path d="M370,142 Q392,135 414,142" fill="none" stroke-width="4"/>
-        <line x1="370" y1="132" x2="370" y2="150" stroke-width="3"/>
-        <line x1="414" y1="132" x2="414" y2="150" stroke-width="3"/>
-      </g>
-      <g fill="#101012" stroke="#e2231a" stroke-width="3.5">
-        <ellipse cx="80" cy="125" rx="27" ry="27"/>
-        <ellipse cx="340" cy="125" rx="25" ry="25"/>
-      </g>
-    </svg>
+    <img src="assets/images/hero-race-car.png" alt="" class="hero-visual-img">
   </div>
   <div class="hero-scrim" aria-hidden="true"></div>
 
   <div class="container hero-content">
+    <!-- Grand Opening launch badge - see js/script.js's GRAND_OPENING_DATE for the same date
+         enforced elsewhere. Purely presentational copy (not fed by availability data) - "opens"
+         language is deliberate so this never reads as "already open", see the Preferred Date
+         note/booking form's own launch restriction for the enforced side of this. This is the
+         page's one Grand Opening announcement (the old duplicate strip below the hero was
+         removed so the date/time/location is stated once, prominently). -->
+    <div class="hero-launch-block">
+      <p class="hero-launch-kicker">Grand Opening</p>
+      <p class="hero-launch-datetime">25 September 2026<span class="hero-launch-sep" aria-hidden="true">&bull;</span>From 3:00 PM</p>
+      <p class="hero-launch-location">Arumbakkam, Chennai</p>
+    </div>
     <h1 class="hero-tagline">Race. <span class="accent">X</span>perience. Hangout.</h1>
     <p class="hero-sub">Static &amp; Motion Racing Simulators.</p>
+    <p class="hero-launch-line">Chennai, get ready to race.</p>
     <div class="hero-cta">
-      <a href="#booking" class="btn btn-primary btn-lg">Book a Session</a>
+      <a href="#booking" class="btn btn-primary btn-lg">Book Your Race</a>
     </div>
   </div>
 </section>
@@ -335,10 +324,17 @@
           <div class="form-field">
             <label for="date">Preferred Date</label>
             <input type="date" id="date" name="date" required>
-            <!-- Play X is closed on Mondays and can't take a past date - js/script.js
-                 rejects both via setCustomValidity() and this inline message.
-                 The hint below is the proactive heads-up on Mondays so the
-                 customer doesn't hit that error blind. -->
+            <!-- Grand Opening: 25 Sep 2026, 3:00 PM IST - js/script.js's GRAND_OPENING_DATE
+                 mirrors backend/src/lib/opening-hours.ts's GRAND_OPENING_DATE/GRAND_OPENING_TIME
+                 (the one backend source of truth; this display copy can't literally import it,
+                 being a separate no-build static site) and sets the date picker's `min` to it, so
+                 the earliest selectable date is already the launch date - this note is the
+                 proactive heads-up on *why*, so the customer isn't just left to guess. -->
+            <p class="form-hint" id="grandOpeningNote">Grand Opening: 25 Sep 2026 &bull; Sessions from 3:00 PM</p>
+            <!-- Play X is closed on Mondays and can't take a past date (or, before the Grand
+                 Opening, any date/time earlier than it) - js/script.js rejects all of these via
+                 setCustomValidity() and this inline message. The hint below is the proactive
+                 heads-up on Mondays so the customer doesn't hit that error blind. -->
             <p class="form-hint">Play X is closed on Mondays.</p>
             <p class="form-error" id="dateError" hidden></p>
           </div>
