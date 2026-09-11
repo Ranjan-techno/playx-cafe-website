@@ -15,8 +15,10 @@ import type { SimulatorRow } from '../simulator-allocation';
 
 /** A minimal async mutex: models one Postgres row lock held for the lifetime of a transaction.
  *  Callers acquire() before reading/writing the locked rows and call the returned release()
- *  from COMMIT/ROLLBACK — see FakeDbClient's BEGIN/COMMIT/ROLLBACK handling below. */
-class Mutex {
+ *  from COMMIT/ROLLBACK — see FakeDbClient's BEGIN/COMMIT/ROLLBACK handling below. Exported so
+ *  test-support/fake-payment-db.ts (Phase 3A) can reuse it for per-row locking rather than
+ *  reimplementing the same primitive. */
+export class Mutex {
   private locked = false;
   private queue: (() => void)[] = [];
 
