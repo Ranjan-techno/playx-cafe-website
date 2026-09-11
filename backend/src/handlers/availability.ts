@@ -1,7 +1,7 @@
 import type { APIGatewayProxyHandlerV2 } from 'aws-lambda';
 import { getDb, resetDb } from '../lib/db';
 import { errorResponse, jsonResponse } from '../lib/http';
-import { CLOSE_TIME, OPEN_TIME, istPartsToUtcDate, parseTimeToMinutes, validateBookingSchedule } from '../lib/opening-hours';
+import { CLOSE_TIME, effectiveOpenTime, istPartsToUtcDate, parseTimeToMinutes, validateBookingSchedule } from '../lib/opening-hours';
 import {
   computeAvailableSlots,
   requirementForProduct,
@@ -90,10 +90,12 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(400, 'product_not_bookable', `Product "${query.productCode}" cannot be booked as a session`);
     }
 
-    // Reuses the same date-level rules POST /bookings enforces (past date, Monday closed) —
-    // OPEN_TIME is always a valid startTime for any session's duration (max 60 min, closing at
-    // 23:00), so a violation here can only be invalid_date or closed, never invalid_time.
-    const dayViolation = validateBookingSchedule(query.date, OPEN_TIME, product.duration_minutes);
+    // Reuses the same date-level rules POST /bookings enforces (past date, Grand Opening launch
+    // restriction, Monday closed) — effectiveOpenTime(query.date) is always a valid startTime for
+    // any session's duration (max 60 min, closing at 23:00) on a date that isn't itself rejected,
+    // so a violation here can only be invalid_date, not_yet_open, or closed, never invalid_time.
+    const openTimeForDate = effectiveOpenTime(query.date);
+    const dayViolation = validateBookingSchedule(query.date, openTimeForDate, product.duration_minutes);
     if (dayViolation) {
       return jsonResponse(200, {
         productCode: query.productCode,
@@ -158,7 +160,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       inventory,
       allocations,
       legacyBookings,
-      openMinutes: parseTimeToMinutes(OPEN_TIME),
+      // Same effective open time as the dayViolation check above — GRAND_OPENING_TIME instead of
+      // the usual OPEN_TIME when `query.date` is the Grand Opening date itself, so 25 Sep 2026's
+      // first enumerated (and returned) candidate slot is already 15:00, never earlier.
+      openMinutes: parseTimeToMinutes(openTimeForDate),
       closeMinutes: parseTimeToMinutes(CLOSE_TIME),
       toUtc: istPartsToUtcDate,
     });

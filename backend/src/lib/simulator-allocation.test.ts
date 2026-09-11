@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { CLOSE_TIME, effectiveOpenTime, parseTimeToMinutes } from './opening-hours';
 import {
   computeAvailableSlots,
   legacyReservedCounts,
@@ -218,4 +219,48 @@ test('computeAvailableSlots: a legacy booking with no allocation rows still remo
   });
 
   assert.deepEqual(slots, ['11:30'], '12:00 is excluded by the legacy booking even with zero booking_allocations rows');
+});
+
+// Grand Opening launch restriction (opening-hours.ts's GRAND_OPENING_DATE/GRAND_OPENING_TIME):
+// GET /availability (availability.ts) feeds computeAvailableSlots' openMinutes from
+// parseTimeToMinutes(effectiveOpenTime(date)) rather than the constant OPEN_TIME — these two tests
+// exercise that exact combination end-to-end, with a fully-free inventory/day so the only thing
+// under test is where the enumeration starts and stops.
+
+test('GET /availability on the Grand Opening date (2026-09-25): the earliest returned slot is 15:00, nothing before it', () => {
+  const toUtc = (year: number, month: number, day: number, hours: number, minutes: number) =>
+    new Date(Date.UTC(year, month - 1, day, hours, minutes));
+
+  const slots = computeAvailableSlots({
+    dateParts: { year: 2026, month: 9, day: 25 },
+    durationMinutes: 15,
+    requirement: { static: 1, motion: 0 },
+    inventory: INVENTORY,
+    allocations: [],
+    openMinutes: parseTimeToMinutes(effectiveOpenTime('2026-09-25')),
+    closeMinutes: parseTimeToMinutes(CLOSE_TIME),
+    toUtc,
+  });
+
+  assert.equal(slots[0], '15:00');
+  assert.ok(!slots.includes('11:00'), '11:00-14:45 must not be returned on launch day');
+  assert.ok(!slots.includes('14:45'), '11:00-14:45 must not be returned on launch day');
+});
+
+test('GET /availability on the day after launch (2026-09-26): normal operating hours, earliest slot is 11:00', () => {
+  const toUtc = (year: number, month: number, day: number, hours: number, minutes: number) =>
+    new Date(Date.UTC(year, month - 1, day, hours, minutes));
+
+  const slots = computeAvailableSlots({
+    dateParts: { year: 2026, month: 9, day: 26 },
+    durationMinutes: 15,
+    requirement: { static: 1, motion: 0 },
+    inventory: INVENTORY,
+    allocations: [],
+    openMinutes: parseTimeToMinutes(effectiveOpenTime('2026-09-26')),
+    closeMinutes: parseTimeToMinutes(CLOSE_TIME),
+    toUtc,
+  });
+
+  assert.equal(slots[0], '11:00');
 });
