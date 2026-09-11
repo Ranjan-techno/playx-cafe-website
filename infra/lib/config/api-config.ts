@@ -15,14 +15,17 @@ export const apiConfigs: Record<'dev' | 'prod', ApiConfig> = {
   dev: {
     // The GitHub Pages origin index.html/auth.html are served from during this phase, plus
     // the local static server (`python3 -m http.server 8000`, per CLAUDE.md's "Running it
-    // locally") used to develop against this same deployed dev API, plus the Amplify-hosted
-    // staging frontend at staging.playxcafe.com. No wildcard — CORS credentials/origin
-    // reflection with "*" isn't appropriate even in dev, and the prod config below never gets
-    // these extra entries.
+    // locally") used to develop against this same deployed dev API, plus the GitHub Pages
+    // staging frontend at staging.playxcafe.com, plus the production apex and www domains
+    // (playxcafe.com / www.playxcafe.com) now that this dev-account API is the one actually
+    // serving production traffic. No wildcard — CORS credentials/origin reflection with "*"
+    // isn't appropriate even in dev, and the prod config below never gets these extra entries.
     corsAllowedOrigins: [
       'https://ranjan-techno.github.io',
       'http://localhost:8000',
       'https://staging.playxcafe.com',
+      'https://playxcafe.com',
+      'https://www.playxcafe.com',
     ],
   },
   prod: {
