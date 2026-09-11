@@ -42,6 +42,8 @@ export interface AuthConstructProps {
 export class AuthConstruct extends Construct {
   public readonly userPool: cognito.UserPool;
   public readonly webClient: cognito.UserPoolClient;
+  /** Phase 3B: the "admin" Cognito group — see this class's constructor for what it's for. */
+  public readonly adminGroup: cognito.CfnUserPoolGroup;
 
   constructor(scope: Construct, id: string, props: AuthConstructProps) {
     super(scope, id);
@@ -234,6 +236,21 @@ export class AuthConstruct extends Construct {
         },
       }),
     );
+
+    // Phase 3B: PLAY X ADMIN authorization reuses this same User Pool — no second User Pool, no
+    // second auth system (see this phase's brief, item 1). "admin" is a plain Cognito group, not a
+    // second app client or a different sign-in flow: an admin signs in through the exact same
+    // passwordless CUSTOM_AUTH flow (auth-start.ts/auth-verify.ts) a customer does, and the only
+    // thing that changes is whether their JWT's cognito:groups claim contains "admin" once they're
+    // added to this group — checked entirely on the backend (see backend/src/lib/admin-auth.ts's
+    // requireAdmin()), never assumed from anything the frontend sends. Group membership itself is
+    // managed out-of-band (e.g. AdminAddUserToGroup via the AWS CLI/Console) — there is no
+    // self-service "become an admin" signup path anywhere in this app, by design.
+    this.adminGroup = new cognito.CfnUserPoolGroup(this, 'AdminGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'admin',
+      description: 'Play X Admin — grants access to the /admin/* backend APIs.',
+    });
 
     new cdk.CfnOutput(this, 'UserPoolIdOutput', {
       value: this.userPool.userPoolId,

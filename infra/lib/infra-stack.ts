@@ -68,6 +68,11 @@ export class InfraStack extends cdk.Stack {
     // Guest-first passwordless auth adds the three CUSTOM_AUTH challenge trigger Lambdas
     // (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse) that back POST
     // /auth/start and POST /auth/verify below — see constructs/auth.ts.
+    //
+    // Phase 3B adds a plain Cognito group, "admin" (constructs/auth.ts's adminGroup) — no second
+    // User Pool, no second app client, no new sign-in flow. An admin authenticates through this
+    // exact same passwordless CUSTOM_AUTH flow; only their cognito:groups claim differs once added
+    // to this group (out-of-band — see auth.ts).
     const authConfig = authConfigs[props.envConfig.environmentCode];
     const auth = new AuthConstruct(this, 'Auth', {
       authConfig,
@@ -86,6 +91,12 @@ export class InfraStack extends cdk.Stack {
     // Guest-first passwordless auth adds two more public routes, POST /auth/start and
     // POST /auth/verify, driving the Story 2.4 User Pool's CUSTOM_AUTH challenge (see the Auth
     // construct above).
+    //
+    // Phase 2 (automated simulator availability and allocation) adds a public GET /availability,
+    // backed by the new simulators/booking_allocations tables (see the Migration construct
+    // above), and POST /bookings now locks and allocates real simulator inventory server-side
+    // before it ever returns 201 — see backend/src/handlers/create-booking.ts and
+    // backend/src/lib/allocate-simulators.ts.
     const apiConfig = apiConfigs[props.envConfig.environmentCode];
     const api = new ApiConstruct(this, 'Api', {
       apiConfig,
@@ -94,8 +105,15 @@ export class InfraStack extends cdk.Stack {
       productsFunctionName: resourceName('products'),
       createBookingFunctionName: resourceName('create-booking'),
       listMyBookingsFunctionName: resourceName('bookings-me'),
+      availabilityFunctionName: resourceName('availability'),
       authStartFunctionName: resourceName('auth-start'),
       authVerifyFunctionName: resourceName('auth-verify'),
+      adminDashboardFunctionName: resourceName('admin-dashboard'),
+      adminBookingsFunctionName: resourceName('admin-bookings'),
+      adminBookingDetailFunctionName: resourceName('admin-booking-detail'),
+      adminPaymentsFunctionName: resourceName('admin-payments'),
+      adminSimulatorsFunctionName: resourceName('admin-simulators'),
+      adminBookingStatusFunctionName: resourceName('admin-booking-status'),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,
       databaseSecret,

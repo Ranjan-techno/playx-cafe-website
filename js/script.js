@@ -59,33 +59,25 @@ const durationField = document.getElementById('durationField');
 const totalField = document.getElementById('totalField');
 const xperienceNameField = document.getElementById('xperienceNameField');
 const timeSelect = document.getElementById('time');
+const availabilityStatus = document.getElementById('availabilityStatus');
+const availabilityRetryBtn = document.getElementById('availabilityRetryBtn');
 
 // ----------------------------------------------------------------------
-// Preferred Time: a fixed grid of 15-minute slots within Play X's opening
-// hours (Tuesday-Sunday, 11:00 AM-11:00 PM - see
-// backend/src/lib/opening-hours.ts, the source of truth this mirrors),
-// narrowed to the latest slot that still lets the selected Xperience's
-// session finish before closing (e.g. a 30-min session's last slot is
-// 10:30 PM, not 10:45 PM). Labeled "Preferred Time" rather than a
-// guaranteed slot on the form itself - there's no real-time availability
-// check yet, so this only rules out start times the backend would reject
-// outright.
+// Preferred Time (Phase 2B - real-time availability): GET /availability
+// (backend/src/handlers/availability.ts) is the only source of which start
+// times are actually selectable for the chosen product/date - the frontend
+// never manufactures a slot itself. Play X's opening hours (11:00 AM-11:00 PM,
+// closed Mondays) live only on the backend now (backend/src/lib/opening-hours.ts);
+// this file just renders whatever `availableSlots` comes back.
+//
+// Flow: whenever Xperience, Simulator, or Date changes, the previously
+// selected time is cleared immediately (a stale selection must never carry
+// over - see updateBookingSummary()/the xperience & date change handlers
+// below) and, once productCode+date both resolve, refreshTimeSlotAvailability()
+// fetches fresh availability and repopulates #time with only those slots.
+// POST /bookings still independently rechecks and locks inventory at submit
+// time (see submitBookingRequest()) - this is a preview, never a guarantee.
 // ----------------------------------------------------------------------
-const OPENING_MINUTES = 11 * 60; // 11:00 AM
-const CLOSING_MINUTES = 23 * 60; // 11:00 PM
-const TIME_SLOT_MINUTES = 15;
-
-function buildTimeSlots(durationMinutes) {
-  const slots = [];
-  const latestStart = CLOSING_MINUTES - durationMinutes;
-  for (let minutes = OPENING_MINUTES; minutes <= latestStart; minutes += TIME_SLOT_MINUTES) {
-    const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
-    const mm = String(minutes % 60).padStart(2, '0');
-    const value = `${hh}:${mm}`;
-    slots.push({ value, label: formatTimeDisplay(value) });
-  }
-  return slots;
-}
 
 // Declared at top level (not inside the block below) so the booking form's
 // 'reset' handler further down can also call it to restore the starting
@@ -103,9 +95,36 @@ function setTimePlaceholder(text) {
   timeSelect.required = false;
 }
 
-function populateTimeOptions(durationMinutes) {
+// Hides the availability status line/retry button entirely - used whenever
+// there isn't yet enough information (Xperience/Simulator/date) to check
+// availability for, so no stale "no slots"/"error" copy lingers under the
+// time field.
+function hideAvailabilityStatus() {
+  if (!availabilityStatus) return;
+  availabilityStatus.hidden = true;
+  availabilityStatus.classList.remove('form-error');
+  availabilityStatus.textContent = '';
+  if (availabilityRetryBtn) availabilityRetryBtn.hidden = true;
+}
+
+// `isError` toggles between .form-hint's dim copy (loading/informational)
+// and .form-error's red, bolder copy (empty-for-this-date / API failure) -
+// reuses the two classes the rest of the booking form already styles these
+// states with, rather than introducing a third.
+function showAvailabilityStatus(text, { isError = false, showRetry = false } = {}) {
+  if (!availabilityStatus) return;
+  availabilityStatus.hidden = false;
+  availabilityStatus.classList.toggle('form-error', isError);
+  availabilityStatus.textContent = text;
+  if (availabilityRetryBtn) availabilityRetryBtn.hidden = !showRetry;
+}
+
+// Rebuilds #time from exactly the slots the backend returned - never a
+// locally-generated grid. Always starts from an empty selection (per Phase
+// 2B requirement 8: a time chosen for one product/date must never carry
+// over to another), so this alone is enough to "clear" a previous pick.
+function populateTimeSelectFromSlots(slots) {
   if (!timeSelect) return;
-  const previousValue = timeSelect.value;
   timeSelect.innerHTML = '';
   const placeholder = document.createElement('option');
   placeholder.value = '';
@@ -113,19 +132,88 @@ function populateTimeOptions(durationMinutes) {
   placeholder.selected = true;
   placeholder.textContent = 'Select a preferred time';
   timeSelect.appendChild(placeholder);
-  buildTimeSlots(durationMinutes).forEach(({ value, label }) => {
+  slots.forEach((value) => {
     const opt = document.createElement('option');
     opt.value = value;
-    opt.textContent = label;
+    opt.textContent = formatTimeDisplay(value);
     timeSelect.appendChild(opt);
   });
   timeSelect.disabled = false;
   timeSelect.required = true;
-  // Keep the customer's already-picked time if it's still a valid slot for
-  // the (possibly new) duration, instead of silently clearing their choice.
-  if (previousValue && Array.from(timeSelect.options).some((opt) => opt.value === previousValue)) {
-    timeSelect.value = previousValue;
+}
+
+// Resolves productCode/date from the form's current state, or null if
+// there isn't yet enough to check availability for (mirrors the same
+// required-field logic the submit handler and updateBookingSummary() use,
+// so "not enough information yet" is judged one consistent way everywhere).
+function getAvailabilityContext() {
+  const selection = getSelectedGroupOption(xperienceSelect.value);
+  if (!selection) return null;
+  const { group } = selection;
+  if (group.kind !== 'signature' && !simulatorSelect.value) return null;
+  const productCode = resolveProductCode(selection, simulatorSelect.value);
+  if (!productCode) return null;
+  if (!dateInput || !dateInput.value || dateInput.validationMessage) return null;
+  return { productCode, date: dateInput.value };
+}
+
+// Monotonic counter guarding against out-of-order responses: if the
+// customer changes Xperience/Simulator/date again while a fetch is still in
+// flight, that in-flight response is simply ignored once it resolves
+// (checked via `mySeq === availabilityRequestSeq` below) rather than
+// overwriting the newer selection's placeholder/slots.
+let availabilityRequestSeq = 0;
+
+// GET /availability?productCode=&date= - the one place that calls it.
+// Fails closed (Phase 2B requirement 7): a network error or non-2xx never
+// falls back to "assume available" - it always surfaces the explicit
+// "couldn't check" error state with a retry, and no time becomes
+// selectable until a real 200 says so.
+async function refreshTimeSlotAvailability() {
+  const context = getAvailabilityContext();
+  const mySeq = ++availabilityRequestSeq;
+
+  if (!context) {
+    hideAvailabilityStatus();
+    if (!xperienceSelect.value) {
+      setTimePlaceholder('Select your Xperience first');
+    } else if (simulatorSelect.disabled === false && !simulatorSelect.value) {
+      setTimePlaceholder('Select Static or Motion first');
+    } else {
+      setTimePlaceholder('Select a date to see available times');
+    }
+    return;
   }
+
+  setTimePlaceholder('Checking availability...');
+  showAvailabilityStatus('Checking simulator availability...');
+
+  try {
+    const response = await fetch(
+      `${AWS_CONFIG.apiBaseUrl}/availability?productCode=${encodeURIComponent(context.productCode)}&date=${encodeURIComponent(context.date)}`
+    );
+    const body = await response.json().catch(() => ({}));
+    if (mySeq !== availabilityRequestSeq) return; // superseded by a newer selection
+    if (!response.ok) throw new Error(body.message || 'Failed to load availability');
+
+    const slots = Array.isArray(body.availableSlots) ? body.availableSlots : [];
+    if (slots.length === 0) {
+      setTimePlaceholder('No slots available for this date');
+      showAvailabilityStatus('No simulator slots are available for this date. Please choose another date.', { isError: true });
+    } else {
+      populateTimeSelectFromSlots(slots);
+      hideAvailabilityStatus();
+    }
+  } catch (err) {
+    if (mySeq !== availabilityRequestSeq) return; // superseded by a newer selection
+    console.error('GET /availability failed', err.message || 'unknown_error');
+    setTimePlaceholder('Unable to check availability');
+    showAvailabilityStatus("We couldn't check simulator availability. Please try again.", { isError: true, showRetry: true });
+  }
+}
+
+if (availabilityRetryBtn) {
+  availabilityRetryBtn.addEventListener('click', () => refreshTimeSlotAvailability());
 }
 
 // Declared at top level (not inside the block below) so the booking form's
@@ -199,7 +287,10 @@ if (xperienceSelect && simulatorSelect && typeof PRICING_GROUPS !== 'undefined')
     xperienceNameField.value = xperienceName;
     durationField.value = option.durationMinutes;
     racersField.value = group.racers;
-    populateTimeOptions(option.durationMinutes);
+    // Duration/Xperience/Simulator just changed - always re-check availability
+    // from scratch (never carry a previously selected time over to a
+    // different product, per Phase 2B requirement 8).
+    refreshTimeSlotAvailability();
 
     if (isSignature) {
       summarySimulator.textContent = 'All 4 Simulators';
@@ -356,6 +447,70 @@ function resolveProductCode(selection, simulatorValue) {
   return simulatorValue === 'motion' ? option.motionProductCode : option.staticProductCode;
 }
 
+// The inverse of resolveProductCode() - given a `productCode` already saved
+// in a booking draft, finds which Xperience dropdown option (and, for a
+// matrix group, which Simulator value) produced it, so
+// returnToTimeSelectionAfterConflict() below can restore the form's
+// selection instead of asking the customer to redo it.
+function findSelectionByProductCode(productCode) {
+  for (let groupIndex = 0; groupIndex < PRICING_GROUPS.length; groupIndex++) {
+    const group = PRICING_GROUPS[groupIndex];
+    for (let optionIndex = 0; optionIndex < group.options.length; optionIndex++) {
+      const option = group.options[optionIndex];
+      if (group.kind === 'signature') {
+        if (option.productCode === productCode) {
+          return { groupIndex, optionIndex, simulatorValue: null };
+        }
+      } else if (option.staticProductCode === productCode) {
+        return { groupIndex, optionIndex, simulatorValue: 'static' };
+      } else if (option.motionProductCode === productCode) {
+        return { groupIndex, optionIndex, simulatorValue: 'motion' };
+      }
+    }
+  }
+  return null;
+}
+
+// Phase 2B requirement 9: POST /bookings staying authoritative means a slot
+// GET /availability just showed as free can still legitimately 409 if
+// someone else's booking wins the race first. Rather than a generic error,
+// this brings the customer back to the (still-visible, untouched) booking
+// form with every other detail restored from the draft - Xperience,
+// Simulator, date, and contact info - only the now-taken time cleared, and
+// a fresh availability check already kicked off (via the same
+// change/input events a real selection would fire) so Preferred Time only
+// ever offers slots that are still genuinely open.
+function returnToTimeSelectionAfterConflict(draft) {
+  clearOtpSession();
+  pendingAuthResult = null;
+  hideOtpVerification();
+  bookingCreationPanel.hidden = true;
+  reservationReview.hidden = true;
+  bookingForm.hidden = false;
+
+  const match = findSelectionByProductCode(draft.productCode);
+  if (match) {
+    xperienceSelect.value = `${match.groupIndex}:${match.optionIndex}`;
+    xperienceSelect.dispatchEvent(new Event('change'));
+    if (match.simulatorValue) {
+      simulatorSelect.value = match.simulatorValue;
+      simulatorSelect.dispatchEvent(new Event('change'));
+    }
+  }
+  if (nameInput) nameInput.value = draft.customerName || '';
+  if (phoneInput) phoneInput.value = draft.customerPhone || '';
+  if (emailInput) emailInput.value = draft.customerEmail || '';
+  if (notesInput) notesInput.value = draft.notes || '';
+  if (dateInput) {
+    dateInput.value = draft.bookingDate || '';
+    dateInput.dispatchEvent(new Event('input')); // re-validates the date and refreshes availability for it
+  }
+
+  formStatus.classList.remove('success');
+  formStatus.textContent = 'That time slot was just taken by another guest. Your other details are still here - please choose a new time below.';
+  bookingForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 // Cognito's phone_number claim is stored as E.164 (+91XXXXXXXXXX - see
 // js/cognito-auth.js's normalizeIndianMobileToE164()); the booking form's
 // #phone field expects the bare 10-digit number the signup form itself
@@ -436,7 +591,23 @@ async function submitBookingRequest({
       })
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.message || 'Failed to create booking');
+    if (!response.ok) {
+      // POST /bookings independently rechecks and locks inventory itself
+      // (backend/src/handlers/create-booking.ts's allocateSimulators()) - a
+      // slot GET /availability showed as free a moment ago can still lose
+      // that race. A 409 here means exactly that (error code
+      // 'simulator_unavailable'), never a generic failure - callers use
+      // `.status`/`.code` to give the customer the dedicated "just taken"
+      // recovery flow (Phase 2B requirement 9) instead of a plain error.
+      const err = new Error(
+        response.status === 409
+          ? 'That time slot was just taken by another guest. Please choose a new time.'
+          : (result.message || 'Failed to create booking')
+      );
+      err.status = response.status;
+      err.code = result.error;
+      throw err;
+    }
 
     status.textContent = '';
     // Xperience/Simulator/duration are derived from the backend's own
@@ -505,7 +676,15 @@ async function attemptDraftAutoCompletion(token, draft) {
     customerEmail: draft.customerEmail,
     submitBtn
   });
-  if (outcome.ok) clearPendingBookingDraft();
+  if (outcome.ok) {
+    clearPendingBookingDraft();
+  } else if (outcome.error && outcome.error.status === 409) {
+    // Same "slot just taken" recovery as createBookingAfterVerification()'s
+    // 409 branch (Phase 2B requirement 9) - this path only differs in when
+    // it runs (a signed-in visitor's draft auto-completing on page load,
+    // not right after OTP verification).
+    returnToTimeSelectionAfterConflict(draft);
+  }
 }
 
 // Runs once per page load. A signed-in visitor with a pending draft has
@@ -804,6 +983,16 @@ async function createBookingAfterVerification(draft) {
     pendingAuthResult = null;
     bookingCreationPanel.hidden = true;
     reservationReview.hidden = true;
+  } else if (outcome.error && outcome.error.status === 409) {
+    // Phase 2B requirement 9: the slot GET /availability showed as free was
+    // taken by someone else before this POST landed - not a generic
+    // failure. clearPendingBookingDraft() is deliberately skipped here (the
+    // customer is about to build a fresh one the moment they resubmit with
+    // a new time); pendingAuthResult/the OTP session, on the other hand, are
+    // cleared inside returnToTimeSelectionAfterConflict() since resubmitting
+    // goes through Review -> a fresh OTP, same as any other reservation.
+    bookingCreationPanel.hidden = true;
+    returnToTimeSelectionAfterConflict(draft);
   } else {
     bookingCreationStatus.classList.remove('success');
     bookingCreationStatus.textContent = "We verified your email, but couldn't create your reservation.";
@@ -991,7 +1180,20 @@ bookingForm.addEventListener('submit', (e) => {
     ? option.price
     : (simulatorSelect.value === 'motion' ? option.motionPrice : option.staticPrice);
   const bookingDate = document.getElementById('date').value; // native YYYY-MM-DD, no conversion needed
-  const startTime = timeSelect.value; // already HH:mm - see buildTimeSlots()
+  const startTime = timeSelect.value; // already HH:mm - one of GET /availability's availableSlots
+
+  // #time's `required` attribute is deliberately turned off while
+  // availability is loading/erroring/empty (setTimePlaceholder()), so a
+  // disabled placeholder never blocks native constraint validation - but
+  // that also means native validation alone can't be trusted to catch an
+  // empty selection made in that window. Guard it explicitly so Review My
+  // Reservation can never proceed with a stale/missing time (Phase 2B
+  // requirement 7).
+  if (!startTime) {
+    formStatus.classList.remove('success');
+    formStatus.textContent = 'Please select an available time before continuing.';
+    return;
+  }
 
   // Normalized draft, saved under the existing PENDING_BOOKING_STORAGE_KEY.
   // productCode/bookingDate/startTime/customerName/customerPhone/
@@ -1037,6 +1239,7 @@ if (xperienceSelect && simulatorSelect) {
   bookingForm.addEventListener('reset', () => {
     setSimulatorPlaceholder('Select your Xperience first');
     setTimePlaceholder('Select your Xperience first');
+    hideAvailabilityStatus();
     bookingSummary.hidden = true;
   });
 }
@@ -1069,6 +1272,10 @@ if (dateInput) {
     if (!dateInput.value) {
       dateInput.setCustomValidity('');
       if (dateError) dateError.hidden = true;
+      // No date selected - nothing to check availability for (Phase 2B
+      // requirement 8: clear any previously selected time when the date
+      // changes, never leave a stale one selectable).
+      refreshTimeSlotAvailability();
       return;
     }
     const [y, m, d] = dateInput.value.split('-').map(Number);
@@ -1080,6 +1287,9 @@ if (dateInput) {
       dateError.textContent = message;
       dateError.hidden = !message;
     }
+    // A new (or newly valid/invalid) date - re-check availability from
+    // scratch rather than trusting whatever was shown for the previous date.
+    refreshTimeSlotAvailability();
   });
 }
 
