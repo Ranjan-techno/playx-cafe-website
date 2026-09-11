@@ -68,6 +68,11 @@ export class InfraStack extends cdk.Stack {
     // Guest-first passwordless auth adds the three CUSTOM_AUTH challenge trigger Lambdas
     // (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse) that back POST
     // /auth/start and POST /auth/verify below — see constructs/auth.ts.
+    //
+    // Phase 3B adds a plain Cognito group, "admin" (constructs/auth.ts's adminGroup) — no second
+    // User Pool, no second app client, no new sign-in flow. An admin authenticates through this
+    // exact same passwordless CUSTOM_AUTH flow; only their cognito:groups claim differs once added
+    // to this group (out-of-band — see auth.ts).
     const authConfig = authConfigs[props.envConfig.environmentCode];
     const auth = new AuthConstruct(this, 'Auth', {
       authConfig,
@@ -103,6 +108,12 @@ export class InfraStack extends cdk.Stack {
       availabilityFunctionName: resourceName('availability'),
       authStartFunctionName: resourceName('auth-start'),
       authVerifyFunctionName: resourceName('auth-verify'),
+      adminDashboardFunctionName: resourceName('admin-dashboard'),
+      adminBookingsFunctionName: resourceName('admin-bookings'),
+      adminBookingDetailFunctionName: resourceName('admin-booking-detail'),
+      adminPaymentsFunctionName: resourceName('admin-payments'),
+      adminSimulatorsFunctionName: resourceName('admin-simulators'),
+      adminBookingStatusFunctionName: resourceName('admin-booking-status'),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,
       databaseSecret,

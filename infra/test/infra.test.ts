@@ -19,15 +19,17 @@ test('Story 2.1: VPC created with isolated-only subnets and no NAT Gateway', () 
   // 2 AZs, PRIVATE_ISOLATED only.
   template.resourceCountIs('AWS::EC2::Subnet', 2);
 
-  // No NAT Gateway. Exactly eleven Lambdas: Story 2.3's migration function, Story 2.5's
+  // No NAT Gateway. Exactly seventeen Lambdas: Story 2.3's migration function, Story 2.5's
   // health-check function, Story 2.6's products/create-booking/bookings-me functions, guest-
   // first passwordless auth's auth-start/auth-verify functions, its three Cognito CUSTOM_AUTH
-  // triggers (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse), and Phase 2's
-  // availability function — not the restrictDefaultSecurityGroup feature flag's custom-resource
-  // Lambda, which stays guarded against separately (that flag is explicitly disabled for this VPC
-  // — see constructs/network.ts).
+  // triggers (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse), Phase 2's
+  // availability function, and Phase 3B's six PLAY X ADMIN functions (admin-dashboard/
+  // admin-bookings/admin-booking-detail/admin-booking-status/admin-payments/admin-simulators) —
+  // not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
+  // guarded against separately (that flag is explicitly disabled for this VPC — see
+  // constructs/network.ts).
   template.resourceCountIs('AWS::EC2::NatGateway', 0);
-  template.resourceCountIs('AWS::Lambda::Function', 11);
+  template.resourceCountIs('AWS::Lambda::Function', 17);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -89,12 +91,12 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   });
   const template = Template.fromStack(stack);
 
-  // Eleven Lambda functions exist in the stack (this one, Story 2.5's health-check function,
+  // Seventeen Lambda functions exist in the stack (this one, Story 2.5's health-check function,
   // Story 2.6's products/create-booking/bookings-me functions, guest-first passwordless auth's
-  // auth-start/auth-verify functions, its three CUSTOM_AUTH triggers, and Phase 2's availability
-  // function — see below), but health/auth-start/auth-verify/the three triggers are the six of
-  // the eleven that do NOT sit in the VPC.
-  template.resourceCountIs('AWS::Lambda::Function', 11);
+  // auth-start/auth-verify functions, its three CUSTOM_AUTH triggers, Phase 2's availability
+  // function, and Phase 3B's six admin functions — see below), but health/auth-start/auth-verify/
+  // the three triggers are the six of the seventeen that do NOT sit in the VPC.
+  template.resourceCountIs('AWS::Lambda::Function', 17);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -268,12 +270,13 @@ test('Story 2.6: authenticated booking APIs — Cognito JWT authorizer on POST /
     IdentitySource: ['$request.header.Authorization'],
   });
 
-  // Seven routes total: GET /health (Story 2.5), GET /products, POST /bookings, and
+  // Thirteen routes total: GET /health (Story 2.5), GET /products, POST /bookings, and
   // GET /bookings/me (this story), POST /auth/start and POST /auth/verify (guest-first
-  // passwordless auth, checked separately below), plus GET /availability (Phase 2, checked
-  // separately further below). Seven integrations, one per route.
-  template.resourceCountIs('AWS::ApiGatewayV2::Route', 7);
-  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 7);
+  // passwordless auth, checked separately below), GET /availability (Phase 2, checked separately
+  // further below), and Phase 3B's six admin routes (checked separately further below too).
+  // Thirteen integrations, one per route.
+  template.resourceCountIs('AWS::ApiGatewayV2::Route', 13);
+  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 13);
 
   // GET /products is public: no authorizer attached (CloudFormation emits AuthorizationType:
   // 'NONE' explicitly for an unauthenticated route, rather than omitting the property).
@@ -479,6 +482,106 @@ test('Phase 2: public GET /availability, VPC-attached with database read access,
     Runtime: 'nodejs22.x',
     VpcConfig: Match.objectLike({}),
   });
+  template.hasResourceProperties('AWS::IAM::Policy', {
+    PolicyDocument: Match.objectLike({
+      Statement: Match.arrayWith([
+        Match.objectLike({
+          Action: Match.arrayWith(['secretsmanager:GetSecretValue']),
+          Effect: 'Allow',
+        }),
+      ]),
+    }),
+  });
+});
+
+test('Phase 3B: PLAY X ADMIN — a Cognito "admin" group on the existing User Pool, no second pool', () => {
+  const app = new cdk.App();
+  const stack = new InfraStack(app, 'TestInfraStack', {
+    envConfig: environments.dev,
+    env: { region: 'ap-south-1' },
+  });
+  const template = Template.fromStack(stack);
+
+  // Still exactly one User Pool (see the Story 2.4 test above) — the admin group is added to it,
+  // not a second pool.
+  template.resourceCountIs('AWS::Cognito::UserPool', 1);
+
+  template.resourceCountIs('AWS::Cognito::UserPoolGroup', 1);
+  template.hasResourceProperties('AWS::Cognito::UserPoolGroup', {
+    GroupName: 'admin',
+  });
+});
+
+test('Phase 3B: PLAY X ADMIN — six /admin/* routes, all Cognito-JWT-protected (never public)', () => {
+  const app = new cdk.App();
+  const stack = new InfraStack(app, 'TestInfraStack', {
+    envConfig: environments.dev,
+    env: { region: 'ap-south-1' },
+  });
+  const template = Template.fromStack(stack);
+
+  // Still exactly one JWT authorizer (see the Story 2.6 test above) — every admin route reuses it,
+  // no second authorizer/User Pool client for admin.
+  template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
+
+  for (const routeKey of [
+    'GET /admin/dashboard',
+    'GET /admin/bookings',
+    'GET /admin/bookings/{id}',
+    'PATCH /admin/bookings/{id}/status',
+    'GET /admin/payments',
+    'GET /admin/simulators',
+  ]) {
+    template.hasResourceProperties('AWS::ApiGatewayV2::Route', {
+      RouteKey: routeKey,
+      AuthorizationType: 'JWT',
+    });
+  }
+
+  // CORS now also allows PATCH (PATCH /admin/bookings/{id}/status), on top of the GET/POST
+  // methods checked by the Story 2.5 test above — same CORS origin allowlist, unbroadened.
+  template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+    CorsConfiguration: Match.objectLike({
+      AllowOrigins: [
+        'https://ranjan-techno.github.io',
+        'http://localhost:8000',
+        'https://staging.playxcafe.com',
+      ],
+      AllowMethods: Match.arrayWith(['GET', 'POST', 'PATCH']),
+    }),
+  });
+});
+
+test('Phase 3B: PLAY X ADMIN — all six admin Lambdas are VPC-attached with database read access, defense-in-depth authorization in the handler itself (not just the JWT authorizer)', () => {
+  const app = new cdk.App();
+  const stack = new InfraStack(app, 'TestInfraStack', {
+    envConfig: environments.dev,
+    env: { region: 'ap-south-1' },
+  });
+  const template = Template.fromStack(stack);
+
+  // VPC-attached, like products/create-booking/bookings-me/availability: every admin handler
+  // reads (and admin-booking-status writes) the database directly.
+  for (const functionName of [
+    'playx-dev-admin-dashboard',
+    'playx-dev-admin-bookings',
+    'playx-dev-admin-booking-detail',
+    'playx-dev-admin-payments',
+    'playx-dev-admin-simulators',
+    'playx-dev-admin-booking-status',
+  ]) {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: functionName,
+      Runtime: 'nodejs22.x',
+      VpcConfig: Match.objectLike({}),
+    });
+  }
+
+  // Each admin Lambda has read access to the same database credentials secret as the other
+  // VPC-attached Lambdas — checked generically (the Story 2.6 test above already checks this
+  // policy shape exists at least once); the actual "is this caller an admin" decision is made in
+  // application code (backend/src/lib/admin-auth.ts's requireAdmin()), not by IAM or the CDK-level
+  // JWT authorizer, which has no notion of Cognito group membership.
   template.hasResourceProperties('AWS::IAM::Policy', {
     PolicyDocument: Match.objectLike({
       Statement: Match.arrayWith([
