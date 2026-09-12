@@ -43,7 +43,7 @@ function renderBookingItem(booking) {
         <strong><span class="booking-status-pill ${booking.status}">${formatBookingStatus(booking.status)}</span></strong>
       </div>
       ${booking.notes ? `<p class="booking-notes"><span>Notes</span> ${escapeHtml(booking.notes)}</p>` : ''}
-      <p class="booking-reference">Booking reference: ${escapeHtml(booking.id)}</p>
+      <p class="booking-reference">${escapeHtml(formatBookingReference(booking.bookingNumber, booking.id))}</p>
     </div>
   `;
 }

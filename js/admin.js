@@ -87,6 +87,34 @@
     return id.length > 10 ? `${id.slice(0, 8)}…` : id;
   }
 
+  // The human-visible booking reference - the operational UI standard is "Booking #1007", never
+  // a bare "#1007" - see backend/database/migrations/004_short_booking_number.sql and this repo's
+  // CLAUDE.md. Every place this page used to show a (truncated) booking UUID to a human now shows
+  // this instead; the UUID itself is untouched everywhere internal - data-booking-id attributes,
+  // click handlers, and every /admin/* call still use it exclusively. Falls back to a "Booking
+  // <shortId>" form only if bookingNumber is ever missing (e.g. a backend not yet redeployed with
+  // this field) so a cell is never left blank. Returns the FULL string - callers must render it
+  // as-is and must never prepend their own "Booking " text, or the result reads "Booking Booking
+  // #1007".
+  function bookingRef(bookingNumber, id) {
+    if (typeof bookingNumber === 'number' && Number.isFinite(bookingNumber)) {
+      return `Booking #${bookingNumber}`;
+    }
+    return `Booking ${shortId(id)}`;
+  }
+
+  // Normalizes whatever an operations executive pastes into the bookings search box down to the
+  // bare 4-digit booking number GET /admin/bookings' exact-match search expects (see
+  // backend/src/lib/admin-repository.ts's parseBookingNumberSearch()) - "1001", "#1001", and
+  // "Booking #1001" (the exact text this page now displays everywhere - see bookingRef()) all
+  // normalize to "1001". Anything else (a name, email, phone number) is returned unchanged, so the
+  // existing ILIKE search behavior for those is never affected.
+  function normalizeBookingSearch(raw) {
+    const trimmed = raw.trim();
+    const match = trimmed.match(/^(?:booking\s*)?#?\s*(\d{4})$/i);
+    return match ? match[1] : trimmed;
+  }
+
   function formatDateTimeDisplay(isoString) {
     if (!isoString) return '—';
     const d = new Date(isoString);
@@ -594,7 +622,7 @@
     const customerLines = [item.customerName, item.customerEmail, item.customerPhone].filter(Boolean);
     return `
       <tr class="admin-row-clickable" data-booking-id="${escapeHtml(item.id)}">
-        <td data-label="Booking"><span title="${escapeHtml(item.id)}">${escapeHtml(shortId(item.id))}</span><span class="admin-cell-sub">${escapeHtml(formatDateDisplay(item.date))}</span></td>
+        <td data-label="Booking"><span title="${escapeHtml(item.id)}">${escapeHtml(bookingRef(item.bookingNumber, item.id))}</span><span class="admin-cell-sub">${escapeHtml(formatDateDisplay(item.date))}</span></td>
         <td data-label="Customer" class="admin-td-wrap">${customerLines.length ? escapeHtml(customerLines.join(' · ')) : '<span class="admin-cell-muted">—</span>'}</td>
         <td data-label="Product">${escapeHtml(item.product.name)}<span class="admin-cell-sub">${escapeHtml(item.product.code)}</span></td>
         <td data-label="Date">${escapeHtml(formatDateDisplay(item.date))}</td>
@@ -651,10 +679,15 @@
 
   bookingsFilters.addEventListener('submit', (e) => {
     e.preventDefault();
+    // "1001", "#1001", or "Booking #1001" (exactly what this page displays - see bookingRef())
+    // are all normalized to the bare number before being sent, so any of the three matches the
+    // same exact booking_number search GET /admin/bookings does - see
+    // backend/src/lib/admin-repository.ts's parseBookingNumberSearch().
+    const search = normalizeBookingSearch(bookingsFilterSearch.value);
     bookingsFilterState = {
       date: bookingsFilterDate.value || undefined,
       status: bookingsFilterStatus.value || undefined,
-      search: bookingsFilterSearch.value.trim() || undefined
+      search: search || undefined
     };
     loadBookings(true);
   });
@@ -768,7 +801,7 @@
       <div class="admin-detail-section">
         <h3>Booking</h3>
         <div class="admin-detail-grid">
-          <div><span>Reference</span><strong title="${escapeHtml(detail.id)}">${escapeHtml(shortId(detail.id))}</strong></div>
+          <div><span>Reference</span><strong title="${escapeHtml(detail.id)}">${escapeHtml(bookingRef(detail.bookingNumber, detail.id))}</strong></div>
           <div><span>Product</span><strong>${escapeHtml(detail.product.name)}</strong></div>
           <div><span>Simulator Type</span><strong>${escapeHtml(dash(detail.product.simulatorType))}</strong></div>
           <div><span>Racers</span><strong>${escapeHtml(detail.product.racers)}</strong></div>
@@ -919,7 +952,7 @@
     return `
       <tr>
         <td data-label="Payment" title="${escapeHtml(item.id)}">${escapeHtml(shortId(item.id))}</td>
-        <td data-label="Booking" class="admin-row-clickable" data-booking-id="${escapeHtml(item.bookingId)}" title="${escapeHtml(item.bookingId)}">${escapeHtml(shortId(item.bookingId))}</td>
+        <td data-label="Booking" class="admin-row-clickable" data-booking-id="${escapeHtml(item.bookingId)}" title="${escapeHtml(item.bookingId)}">${escapeHtml(bookingRef(item.bookingNumber, item.bookingId))}</td>
         <td data-label="Provider">${escapeHtml(item.provider)}</td>
         <td data-label="Amount">${escapeHtml(formatBookingPrice(item.amountInr))} ${escapeHtml(item.currency)}</td>
         <td data-label="Status"><span class="admin-payment-pill ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></td>
@@ -996,7 +1029,7 @@
     return `
       <div class="admin-simulator-entry">
         <div class="admin-simulator-entry-row">
-          <span title="${escapeHtml(entry.bookingId)}">${escapeHtml(shortId(entry.bookingId))}</span>
+          <span title="${escapeHtml(entry.bookingId)}">${escapeHtml(bookingRef(entry.bookingNumber, entry.bookingId))}</span>
           <span class="admin-blocks-pill ${entry.blocksCapacity ? 'blocking' : 'free'}">${entry.blocksCapacity ? 'Blocking' : 'Free'}</span>
         </div>
         <div class="admin-simulator-entry-time">

@@ -204,7 +204,12 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
 
     await db.query('BEGIN');
 
-    const { rows: inserted } = await db.query<{ id: string }>(
+    // booking_number is never listed here and never accepted from the request body (see
+    // parseBody/CreateBookingBody above) — it comes entirely from the column's own DEFAULT
+    // nextval('booking_number_seq'), added in database/migrations/004_short_booking_number.sql.
+    // The database is the sole authoritative generator; the frontend only ever displays whatever
+    // comes back below.
+    const { rows: inserted } = await db.query<{ id: string; booking_number: number }>(
       `INSERT INTO bookings
          (product_id, cognito_sub, customer_name, customer_phone, customer_email,
           racers, duration_minutes, simulator_type, price_inr, status,
@@ -213,7 +218,7 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
          ($1, $2, $3, $4, $5,
           $6, $7, $8, $9, 'pending',
           $10, $11, $12)
-       RETURNING id`,
+       RETURNING id, booking_number`,
       [
         product.id,
         sub,
@@ -230,6 +235,7 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
       ],
     );
     const bookingId = inserted[0].id;
+    const bookingNumber = inserted[0].booking_number;
 
     // Locks the simulator inventory and allocates the required rig(s), or returns null if the
     // requested window can't be covered — see allocate-simulators.ts for the transaction/locking
@@ -255,6 +261,10 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
 
     return jsonResponse(201, {
       id: bookingId,
+      // Additive field: the 4-digit customer/admin-facing reference (see this repo's CLAUDE.md
+      // and 004_short_booking_number.sql). `id` (the UUID) stays exactly as it was — existing
+      // clients that only read id/product/price/date/time/status/holdExpiresAt are unaffected.
+      bookingNumber,
       product: body.productCode,
       price: Number(product.price_inr),
       date: body.bookingDate,
