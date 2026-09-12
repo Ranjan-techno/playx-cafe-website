@@ -38,6 +38,24 @@ function formatBookingPrice(amount) {
   return '₹' + Number(amount).toLocaleString('en-IN');
 }
 
+// The customer-facing booking reference - a 4-digit number the backend generates and returns as
+// `bookingNumber` (see backend/database/migrations/004_short_booking_number.sql and this repo's
+// CLAUDE.md). This is what a customer should ever see; the UUID `id` every booking also carries
+// stays internal (API calls, My Bookings lookups) and is never shown as the "normal" reference.
+// Falls back to a shortened form of the UUID only if bookingNumber is ever missing (e.g. while an
+// older cached response is still on screen) so the UI never renders a blank reference.
+//
+// Returns the FULL display string, including the word "Booking" - the operational UI standard is
+// "Booking #1001", never a bare "#1001". Callers must render this string as-is and must never
+// prepend their own "Booking " text in front of it, or the result reads "Booking Booking #1001".
+function formatBookingReference(bookingNumber, id) {
+  if (typeof bookingNumber === 'number' && Number.isFinite(bookingNumber)) {
+    return `Booking #${bookingNumber}`;
+  }
+  if (!id) return '';
+  return `Booking ${id.length > 10 ? `${id.slice(0, 8)}…` : id}`;
+}
+
 // The backend only ever returns the literal status string ('pending',
 // 'confirmed', 'cancelled', 'no_show', 'completed' - see
 // backend/src/handlers/create-booking.ts / list-my-bookings.ts). A new

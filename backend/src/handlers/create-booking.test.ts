@@ -99,6 +99,17 @@ test('server-controlled fields: price/status supplied in the body are silently d
   assert.equal('status' in result, false);
 });
 
+test('server-controlled fields: a client-supplied bookingNumber is silently dropped, not stored', () => {
+  // bookingNumber is server/database-generated (bookings.booking_number's DEFAULT
+  // nextval('booking_number_seq') — see database/migrations/004_short_booking_number.sql). parseBody
+  // has no notion of it at all: the handler's INSERT never reads a bookingNumber field off the
+  // request, so a client stuffing one into the body must have zero effect on what gets stored.
+  const result = parseBody(rawBody({ bookingNumber: 9999, booking_number: 1 }));
+  assert.ok(result);
+  assert.equal('bookingNumber' in result, false);
+  assert.equal('booking_number' in result, false);
+});
+
 test('server-controlled fields: a client-supplied simulator/rig id is silently dropped, not stored', () => {
   // parseBody has no notion of a simulator at all — which physical rig(s) a booking gets is
   // decided entirely server-side by lib/allocate-simulators.ts, after parseBody returns. A client

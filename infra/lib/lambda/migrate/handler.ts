@@ -18,6 +18,7 @@ import { Client } from 'pg';
 import schema001 from '../../../../database/migrations/001_initial_schema.sql';
 import schema002 from '../../../../database/migrations/002_simulator_inventory.sql';
 import schema003 from '../../../../database/migrations/003_payment_foundation.sql';
+import schema004 from '../../../../database/migrations/004_short_booking_number.sql';
 
 interface Migration {
   filename: string;
@@ -34,6 +35,9 @@ const MIGRATIONS: Migration[] = [
   // Phase 3A: payment foundation — the `payments` table (see the file's own header for the
   // backward-compatibility decisions this migration makes, additive only).
   { filename: '003_payment_foundation.sql', sql: schema003 },
+  // Short booking number: adds bookings.booking_number (4-digit, 1001-9999) — see the file's own
+  // header for the sequence/backfill/constraint approach, additive only.
+  { filename: '004_short_booking_number.sql', sql: schema004 },
 ];
 
 interface DbSecret {

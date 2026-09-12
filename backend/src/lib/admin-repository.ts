@@ -55,6 +55,20 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
+/** If `search` looks like an exact booking_number lookup — all digits, exactly 4 of them, and
+ *  within the real 1001-9999 range 004_short_booking_number.sql's sequence actually issues —
+ *  returns it as a number; otherwise null, meaning listAdminBookings()'s search falls back to its
+ *  existing name/email/phone ILIKE-only behavior. Pure and DB-free so this matching rule is
+ *  directly unit-testable without a database, same "pure half only" split as
+ *  booking-status.ts/simulator-allocation.ts. */
+export function parseBookingNumberSearch(search: string): number | null {
+  if (!/^\d{4}$/.test(search)) {
+    return null;
+  }
+  const value = Number(search);
+  return value >= 1001 && value <= 9999 ? value : null;
+}
+
 export interface QueryValidationError {
   ok: false;
   error: string;
@@ -329,6 +343,7 @@ export function parseAdminBookingsQuery(
 
 interface AdminBookingListRow {
   id: string;
+  booking_number: number;
   customer_name: string | null;
   customer_phone: string | null;
   customer_email: string | null;
@@ -347,10 +362,14 @@ interface AdminBookingListRow {
 
 export interface AdminBookingListItem {
   id: string;
-  // Play X's schema has no separate booking-reference column (see 001_initial_schema.sql) — the
-  // UUID primary key is the only stable identifier a booking has, so it doubles as its own
-  // "reference" here rather than inventing a second one that doesn't exist in the database.
+  // Kept for compatibility with existing callers that already read this field — now the same
+  // UUID as `id` (never a second identifier). The actual human-facing reference is
+  // `bookingNumber` below (see database/migrations/004_short_booking_number.sql).
   bookingReference: string;
+  // The 4-digit customer/admin-facing booking reference — server/database-generated, never
+  // client-chosen. `id` (the UUID) remains the real internal identifier for every API
+  // call/click-handler; this field exists only to be displayed.
+  bookingNumber: number;
   customerName: string | null;
   customerEmail: string | null;
   customerPhone: string | null;
@@ -370,6 +389,7 @@ export function mapAdminBookingListRow(row: AdminBookingListRow): AdminBookingLi
   return {
     id: row.id,
     bookingReference: row.id,
+    bookingNumber: row.booking_number,
     customerName: row.customer_name,
     customerEmail: row.customer_email,
     customerPhone: row.customer_phone,
@@ -406,11 +426,23 @@ export async function listAdminBookings(db: DbClient, query: AdminBookingsQuery)
     conditions.push(`b.status = $${params.length}`);
   }
   if (query.search) {
+    // A search term that's exactly 4 digits and in the real booking_number range is also matched
+    // as an exact booking_number lookup, alongside the existing name/email/phone ILIKE — e.g. a
+    // front-desk staffer typing the number off a customer's confirmation ("1007") finds that
+    // booking even though it never appears in any of the ILIKE'd columns. Purely additive: a
+    // search term that doesn't look like a booking number behaves exactly as before.
     params.push(`%${escapeLikePattern(query.search)}%`);
-    const idx = params.length;
-    conditions.push(
-      `(b.customer_name ILIKE $${idx} ESCAPE '\\' OR b.customer_email ILIKE $${idx} ESCAPE '\\' OR b.customer_phone ILIKE $${idx} ESCAPE '\\')`,
-    );
+    const likeIdx = params.length;
+    const likeCondition = `(b.customer_name ILIKE $${likeIdx} ESCAPE '\\' OR b.customer_email ILIKE $${likeIdx} ESCAPE '\\' OR b.customer_phone ILIKE $${likeIdx} ESCAPE '\\')`;
+
+    const asBookingNumber = parseBookingNumberSearch(query.search);
+    if (asBookingNumber !== null) {
+      params.push(asBookingNumber);
+      const numberIdx = params.length;
+      conditions.push(`(b.booking_number = $${numberIdx} OR ${likeCondition})`);
+    } else {
+      conditions.push(likeCondition);
+    }
   }
   if (query.cursor) {
     params.push(new Date(query.cursor.createdAt), query.cursor.id);
@@ -425,7 +457,7 @@ export async function listAdminBookings(db: DbClient, query: AdminBookingsQuery)
 
   const { rows } = await db.query<AdminBookingListRow>(
     `SELECT
-       b.id, b.customer_name, b.customer_phone, b.customer_email,
+       b.id, b.booking_number, b.customer_name, b.customer_phone, b.customer_email,
        p.product_code, p.name AS product_name,
        b.scheduled_start_at, b.scheduled_end_at, b.duration_minutes, b.price_inr, b.status, b.created_at,
        alloc.codes AS simulator_codes,
@@ -464,6 +496,7 @@ export async function listAdminBookings(db: DbClient, query: AdminBookingsQuery)
 
 interface AdminBookingDetailRow {
   id: string;
+  booking_number: number;
   customer_name: string | null;
   customer_phone: string | null;
   customer_email: string | null;
@@ -505,7 +538,10 @@ interface AdminPaymentAttemptRow {
 
 export interface AdminBookingDetail {
   id: string;
+  // Kept for compatibility with existing callers — now the same UUID as `id`. The human-facing
+  // reference is `bookingNumber` below (see database/migrations/004_short_booking_number.sql).
   bookingReference: string;
+  bookingNumber: number;
   customer: { name: string | null; email: string | null; phone: string | null };
   product: { code: string; name: string; racers: number; durationMinutes: number; simulatorType: string | null };
   priceInr: number;
@@ -557,6 +593,7 @@ export function buildAdminBookingDetail(
   return {
     id: booking.id,
     bookingReference: booking.id,
+    bookingNumber: booking.booking_number,
     customer: { name: booking.customer_name, email: booking.customer_email, phone: booking.customer_phone },
     product: {
       code: booking.product_code,
@@ -604,7 +641,7 @@ export function buildAdminBookingDetail(
  *  payments.metadata JSONB blob. */
 export async function getAdminBookingDetail(db: DbClient, bookingId: string): Promise<AdminBookingDetail | null> {
   const { rows } = await db.query<AdminBookingDetailRow>(
-    `SELECT b.id, b.customer_name, b.customer_phone, b.customer_email,
+    `SELECT b.id, b.booking_number, b.customer_name, b.customer_phone, b.customer_email,
             p.product_code, p.name AS product_name, b.racers, b.duration_minutes, b.simulator_type,
             b.price_inr, b.status, b.scheduled_start_at, b.scheduled_end_at, b.notes, b.created_at, b.updated_at
      FROM bookings b
@@ -691,6 +728,10 @@ export function parseAdminPaymentsQuery(
 interface AdminPaymentListRow {
   id: string;
   booking_id: string;
+  // The related booking's short reference — always present in practice (payments.booking_id is
+  // NOT NULL and ON DELETE RESTRICT, so a payment can never outlive its booking), joined in below
+  // rather than looked up separately per row.
+  booking_number: number;
   provider: string;
   provider_order_id: string;
   provider_transaction_id: string | null;
@@ -705,6 +746,10 @@ interface AdminPaymentListRow {
 export interface AdminPaymentListItem {
   id: string;
   bookingId: string;
+  // The related booking's 4-digit customer/admin-facing reference — see
+  // database/migrations/004_short_booking_number.sql. `bookingId` (the UUID) remains what every
+  // click-handler/API call uses; this field exists only to be displayed.
+  bookingNumber: number;
   provider: string;
   providerOrderId: string;
   providerTransactionId: string | null;
@@ -723,6 +768,7 @@ export function mapAdminPaymentListRow(row: AdminPaymentListRow): AdminPaymentLi
   return {
     id: row.id,
     bookingId: row.booking_id,
+    bookingNumber: row.booking_number,
     provider: row.provider,
     providerOrderId: row.provider_order_id,
     providerTransactionId: row.provider_transaction_id,
@@ -744,22 +790,25 @@ export async function listAdminPayments(db: DbClient, query: AdminPaymentsQuery)
   const conditions: string[] = [];
   const params: unknown[] = [];
 
+  // Every column below is qualified with its table alias (p./b.) now that this joins `bookings`
+  // in — payments and bookings both have their own id/created_at columns, so an unqualified name
+  // would be ambiguous once the join is added.
   if (query.status) {
     params.push(query.status);
-    conditions.push(`payment_status = $${params.length}`);
+    conditions.push(`p.payment_status = $${params.length}`);
   }
   if (query.bookingId) {
     params.push(query.bookingId);
-    conditions.push(`booking_id = $${params.length}`);
+    conditions.push(`p.booking_id = $${params.length}`);
   }
   if (query.date) {
     const { start, end } = istDayBounds(query.date);
     params.push(start, end);
-    conditions.push(`created_at >= $${params.length - 1} AND created_at < $${params.length}`);
+    conditions.push(`p.created_at >= $${params.length - 1} AND p.created_at < $${params.length}`);
   }
   if (query.cursor) {
     params.push(new Date(query.cursor.createdAt), query.cursor.id);
-    conditions.push(`(created_at, id) < ($${params.length - 1}, $${params.length})`);
+    conditions.push(`(p.created_at, p.id) < ($${params.length - 1}, $${params.length})`);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -767,11 +816,12 @@ export async function listAdminPayments(db: DbClient, query: AdminPaymentsQuery)
   const limitIdx = params.length;
 
   const { rows } = await db.query<AdminPaymentListRow>(
-    `SELECT id, booking_id, provider, provider_order_id, provider_transaction_id,
-            amount_inr, currency, payment_status, failure_reason, created_at, paid_at
-     FROM payments
+    `SELECT p.id, p.booking_id, b.booking_number, p.provider, p.provider_order_id, p.provider_transaction_id,
+            p.amount_inr, p.currency, p.payment_status, p.failure_reason, p.created_at, p.paid_at
+     FROM payments p
+     JOIN bookings b ON b.id = p.booking_id
      ${whereClause}
-     ORDER BY created_at DESC, id DESC
+     ORDER BY p.created_at DESC, p.id DESC
      LIMIT $${limitIdx}`,
     params,
   );
@@ -792,6 +842,10 @@ export async function listAdminPayments(db: DbClient, query: AdminPaymentsQuery)
 
 export interface SimulatorBoardEntry {
   bookingId: string;
+  // The 4-digit customer/admin-facing reference for this entry's booking (see
+  // database/migrations/004_short_booking_number.sql) — `bookingId` (the UUID) remains what the
+  // admin frontend uses for any click-through/API call; this field exists only to be displayed.
+  bookingNumber: number;
   bookingStatus: string;
   allocationStatus: string;
   scheduledStartAt: string;
@@ -819,6 +873,7 @@ interface SimulatorInventoryRow {
 
 interface SimulatorBoardAllocationRow {
   booking_id: string;
+  booking_number: number;
   simulator_id: string;
   scheduled_start_at: Date;
   scheduled_end_at: Date;
@@ -852,6 +907,7 @@ export function buildSimulatorBoard(
       .filter((allocation) => allocation.simulator_id === simulator.id)
       .map((allocation) => ({
         bookingId: allocation.booking_id,
+        bookingNumber: allocation.booking_number,
         bookingStatus: allocation.booking_status,
         allocationStatus: allocation.allocation_status,
         scheduledStartAt: allocation.scheduled_start_at.toISOString(),
@@ -874,7 +930,7 @@ export async function getSimulatorBoard(db: DbClient, istDate: string): Promise<
   );
 
   const { rows: allocations } = await db.query<SimulatorBoardAllocationRow>(
-    `SELECT ba.booking_id, ba.simulator_id, ba.scheduled_start_at, ba.scheduled_end_at,
+    `SELECT ba.booking_id, b.booking_number, ba.simulator_id, ba.scheduled_start_at, ba.scheduled_end_at,
             ba.allocation_status, ba.hold_expires_at, b.status AS booking_status
      FROM booking_allocations ba
      JOIN bookings b ON b.id = ba.booking_id
