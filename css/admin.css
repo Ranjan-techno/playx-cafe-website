@@ -1,0 +1,346 @@
+/* ============================================================================
+   Play X Admin - admin.html only stylesheet.
+
+   Loaded AFTER css/style.css (see admin.html) and deliberately reuses that
+   file's design tokens (--bg/--bg-alt/--bg-card/--line/--text/--text-dim/--red/
+   --red-dark/--radius/--font-head/--font-body) plus several of its existing
+   component classes wholesale, rather than redefining them here:
+     .btn / .btn-primary / .btn-outline, .form-field, .form-status,
+     .otp-verification-copy, .otp-input-group, .otp-secondary-actions,
+     .link-inline, .sr-only,
+     .booking-status-pill (pending/confirmed/cancelled/no_show/completed).
+   Everything in this file is either admin-only layout (login screen, topbar,
+   tabs, cards, tables, overlay) or a small admin-scoped variant of one of the
+   shared classes above (e.g. .admin-otp-digit mirrors .otp-digit/.mb-otp-digit
+   exactly, kept separate only so this page's own querySelectorAll() never
+   picks up unrelated elements, same reasoning style.css already uses for
+   .mb-otp-digit).
+
+   Same two breakpoints as style.css (900px nav collapse, 600px single column).
+   ============================================================================ */
+
+.admin-body { background: var(--bg); }
+
+/* ============ Login screen ============ */
+
+.admin-login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+/* Same author-CSS-vs-UA-CSS issue already fixed for .admin-overlay above:
+   an author rule that sets its own `display` always beats the browser's
+   default `[hidden] { display: none }` rule, regardless of specificity, so
+   without this override js/admin.js's `loginScreen.hidden = true` (and
+   `adminApp.hidden`/`.admin-cards`/`.admin-simulator-board` below) silently
+   did nothing and the login screen stayed on screen even after a
+   successful admin sign-in. */
+.admin-login-screen[hidden] { display: none; }
+
+.admin-login-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 40px 32px;
+  text-align: center;
+}
+
+.admin-login-logo img { height: 40px; margin: 0 auto 12px; }
+
+.admin-login-kicker {
+  font-family: var(--font-head);
+  color: var(--red);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin-bottom: 28px;
+}
+
+.admin-auth-form { text-align: left; }
+.admin-auth-form .btn { width: 100%; margin-top: 4px; }
+
+/* Mirrors .otp-digit/.mb-otp-digit in css/style.css exactly - see this
+   file's header. */
+.admin-otp-digit {
+  width: 100%; max-width: 52px; aspect-ratio: 1; text-align: center;
+  font-family: var(--font-head); font-size: 1.3rem; padding: 0;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+}
+.admin-otp-digit:focus { outline: none; border-color: var(--red); }
+.admin-otp-digit::-webkit-outer-spin-button,
+.admin-otp-digit::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+.admin-forbidden { padding-top: 8px; }
+.admin-forbidden-message { color: var(--red); font-weight: 700; margin-bottom: 20px; line-height: 1.5; }
+.admin-forbidden .btn { width: 100%; }
+
+/* ============ App shell ============ */
+
+.admin-app { min-height: 100vh; display: flex; flex-direction: column; }
+/* See .admin-login-screen[hidden] above - same fix, same reason. */
+.admin-app[hidden] { display: none; }
+
+.admin-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 24px; background: var(--bg-alt); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 20;
+}
+.admin-topbar-logo { display: flex; align-items: center; gap: 10px; }
+.admin-topbar-logo img { height: 28px; }
+.admin-topbar-logo span {
+  font-family: var(--font-head); font-weight: 800; font-size: 0.85rem;
+  letter-spacing: 0.1em; color: var(--red);
+}
+.admin-topbar-account { display: flex; align-items: center; gap: 14px; }
+.admin-topbar-email { color: var(--text-dim); font-size: 0.88rem; }
+
+.admin-tabs {
+  display: flex; gap: 4px; padding: 10px 20px; background: var(--bg-alt);
+  border-bottom: 1px solid var(--line); overflow-x: auto;
+  position: sticky; top: 61px; z-index: 19;
+}
+.admin-tab {
+  flex-shrink: 0; padding: 9px 18px; border: none; border-radius: 999px; background: none;
+  color: var(--text-dim); font-family: var(--font-body); font-weight: 700; font-size: 0.9rem;
+  letter-spacing: 0.02em; cursor: pointer; white-space: nowrap;
+}
+.admin-tab:hover { color: var(--text); }
+.admin-tab.active { background: var(--red); color: #fff; }
+
+.admin-main { flex: 1; padding: 28px 24px 60px; max-width: 1280px; width: 100%; margin: 0 auto; }
+
+.admin-view { display: none; }
+.admin-view.active { display: block; }
+
+.admin-view-header {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap; margin-bottom: 20px;
+}
+.admin-view-header h1 { font-size: 1.5rem; margin-bottom: 4px; }
+.admin-view-sub { color: var(--text-dim); font-size: 0.9rem; }
+
+.admin-status { margin: 4px 0 16px; font-weight: 600; min-height: 1.2em; }
+.admin-status.error { color: var(--red); }
+.admin-status.success { color: #34d399; }
+
+/* ============ Dashboard cards ============ */
+
+.admin-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;
+}
+/* See .admin-login-screen[hidden] above - same fix, same reason. */
+.admin-cards[hidden] { display: none; }
+.admin-card {
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 20px;
+}
+.admin-card-label {
+  color: var(--text-dim); font-size: 0.8rem; text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 10px; font-weight: 600;
+}
+.admin-card-value {
+  font-family: var(--font-head); font-size: 2rem; font-weight: 800; line-height: 1;
+}
+.admin-card-value.accent { color: var(--red); }
+.admin-card-breakdown { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.admin-card-breakdown span { font-size: 0.82rem; color: var(--text-dim); }
+.admin-card-breakdown strong { color: var(--text); }
+
+/* ============ Filters ============ */
+
+.admin-filters {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px; margin-bottom: 20px;
+}
+.admin-filter-field { display: flex; flex-direction: column; gap: 6px; min-width: 150px; }
+.admin-filter-field-grow { flex: 1; min-width: 200px; }
+.admin-filter-field label { font-size: 0.8rem; color: var(--text-dim); font-weight: 600; }
+.admin-filter-field input, .admin-filter-field select {
+  padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: 0.95rem;
+}
+.admin-filter-field input:focus, .admin-filter-field select:focus { outline: none; border-color: var(--red); }
+.admin-filter-actions { display: flex; gap: 10px; }
+.admin-filter-actions .btn { margin-top: 0; width: auto; padding: 10px 20px; }
+
+/* ============ Tables ============ */
+
+.admin-table-wrap {
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius);
+  overflow-x: auto;
+}
+.admin-table { width: 100%; border-collapse: collapse; min-width: 720px; }
+.admin-table th, .admin-table td {
+  text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line);
+  font-size: 0.9rem; white-space: nowrap;
+}
+.admin-table td.admin-td-wrap { white-space: normal; }
+.admin-table th {
+  color: var(--text-dim); text-transform: uppercase; font-size: 0.72rem;
+  letter-spacing: 0.05em; font-weight: 700; background: var(--bg-alt);
+  position: sticky; top: 0;
+}
+.admin-table tbody tr { cursor: default; }
+/* Applied to a whole <tr> (Bookings table - the whole row opens the detail
+   overlay) or to a single <td> (Payments table - only the Booking cell
+   links through to that booking's detail) - same affordance either way. */
+.admin-row-clickable { cursor: pointer; }
+.admin-table tbody tr.admin-row-clickable:hover { background: rgba(226, 35, 26, 0.06); }
+td.admin-row-clickable:hover { color: var(--red); text-decoration: underline; }
+.admin-table tbody tr:last-child td { border-bottom: none; }
+.admin-table .admin-cell-sub { display: block; color: var(--text-dim); font-size: 0.78rem; margin-top: 2px; }
+.admin-table .admin-cell-muted { color: var(--text-dim); }
+
+.admin-load-more-row { display: flex; justify-content: center; margin-top: 18px; }
+.admin-load-more-row .btn { width: auto; padding: 10px 28px; margin-top: 0; }
+
+/* Payment status pills - same visual language as .booking-status-pill in
+   css/style.css, kept as a separate class since payment_status is a
+   different enum (created/pending/paid/failed/expired/refunded). */
+.admin-payment-pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); border: 1px solid var(--line); }
+.admin-payment-pill.paid { color: #34d399; border-color: #34d399; }
+.admin-payment-pill.pending, .admin-payment-pill.created { color: #f0b429; border-color: #f0b429; }
+.admin-payment-pill.failed, .admin-payment-pill.expired { color: var(--red); border-color: var(--red); }
+.admin-payment-pill.refunded { color: var(--text-dim); }
+
+/* ============ Simulator board ============ */
+
+.admin-simulators-date-row { display: flex; gap: 10px; align-items: center; }
+.admin-simulators-date-row input {
+  padding: 9px 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg-card); color: var(--text); font-family: var(--font-body);
+}
+.admin-simulators-date-row .btn { margin-top: 0; width: auto; padding: 9px 18px; }
+
+.admin-simulator-board {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px;
+}
+/* See .admin-login-screen[hidden] above - same fix, same reason. */
+.admin-simulator-board[hidden] { display: none; }
+.admin-simulator-column {
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 18px;
+}
+.admin-simulator-column-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
+}
+.admin-simulator-code { font-family: var(--font-head); font-size: 1.15rem; font-weight: 800; }
+.admin-simulator-type {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 20px; padding: 2px 10px;
+}
+.admin-simulator-entry {
+  padding: 10px 0; border-top: 1px solid var(--line); font-size: 0.86rem;
+}
+.admin-simulator-entry:first-child { border-top: none; }
+.admin-simulator-entry-row { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.admin-simulator-entry-time { color: var(--text-dim); }
+.admin-simulator-empty { color: var(--text-dim); font-size: 0.86rem; }
+
+.admin-blocks-pill {
+  display: inline-block; padding: 1px 9px; border-radius: 20px; font-size: 0.7rem;
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.admin-blocks-pill.blocking { color: #fff; background: var(--red); }
+.admin-blocks-pill.free { color: var(--text-dim); border: 1px solid var(--line); }
+
+/* ============ Booking detail overlay ============ */
+
+.admin-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px; }
+/* This rule's own `display: flex` otherwise beats the browser's default
+   `[hidden] { display: none }` UA rule - author CSS always wins over UA CSS
+   regardless of selector specificity (same issue already solved for
+   .availability-retry-btn/.my-bookings-tabs in css/style.css). Without this,
+   #bookingDetailOverlay's `hidden` attribute was ignored and the overlay
+   showed on page load before any booking row was clicked. */
+.admin-overlay[hidden] { display: none; }
+.admin-overlay-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.7); }
+.admin-overlay-panel {
+  position: relative; background: var(--bg-card); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 32px; max-width: 640px; width: 100%;
+  max-height: 85vh; overflow-y: auto;
+}
+.admin-overlay-close {
+  position: absolute; top: 14px; right: 16px; background: none; border: none;
+  color: var(--text-dim); font-size: 1.6rem; line-height: 1; cursor: pointer;
+}
+.admin-overlay-close:hover { color: var(--red); }
+.admin-overlay-panel h2 { font-size: 1.25rem; margin-bottom: 4px; padding-right: 30px; }
+
+.admin-detail-section { margin-top: 22px; }
+.admin-detail-section h3 {
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim); margin-bottom: 10px; font-family: var(--font-body); font-weight: 700;
+}
+.admin-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px 24px; }
+.admin-detail-grid > div { min-width: 0; }
+.admin-detail-grid div span { display: block; color: var(--text-dim); font-size: 0.78rem; margin-bottom: 2px; }
+.admin-detail-grid div strong {
+  display: block; font-size: 0.95rem; overflow-wrap: anywhere; word-break: break-word;
+}
+
+.admin-mini-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.admin-mini-table th, .admin-mini-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 0.82rem; }
+.admin-mini-table th { color: var(--text-dim); text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.04em; }
+.admin-mini-table tbody tr:last-child td { border-bottom: none; }
+
+.admin-status-change { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
+.admin-status-change select {
+  padding: 9px 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: 0.9rem;
+}
+.admin-status-change .btn { width: auto; margin-top: 0; padding: 9px 18px; }
+
+.admin-confirm-box {
+  margin-top: 14px; padding: 14px; border: 1px solid var(--red); border-radius: 8px;
+  background: rgba(226, 35, 26, 0.08);
+}
+.admin-confirm-box p { margin-bottom: 12px; font-weight: 600; }
+.admin-confirm-box-actions { display: flex; gap: 10px; }
+.admin-confirm-box-actions .btn { width: auto; margin-top: 0; padding: 9px 20px; }
+.admin-confirm-box-actions .btn-outline { border-color: var(--line); }
+
+.admin-notes-box {
+  margin-top: 10px; padding: 12px 14px; background: var(--bg); border-radius: 8px;
+  border: 1px solid var(--line); font-size: 0.88rem; color: var(--text-dim); white-space: pre-wrap;
+}
+
+/* ============ Responsive ============ */
+
+@media (max-width: 900px) {
+  .admin-main { padding: 22px 16px 48px; }
+  .admin-tabs { top: 57px; }
+}
+
+@media (max-width: 700px) {
+  .admin-table-wrap { overflow-x: visible; }
+  .admin-table { min-width: 0; }
+  .admin-table thead { display: none; }
+  .admin-table, .admin-table tbody, .admin-table tr, .admin-table td { display: block; width: 100%; }
+  .admin-table tr { border-bottom: 1px solid var(--line); padding: 10px 14px; }
+  .admin-table td {
+    display: flex; justify-content: space-between; gap: 12px; align-items: center;
+    border-bottom: none; padding: 6px 0; white-space: normal; text-align: right;
+  }
+  .admin-table td::before {
+    content: attr(data-label); color: var(--text-dim); font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; text-align: left;
+  }
+}
+
+@media (max-width: 600px) {
+  .admin-login-card { padding: 32px 22px; }
+  .admin-topbar { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }
+  .admin-topbar-email { display: none; }
+  .admin-view-header { flex-direction: column; align-items: flex-start; }
+  .admin-filters { flex-direction: column; align-items: stretch; }
+  .admin-filter-field, .admin-filter-field-grow { min-width: 0; }
+  .admin-overlay { padding: 12px; }
+  .admin-overlay-panel { padding: 24px 18px; }
+  .admin-detail-grid { grid-template-columns: 1fr; }
+}

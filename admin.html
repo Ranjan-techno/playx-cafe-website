@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Play X Admin</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0c0c0d">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏎️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<!-- Reuses css/style.css for design tokens (--bg/--red/--radius/fonts) and several shared
+     component classes (.btn, .btn-outline, .form-field, .form-status, .otp-verification,
+     .otp-digit, .link-inline, .booking-status-pill) rather than redefining them - see
+     css/admin.css's header for exactly which classes are shared vs admin-only. -->
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/admin.css">
+</head>
+<body class="admin-body">
+
+<!-- ============ ADMIN LOGIN (passwordless OTP - same POST /auth/start -> 6-digit code ->
+     POST /auth/verify sequence as index.html's My Bookings gate, see js/admin.js) ============ -->
+<div class="admin-login-screen" id="adminLoginScreen">
+  <div class="admin-login-card">
+    <a href="index.html" class="admin-login-logo">
+      <img src="assets/brand/playx-logo-light.png" alt="Play X Cafe">
+    </a>
+    <p class="admin-login-kicker">PLAY X ADMIN</p>
+
+    <!-- Step 1: email -> Send Code -->
+    <form class="admin-auth-form" id="adminAuthForm">
+      <div class="form-field">
+        <label for="adminEmail">Admin email</label>
+        <input type="email" id="adminEmail" name="email" placeholder="you@playxcafe.com" required autocomplete="username">
+      </div>
+      <button type="submit" class="btn btn-primary" id="adminSendCodeBtn">Send 6-Digit Code</button>
+    </form>
+    <p class="form-status" id="adminAuthStatus" role="status" aria-live="polite"></p>
+
+    <!-- Step 2: 6-digit code -> Verify (shown once POST /auth/start succeeds) -->
+    <div class="otp-verification" id="adminOtp" hidden>
+      <p class="otp-verification-copy">
+        We've sent a 6-digit Play X code to:<br>
+        <strong id="adminOtpEmail"></strong>
+      </p>
+      <fieldset class="otp-input-group" id="adminOtpGroup">
+        <legend class="sr-only">Enter the 6-digit verification code</legend>
+        <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="1" class="admin-otp-digit" aria-label="Digit 1 of 6" data-otp-index="0">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="admin-otp-digit" aria-label="Digit 2 of 6" data-otp-index="1">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="admin-otp-digit" aria-label="Digit 3 of 6" data-otp-index="2">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="admin-otp-digit" aria-label="Digit 4 of 6" data-otp-index="3">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="admin-otp-digit" aria-label="Digit 5 of 6" data-otp-index="4">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="1" class="admin-otp-digit" aria-label="Digit 6 of 6" data-otp-index="5">
+      </fieldset>
+      <button type="button" class="btn btn-primary" id="adminVerifyBtn">Verify &amp; Sign In</button>
+      <p class="form-status" id="adminOtpStatus" role="status" aria-live="polite"></p>
+      <div class="otp-secondary-actions">
+        <button type="button" class="link-inline" id="adminResendBtn">Resend code</button>
+        <button type="button" class="link-inline" id="adminChangeEmailBtn">Use a different email</button>
+      </div>
+    </div>
+
+    <!-- Shown when a verified account is authenticated but GET /admin/dashboard returns 403 -
+         the backend's requireAdmin() check, never bypassed here. -->
+    <div class="admin-forbidden" id="adminForbidden" hidden>
+      <p class="admin-forbidden-message">Your account does not have administrator access.</p>
+      <button type="button" class="btn btn-primary" id="adminForbiddenSignOutBtn">Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ ADMIN APP (shown only after GET /admin/dashboard confirms admin access) ============ -->
+<div class="admin-app" id="adminApp" hidden>
+  <header class="admin-topbar">
+    <a href="index.html" class="admin-topbar-logo">
+      <img src="assets/brand/playx-logo-light.png" alt="Play X Cafe">
+      <span>ADMIN</span>
+    </a>
+    <div class="admin-topbar-account">
+      <span class="admin-topbar-email" id="adminAccountEmail"></span>
+      <button type="button" class="btn btn-outline" id="adminSignOutBtn">Sign Out</button>
+    </div>
+  </header>
+
+  <nav class="admin-tabs" id="adminTabs">
+    <button type="button" class="admin-tab active" data-view="dashboard">Dashboard</button>
+    <button type="button" class="admin-tab" data-view="bookings">Bookings</button>
+    <button type="button" class="admin-tab" data-view="payments">Payments</button>
+    <button type="button" class="admin-tab" data-view="simulators">Simulators</button>
+  </nav>
+
+  <main class="admin-main">
+
+    <!-- ============ DASHBOARD ============ -->
+    <section class="admin-view active" id="view-dashboard">
+      <div class="admin-view-header">
+        <div>
+          <h1>Dashboard</h1>
+          <p class="admin-view-sub" id="dashboardDate"></p>
+        </div>
+        <button type="button" class="btn btn-outline" id="dashboardRefreshBtn">Refresh</button>
+      </div>
+      <p class="admin-status" id="dashboardStatus" role="status" aria-live="polite"></p>
+      <div class="admin-cards" id="dashboardCards" hidden></div>
+    </section>
+
+    <!-- ============ BOOKINGS ============ -->
+    <section class="admin-view" id="view-bookings">
+      <div class="admin-view-header">
+        <h1>Bookings</h1>
+      </div>
+      <form class="admin-filters" id="bookingsFilters">
+        <div class="admin-filter-field">
+          <label for="bookingsFilterDate">Date</label>
+          <input type="date" id="bookingsFilterDate">
+        </div>
+        <div class="admin-filter-field">
+          <label for="bookingsFilterStatus">Status</label>
+          <select id="bookingsFilterStatus">
+            <option value="">All</option>
+            <option value="pending">Pending</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="cancelled">Cancelled</option>
+            <option value="completed">Completed</option>
+            <option value="no_show">No Show</option>
+          </select>
+        </div>
+        <div class="admin-filter-field admin-filter-field-grow">
+          <label for="bookingsFilterSearch">Search (name, email, phone)</label>
+          <input type="text" id="bookingsFilterSearch" placeholder="Search customers...">
+        </div>
+        <div class="admin-filter-actions">
+          <button type="submit" class="btn btn-primary">Apply</button>
+          <button type="button" class="btn btn-outline" id="bookingsFilterClearBtn">Clear</button>
+        </div>
+      </form>
+      <p class="admin-status" id="bookingsStatus" role="status" aria-live="polite"></p>
+      <div class="admin-table-wrap" id="bookingsTableWrap" hidden>
+        <table class="admin-table" id="bookingsTable">
+          <thead>
+            <tr>
+              <th>Booking</th>
+              <th>Customer</th>
+              <th>Product</th>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Price</th>
+              <th>Status</th>
+              <th>Payment</th>
+              <th>Simulators</th>
+            </tr>
+          </thead>
+          <tbody id="bookingsTableBody"></tbody>
+        </table>
+      </div>
+      <div class="admin-load-more-row">
+        <button type="button" class="btn btn-outline" id="bookingsLoadMoreBtn" hidden>Load more</button>
+      </div>
+    </section>
+
+    <!-- ============ PAYMENTS ============ -->
+    <section class="admin-view" id="view-payments">
+      <div class="admin-view-header">
+        <h1>Payments</h1>
+      </div>
+      <form class="admin-filters" id="paymentsFilters">
+        <div class="admin-filter-field">
+          <label for="paymentsFilterStatus">Status</label>
+          <select id="paymentsFilterStatus">
+            <option value="">All</option>
+            <option value="created">Created</option>
+            <option value="pending">Pending</option>
+            <option value="paid">Paid</option>
+            <option value="failed">Failed</option>
+            <option value="expired">Expired</option>
+            <option value="refunded">Refunded</option>
+          </select>
+        </div>
+        <div class="admin-filter-field">
+          <label for="paymentsFilterDate">Date</label>
+          <input type="date" id="paymentsFilterDate">
+        </div>
+        <div class="admin-filter-field admin-filter-field-grow">
+          <label for="paymentsFilterBookingId">Booking ID</label>
+          <input type="text" id="paymentsFilterBookingId" placeholder="Booking UUID">
+        </div>
+        <div class="admin-filter-actions">
+          <button type="submit" class="btn btn-primary">Apply</button>
+          <button type="button" class="btn btn-outline" id="paymentsFilterClearBtn">Clear</button>
+        </div>
+      </form>
+      <p class="admin-status" id="paymentsStatus" role="status" aria-live="polite"></p>
+      <div class="admin-table-wrap" id="paymentsTableWrap" hidden>
+        <table class="admin-table" id="paymentsTable">
+          <thead>
+            <tr>
+              <th>Payment</th>
+              <th>Booking</th>
+              <th>Provider</th>
+              <th>Amount</th>
+              <th>Status</th>
+              <th>Order / Txn ID</th>
+              <th>Created</th>
+              <th>Paid</th>
+            </tr>
+          </thead>
+          <tbody id="paymentsTableBody"></tbody>
+        </table>
+      </div>
+      <div class="admin-load-more-row">
+        <button type="button" class="btn btn-outline" id="paymentsLoadMoreBtn" hidden>Load more</button>
+      </div>
+    </section>
+
+    <!-- ============ SIMULATORS ============ -->
+    <section class="admin-view" id="view-simulators">
+      <div class="admin-view-header">
+        <div>
+          <h1>Simulators</h1>
+          <p class="admin-view-sub">Read-only allocation board for one day.</p>
+        </div>
+        <div class="admin-simulators-date-row">
+          <input type="date" id="simulatorsDate">
+          <button type="button" class="btn btn-outline" id="simulatorsRefreshBtn">Refresh</button>
+        </div>
+      </div>
+      <p class="admin-status" id="simulatorsStatus" role="status" aria-live="polite"></p>
+      <div class="admin-simulator-board" id="simulatorsBoard" hidden></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ BOOKING DETAIL OVERLAY ============ -->
+<div class="admin-overlay" id="bookingDetailOverlay" hidden>
+  <div class="admin-overlay-backdrop" id="bookingDetailBackdrop"></div>
+  <div class="admin-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="bookingDetailTitle">
+    <button type="button" class="admin-overlay-close" id="bookingDetailCloseBtn" aria-label="Close">&times;</button>
+    <h2 id="bookingDetailTitle">Booking Detail</h2>
+    <p class="admin-status" id="bookingDetailStatus" role="status" aria-live="polite"></p>
+    <div class="admin-booking-detail" id="bookingDetailBody" hidden></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+<script src="js/aws-config.js"></script>
+<script src="js/cognito-auth.js"></script>
+<script src="js/format-utils.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>
