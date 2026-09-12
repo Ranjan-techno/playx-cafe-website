@@ -11,6 +11,7 @@ import { toIstDateTimeParts } from '../lib/opening-hours';
 
 interface BookingRow {
   id: string;
+  booking_number: number;
   product_code: string;
   price_inr: string; // pg returns NUMERIC as a string
   scheduled_start_at: Date;
@@ -30,7 +31,7 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
   try {
     const db = await getDb();
     const { rows } = await db.query<BookingRow>(
-      `SELECT b.id, p.product_code, b.price_inr, b.scheduled_start_at, b.status, b.notes, b.created_at
+      `SELECT b.id, b.booking_number, p.product_code, b.price_inr, b.scheduled_start_at, b.status, b.notes, b.created_at
        FROM bookings b
        JOIN products p ON p.id = b.product_id
        WHERE b.cognito_sub = $1
@@ -42,6 +43,10 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
       const { date, time } = toIstDateTimeParts(row.scheduled_start_at);
       return {
         id: row.id,
+        // Additive field: the 4-digit customer-facing reference (see this repo's CLAUDE.md and
+        // database/migrations/004_short_booking_number.sql). `id` is unchanged — existing clients
+        // that only read id/product/price/date/time/status/notes/createdAt are unaffected.
+        bookingNumber: row.booking_number,
         product: row.product_code,
         price: Number(row.price_inr),
         date,

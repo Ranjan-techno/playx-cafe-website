@@ -635,8 +635,12 @@ async function submitBookingRequest({
     resultStatusEl.className = `booking-status-pill ${result.status}`;
     const referenceEl = document.getElementById('resultReference');
     if (referenceEl) {
-      if (result.id) {
-        referenceEl.textContent = `Booking reference: ${result.id}`;
+      // The customer-facing reference is the 4-digit bookingNumber ("Booking #1007"), never the
+      // internal UUID (result.id) - see js/format-utils.js's formatBookingReference(), which
+      // already returns the full "Booking #1007" text; do not prepend "Booking " again here.
+      const reference = formatBookingReference(result.bookingNumber, result.id);
+      if (reference) {
+        referenceEl.textContent = reference;
         referenceEl.hidden = false;
       } else {
         referenceEl.hidden = true;

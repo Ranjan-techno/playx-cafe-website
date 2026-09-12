@@ -10,6 +10,7 @@ import {
   mapAdminPaymentListRow,
   parseAdminBookingsQuery,
   parseAdminPaymentsQuery,
+  parseBookingNumberSearch,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
 } from './admin-repository';
@@ -130,12 +131,31 @@ test('isValidUuid: rejects SQL-injection-shaped and other garbage input', () => 
 });
 
 // ----------------------------------------------------------------------------
+// GET /admin/bookings — search-by-4-digit-booking-number extension
+// ----------------------------------------------------------------------------
+
+test('parseBookingNumberSearch: a real 4-digit booking number in range parses to a number', () => {
+  assert.equal(parseBookingNumberSearch('1007'), 1007);
+  assert.equal(parseBookingNumberSearch('1001'), 1001);
+  assert.equal(parseBookingNumberSearch('9999'), 9999);
+});
+
+test('parseBookingNumberSearch: below 1001 or non-4-digit input is not a booking number search', () => {
+  assert.equal(parseBookingNumberSearch('1000'), null); // below the real range
+  assert.equal(parseBookingNumberSearch('123'), null); // too short
+  assert.equal(parseBookingNumberSearch('12345'), null); // too long
+  assert.equal(parseBookingNumberSearch('Priya'), null); // a name, the existing search behavior
+  assert.equal(parseBookingNumberSearch('priya@example.com'), null); // an email
+});
+
+// ----------------------------------------------------------------------------
 // Row shaping (pure) — bookings list, payments list
 // ----------------------------------------------------------------------------
 
 test('mapAdminBookingListRow: shapes a full row, including allocated simulator codes and payment summary', () => {
   const item = mapAdminBookingListRow({
     id: 'booking-1',
+    booking_number: 1007,
     customer_name: 'Priya Sharma',
     customer_phone: '+919876543210',
     customer_email: 'priya@example.com',
@@ -157,11 +177,13 @@ test('mapAdminBookingListRow: shapes a full row, including allocated simulator c
   assert.deepEqual(item.allocatedSimulators, ['S1']);
   assert.deepEqual(item.payment, { status: 'paid', provider: 'phonepe' });
   assert.equal(item.bookingReference, 'booking-1');
+  assert.equal(item.bookingNumber, 1007);
 });
 
 test('mapAdminBookingListRow: no allocation rows -> empty array, no payment attempt -> null', () => {
   const item = mapAdminBookingListRow({
     id: 'booking-2',
+    booking_number: 1008,
     customer_name: null,
     customer_phone: null,
     customer_email: null,
@@ -185,6 +207,7 @@ test('mapAdminPaymentListRow: never surfaces metadata (there is no field for it)
   const item = mapAdminPaymentListRow({
     id: 'payment-1',
     booking_id: 'booking-1',
+    booking_number: 1007,
     provider: 'phonepe',
     provider_order_id: 'order-1',
     provider_transaction_id: 'txn-1',
@@ -198,6 +221,7 @@ test('mapAdminPaymentListRow: never surfaces metadata (there is no field for it)
   assert.equal('metadata' in item, false);
   assert.equal(item.amountInr, 599);
   assert.equal(item.paidAt, '2026-09-10T10:05:00.000Z');
+  assert.equal(item.bookingNumber, 1007);
 });
 
 // ----------------------------------------------------------------------------
@@ -342,6 +366,7 @@ test('buildDashboardSummary: bookings.pending is a booking-lifecycle count, inde
 
 const BOOKING_DETAIL_ROW = {
   id: 'booking-1',
+  booking_number: 1007,
   customer_name: 'Priya Sharma',
   customer_phone: '+919876543210',
   customer_email: 'priya@example.com',
@@ -406,6 +431,7 @@ test('buildAdminBookingDetail: currentPaymentStatus prefers a paid attempt over 
   assert.equal(detail.allocations.length, 1);
   assert.equal(detail.allocations[0].simulatorCode, 'S1');
   assert.equal(detail.payments.length, 2);
+  assert.equal(detail.bookingNumber, 1007);
 });
 
 test('buildAdminBookingDetail: no payment attempts -> currentPaymentStatus is null, not a crash', () => {
@@ -430,6 +456,7 @@ test('buildSimulatorBoard: returns all four rigs even when only some have entrie
     [
       {
         booking_id: 'booking-1',
+        booking_number: 1001,
         simulator_id: 'sim-s1',
         scheduled_start_at: new Date('2026-09-10T05:30:00.000Z'),
         scheduled_end_at: new Date('2026-09-10T06:00:00.000Z'),
@@ -447,6 +474,7 @@ test('buildSimulatorBoard: returns all four rigs even when only some have entrie
   );
   assert.equal(board.find((s) => s.code === 'S1')?.entries.length, 1);
   assert.equal(board.find((s) => s.code === 'S2')?.entries.length, 0);
+  assert.equal(board.find((s) => s.code === 'S1')?.entries[0].bookingNumber, 1001);
 });
 
 test('buildSimulatorBoard: an expired hold is shown as-is (hold status, past hold_expires_at) — not silently hidden or relabeled', () => {
@@ -455,6 +483,7 @@ test('buildSimulatorBoard: an expired hold is shown as-is (hold status, past hol
     [
       {
         booking_id: 'booking-1',
+        booking_number: 1001,
         simulator_id: 'sim-s1',
         scheduled_start_at: new Date('2026-09-10T05:30:00.000Z'),
         scheduled_end_at: new Date('2026-09-10T06:00:00.000Z'),
@@ -476,6 +505,7 @@ test('buildSimulatorBoard: a released allocation stays visible with its true sta
     [
       {
         booking_id: 'booking-1',
+        booking_number: 1001,
         simulator_id: 'sim-s1',
         scheduled_start_at: new Date('2026-09-10T05:30:00.000Z'),
         scheduled_end_at: new Date('2026-09-10T06:00:00.000Z'),
@@ -500,6 +530,7 @@ test('buildSimulatorBoard: blocksCapacity is true for a confirmed allocation and
     [
       {
         booking_id: 'booking-confirmed',
+        booking_number: 1001,
         simulator_id: 'sim-s1',
         scheduled_start_at: new Date('2026-09-10T05:30:00.000Z'),
         scheduled_end_at: new Date('2026-09-10T06:00:00.000Z'),
@@ -509,6 +540,7 @@ test('buildSimulatorBoard: blocksCapacity is true for a confirmed allocation and
       },
       {
         booking_id: 'booking-active-hold',
+        booking_number: 1002,
         simulator_id: 'sim-s1',
         scheduled_start_at: new Date('2026-09-10T07:00:00.000Z'),
         scheduled_end_at: new Date('2026-09-10T07:30:00.000Z'),
@@ -530,6 +562,7 @@ test('buildSimulatorBoard: blocksCapacity is false for an expired hold and for a
     [
       {
         booking_id: 'booking-expired-hold',
+        booking_number: 1001,
         simulator_id: 'sim-s1',
         scheduled_start_at: new Date('2026-09-10T05:30:00.000Z'),
         scheduled_end_at: new Date('2026-09-10T06:00:00.000Z'),
@@ -539,6 +572,7 @@ test('buildSimulatorBoard: blocksCapacity is false for an expired hold and for a
       },
       {
         booking_id: 'booking-released',
+        booking_number: 1002,
         simulator_id: 'sim-s1',
         scheduled_start_at: new Date('2026-09-10T07:00:00.000Z'),
         scheduled_end_at: new Date('2026-09-10T07:30:00.000Z'),
