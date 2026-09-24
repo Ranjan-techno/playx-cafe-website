@@ -31,8 +31,8 @@
   const ApiRoutes = root.PlayXApiRoutes || (typeof require === 'function' ? require('./api-routes.js') : null);
 
   // PhonePe payment UI gate: staging/local development (SANDBOX routes) and playxcafe.com /
-  // www.playxcafe.com (PRODUCTION routes, which the backend limits to the production tester
-  // allowlist). The host list lives in js/api-routes.js next to the routing it implies.
+  // www.playxcafe.com (PRODUCTION routes, which the backend gates by its production access mode).
+  // The host list lives in js/api-routes.js next to the routing it implies.
   function isPaymentUiEnabled(hostname) {
     return ApiRoutes.isPaymentUiHostname(hostname);
   }
@@ -154,8 +154,12 @@
   //   redirect(u) -> full-page navigation  (window.location.href = u)
   function createPaymentClient({ apiBaseUrl, routes = ApiRoutes.ROUTES.SANDBOX, getToken, fetchImpl, storage, redirect }) {
     // Double-click / double-tap protection: one start request in flight at a time, per client,
-    // across every button that shares it.
+    // across every button that shares it. (Backend idempotency - one reusable attempt per booking -
+    // is the real protection; this only keeps the UI from sending duplicates.)
     let startInFlight = false;
+    // Set once this client has sent the page to PhonePe. If the browser later restores the page
+    // from its back/forward cache, the "Redirecting..." state is stale (see getBrowserClient).
+    let redirectIssued = false;
 
     async function authorizedFetch(path, init) {
       let token;
@@ -202,6 +206,7 @@
         saveCheckoutContext(storage, bookingId);
         redirect(body.redirectUrl);
         redirected = true;
+        redirectIssued = true;
         return { ok: true };
       } catch (err) {
         return failure('unknown');
@@ -221,7 +226,14 @@
       return { ok: true, status: body };
     }
 
-    return { startPayment, getPaymentStatus };
+    return { startPayment, getPaymentStatus, hasRedirected: () => redirectIssued };
+  }
+
+  // A page restored from the back/forward cache after we sent it to PhonePe still shows a disabled
+  // "Redirecting..." button and a set in-flight guard. Reloading re-asks the backend for the real
+  // state instead (success is only ever what the status endpoint says).
+  function shouldReloadOnPageShow(event, client) {
+    return !!(event && event.persisted && client && client.hasRedirected());
   }
 
   // ---- Status -> customer-facing view --------------------------------------------------------
@@ -327,6 +339,12 @@
         storage: window.sessionStorage,
         redirect: (url) => { window.location.href = url; }
       });
+      const client = browserClient;
+      if (typeof window.addEventListener === 'function') {
+        window.addEventListener('pageshow', (event) => {
+          if (shouldReloadOnPageShow(event, client)) window.location.reload();
+        });
+      }
     }
     return browserClient;
   }
@@ -352,6 +370,7 @@
     resolveBookingId,
     describeMissingBooking,
     createPaymentClient,
+    shouldReloadOnPageShow,
     getBrowserClient,
     describePaymentStatus,
     describeBookingPaymentAction

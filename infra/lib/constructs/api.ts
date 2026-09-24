@@ -16,7 +16,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { ApiConfig } from '../config/api-config';
-import { PaymentConfig, ProductionPaymentConfig } from '../config/payment-config';
+import { PaymentConfig, ProductionAccessMode, ProductionPaymentConfig } from '../config/payment-config';
 
 export interface ApiConstructProps {
   apiConfig: ApiConfig;
@@ -33,6 +33,9 @@ export interface ApiConstructProps {
   createBookingProductionFunctionName: string;
   /** Full resource name for the list-my-bookings Lambda, e.g. 'playx-dev-bookings-me'. */
   listMyBookingsFunctionName: string;
+  /** Stage 2E: GET /bookings/production/me's Lambda (PRODUCTION bookings only), e.g.
+   *  'playx-dev-bookings-me-production'. */
+  listMyBookingsProductionFunctionName: string;
   /** Full resource name for the Phase 2 availability Lambda, e.g. 'playx-dev-availability'. */
   availabilityFunctionName: string;
   /** Full resource name for the passwordless auth-start Lambda, e.g. 'playx-dev-auth-start'. */
@@ -80,6 +83,12 @@ export interface ApiConstructProps {
    *  PRODUCTION payments once the production kill switches are on. Empty fails closed — see
    *  config/payment-config.ts's resolveProductionTesters. */
   phonepeProductionTesters: string;
+  /** Stage 2E: the explicit production access mode (TESTER | PUBLIC) — see
+   *  config/payment-config.ts's resolveProductionAccessMode. */
+  phonepeProductionAccessMode: ProductionAccessMode;
+  /** Stage 2E: names of the two minimal production Lambda-error alarms (payment start + webhook). */
+  paymentStartProductionErrorsAlarmName: string;
+  paymentWebhookProductionErrorsAlarmName: string;
 
   /** Story 2.1 VPC — the products/booking Lambdas need this to reach the Story 2.2 database. */
   vpc: ec2.IVpc;
@@ -159,6 +168,15 @@ export interface ApiConstructProps {
  * and PAYMENT_START_ENABLED on the production payment-start Lambda (productionPaymentConfigs.dev).
  * The tester allowlist above stays mandatory: an empty list or a non-listed sub is still 403
  * before any DB/provider work. Sandbox functions, the webhook and the status route are unchanged.
+ *
+ * Stage 2E (MVP production hardening):
+ *   - PHONEPE_PRODUCTION_ACCESS_MODE (TESTER | PUBLIC, from the `phonepeProductionAccessMode`
+ *     context; TESTER unless explicitly PUBLIC) on the production create-booking and payment-start
+ *     Lambdas, next to PHONEPE_PRODUCTION_TESTERS.
+ *   - GET /bookings/production/me — JWT-protected; the list-my-bookings handler hard-coded to
+ *     PRODUCTION rows (GET /bookings/me now lists SANDBOX rows only).
+ *   - Two Lambda-error alarms, on the production payment-start and webhook functions, beside the
+ *     existing production fast-reconcile DLQ alarm.
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
@@ -167,6 +185,7 @@ export class ApiConstruct extends Construct {
   public readonly createBookingFunction: lambdaNodejs.NodejsFunction;
   public readonly createBookingProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly listMyBookingsFunction: lambdaNodejs.NodejsFunction;
+  public readonly listMyBookingsProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly availabilityFunction: lambdaNodejs.NodejsFunction;
   public readonly authStartFunction: lambdaNodejs.NodejsFunction;
   public readonly authVerifyFunction: lambdaNodejs.NodejsFunction;
@@ -189,6 +208,8 @@ export class ApiConstruct extends Construct {
   public readonly paymentReconcileProductionRule: events.Rule;
   public readonly paymentStatusProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentWebhookProductionFunction: lambdaNodejs.NodejsFunction;
+  public readonly paymentStartProductionErrorsAlarm: cloudwatch.Alarm;
+  public readonly paymentWebhookProductionErrorsAlarm: cloudwatch.Alarm;
 
   constructor(scope: Construct, id: string, props: ApiConstructProps) {
     super(scope, id);
@@ -260,6 +281,7 @@ export class ApiConstruct extends Construct {
       environment: {
         ...dbFunctionDefaults.environment,
         BOOKING_CREATE_ENABLED: props.productionPaymentConfig.bookingCreateEnabled ? 'true' : 'false',
+        PHONEPE_PRODUCTION_ACCESS_MODE: props.phonepeProductionAccessMode,
         PHONEPE_PRODUCTION_TESTERS: props.phonepeProductionTesters,
       },
     });
@@ -271,6 +293,16 @@ export class ApiConstruct extends Construct {
       entry: path.join(__dirname, '../../../backend/src/handlers/list-my-bookings.ts'),
     });
     props.databaseSecret.grantRead(this.listMyBookingsFunction);
+
+    // Stage 2E: the PRODUCTION twin of GET /bookings/me — same handler code, placement and DB access;
+    // its entry file hard-codes booking_environment=PRODUCTION (the SANDBOX one hard-codes SANDBOX),
+    // so playxcafe.com never receives sandbox bookings. No PhonePe secret, no tester list.
+    this.listMyBookingsProductionFunction = new lambdaNodejs.NodejsFunction(this, 'ListMyBookingsProductionFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.listMyBookingsProductionFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/list-my-bookings-production.ts'),
+    });
+    props.databaseSecret.grantRead(this.listMyBookingsProductionFunction);
 
     this.availabilityFunction = new lambdaNodejs.NodejsFunction(this, 'AvailabilityFunction', {
       ...dbFunctionDefaults,
@@ -437,6 +469,7 @@ export class ApiConstruct extends Construct {
         // Stage 2B: every PRODUCTION order must start the fast-reconcile chain; the handler fails
         // closed (before PhonePe) without this.
         PAYMENT_RECONCILE_QUEUE_URL: productionQueue.queueUrl,
+        PHONEPE_PRODUCTION_ACCESS_MODE: props.phonepeProductionAccessMode,
         PHONEPE_PRODUCTION_TESTERS: props.phonepeProductionTesters,
       },
     });
@@ -592,6 +625,33 @@ export class ApiConstruct extends Construct {
     props.databaseSecret.grantRead(this.paymentWebhookProductionFunction);
     grantPhonePeSecret(this.paymentWebhookProductionFunction, productionPayment.phonepeSecretName);
 
+    // Stage 2E: minimal production error alarms, same shape as the DLQ alarm above (1-minute period,
+    // any datapoint breaches, missing data is OK, no actions yet — there is no SNS topic in this
+    // stack). Lambda `Errors` counts invocations that threw, timed out or crashed; the handlers map
+    // every expected failure to an HTTP response, so a non-zero value means something unexpected.
+    const productionErrorsAlarm = (id: string, alarmName: string, fn: lambdaNodejs.NodejsFunction, what: string) =>
+      new cloudwatch.Alarm(this, id, {
+        alarmName,
+        alarmDescription: `PRODUCTION PhonePe ${what}: Lambda invocation errors (unhandled exception, timeout or crash)`,
+        metric: fn.metricErrors({ period: cdk.Duration.minutes(1), statistic: cloudwatch.Stats.SUM }),
+        threshold: 0,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    this.paymentStartProductionErrorsAlarm = productionErrorsAlarm(
+      'PaymentStartProductionErrorsAlarm',
+      props.paymentStartProductionErrorsAlarmName,
+      this.paymentStartProductionFunction,
+      'payment start',
+    );
+    this.paymentWebhookProductionErrorsAlarm = productionErrorsAlarm(
+      'PaymentWebhookProductionErrorsAlarm',
+      props.paymentWebhookProductionErrorsAlarmName,
+      this.paymentWebhookProductionFunction,
+      'webhook',
+    );
+
     // Not VPC-attached, same as healthFunction: these only call Cognito's regional Admin* APIs,
     // never the database.
     const authFunctionDefaults = {
@@ -688,6 +748,17 @@ export class ApiConstruct extends Construct {
       path: '/bookings/me',
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2Integrations.HttpLambdaIntegration('ListMyBookingsIntegration', this.listMyBookingsFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    // Stage 2E: PRODUCTION bookings only (playxcafe.com's My Bookings). Same authorizer as /bookings/me.
+    this.httpApi.addRoutes({
+      path: '/bookings/production/me',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration(
+        'ListMyBookingsProductionIntegration',
+        this.listMyBookingsProductionFunction,
+      ),
       authorizer: cognitoAuthorizer,
     });
 

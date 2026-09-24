@@ -2,19 +2,25 @@
 // that decides whether this page talks to the SANDBOX or the PRODUCTION booking/payment routes.
 //
 //   playxcafe.com / www.playxcafe.com   PRODUCTION   POST /bookings/production
+//                                                    GET  /bookings/production/me
 //                                                    POST /payments/production/start
 //                                                    GET  /payments/production/{id}/status
 //   everything else (staging.playxcafe.com, SANDBOX      POST /bookings
-//   localhost, previews, unknown hosts)              POST /payments/start
+//   localhost, previews, unknown hosts)              GET  /bookings/me
+//                                                    POST /payments/start
 //                                                    GET  /payments/{id}/status
+//
+// My Bookings is environment-isolated on the SERVER: GET /bookings/production/me returns only
+// PRODUCTION bookings and GET /bookings/me only SANDBOX ones (the environment is hard-coded per
+// Lambda), so nothing is downloaded and then hidden here.
 //
 // Trust model:
 //   - The ONLY input is the page's own hostname. No query parameter, hash, storage value, cookie
 //     or API response can select or override the environment. An unknown host falls back to
 //     SANDBOX, never to PRODUCTION.
 //   - This is routing only, not authorization. Every PRODUCTION route is independently gated
-//     server-side (kill switches + the production Cognito-sub tester allowlist, booking
-//     ownership, environment matching); calling it from the "wrong" host gains nothing.
+//     server-side (kill switches + the production access mode - TESTER allowlist or PUBLIC -
+//     booking ownership, environment matching); calling it from the "wrong" host gains nothing.
 //   - No PhonePe credential, secret name or tester id lives here or anywhere in frontend JS.
 //
 // DOM-free and exported for tests (tests/api-routes.test.js) via module.exports; in the browser
@@ -31,12 +37,14 @@
     SANDBOX: Object.freeze({
       environment: 'SANDBOX',
       createBooking: '/bookings',
+      myBookings: '/bookings/me',
       startPayment: '/payments/start',
       paymentStatus: (bookingId) => `/payments/${encodeURIComponent(bookingId)}/status`
     }),
     PRODUCTION: Object.freeze({
       environment: 'PRODUCTION',
       createBooking: '/bookings/production',
+      myBookings: '/bookings/production/me',
       startPayment: '/payments/production/start',
       paymentStatus: (bookingId) => `/payments/production/${encodeURIComponent(bookingId)}/status`
     })

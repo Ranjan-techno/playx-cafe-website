@@ -224,9 +224,73 @@ test('no PhonePe credentials, secret names or tester allowlists anywhere in fron
     for (const needle of [
       /playx\/phonepe/i, /clientSecret/i, /client_secret/i, /clientVersion/i, /webhookUsername/i,
       /webhookPassword/i, /PHONEPE_PRODUCTION_TESTERS/, /PHONEPE_SANDBOX_TESTERS/, /PHONEPE_SECRET/,
+      /PHONEPE_PRODUCTION_ACCESS_MODE/,
       /secretsmanager/i, /AKIA[0-9A-Z]{16}/
     ]) {
       assert.doesNotMatch(src, needle, `${file} must not contain ${needle}`);
     }
   }
+});
+
+// ---- Stage 2E: environment-isolated My Bookings ------------------------------------------------
+test('My Bookings route: playxcafe.com / www -> GET /bookings/production/me; staging, local and unknown hosts -> GET /bookings/me', () => {
+  for (const host of ['playxcafe.com', 'www.playxcafe.com', 'PLAYXCAFE.COM']) {
+    assert.equal(R.routesForHostname(host).myBookings, '/bookings/production/me', host);
+  }
+  for (const host of ['staging.playxcafe.com', 'localhost', '127.0.0.1', 'preview.example.com', 'playxcafe.com.evil.test', '', undefined]) {
+    assert.equal(R.routesForHostname(host).myBookings, '/bookings/me', String(host));
+  }
+});
+
+/** Runs the real js/api-routes.js + js/my-bookings.js in a minimal window/document stub served from
+ *  `href` and returns the URL(s) My Bookings fetched on load. */
+async function myBookingsFetchesOn(href) {
+  const url = new URL(href);
+  const calls = [];
+  const el = () => ({
+    hidden: false, textContent: '', innerHTML: '', dataset: {},
+    classList: { toggle() {}, add() {}, remove() {} },
+    addEventListener() {}, appendChild() {}, setAttribute() {}
+  });
+  const elements = {};
+  const context = {
+    location: url,
+    console: { error() {}, log() {} },
+    AWS_CONFIG: { apiBaseUrl: API },
+    CognitoAuth: { isConfigured: true, getAccessToken: async () => 'jwt' },
+    fetch: async (u) => { calls.push(u); return { ok: true, status: 200, json: async () => ({ bookings: [] }) }; },
+    document: {
+      getElementById: (id) => (elements[id] = elements[id] || el()),
+      createElement: el,
+      querySelectorAll: () => []
+    },
+    Intl, Date, Promise, URL, URLSearchParams, Object, Array, Number, String, JSON
+  };
+  context.window = context;
+  vm.createContext(context);
+  vm.runInContext(read('js/api-routes.js'), context);
+  vm.runInContext(read('js/my-bookings.js'), context);
+  for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
+  return calls;
+}
+
+test('My Bookings on playxcafe.com / www fetches ONLY the PRODUCTION list; staging and localhost fetch ONLY the SANDBOX list', async () => {
+  assert.deepEqual(await myBookingsFetchesOn('https://playxcafe.com/#my-bookings'), [`${API}/bookings/production/me`]);
+  assert.deepEqual(await myBookingsFetchesOn('https://www.playxcafe.com/'), [`${API}/bookings/production/me`]);
+  assert.deepEqual(await myBookingsFetchesOn('https://staging.playxcafe.com/'), [`${API}/bookings/me`]);
+  assert.deepEqual(await myBookingsFetchesOn('http://localhost:8000/'), [`${API}/bookings/me`]);
+});
+
+test('My Bookings: query string / hash cannot switch environment (no ?environment= is ever sent)', async () => {
+  assert.deepEqual(await myBookingsFetchesOn('https://playxcafe.com/?environment=SANDBOX#env=SANDBOX'), [`${API}/bookings/production/me`]);
+  assert.deepEqual(await myBookingsFetchesOn('https://staging.playxcafe.com/?environment=PRODUCTION'), [`${API}/bookings/me`]);
+  const src = read('js/my-bookings.js');
+  assert.match(src, /\$\{PlayXApiRoutes\.currentRoutes\(\)\.myBookings\}/);
+  assert.doesNotMatch(src, /apiBaseUrl\}\/bookings/, 'no hard-coded bookings path');
+  assert.doesNotMatch(src, /[?&]environment=/);
+});
+
+test('index.html loads js/api-routes.js before js/my-bookings.js', () => {
+  const index = read('index.html');
+  assert.ok(index.indexOf('<script src="js/api-routes.js"></script>') < index.indexOf('<script src="js/my-bookings.js"></script>'));
 });
