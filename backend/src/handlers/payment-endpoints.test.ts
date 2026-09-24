@@ -204,11 +204,18 @@ test('start: SANDBOX config writes typed payment_environment=SANDBOX and mirrors
   assert.equal(w.store.payments[0].metadata?.paymentEnvironment, 'SANDBOX');
 });
 
-test('start: a transitional NULL booking is accepted as legacy SANDBOX', async () => {
+test('start: a NULL booking environment is refused by the sandbox payment path (409, no provider call, nothing written)', async () => {
   const w = setup({}, { bookingEnvironment: null });
-  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
-  assert.equal(res.statusCode, 200);
-  assert.equal(w.store.payments[0].payment_environment, 'SANDBOX');
+  const err = mock.method(console, 'error', () => {});
+  try {
+    const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.body.error, 'booking_not_payable');
+  } finally {
+    err.mock.restore();
+  }
+  assert.equal(w.provider.createCalls.length, 0);
+  assert.equal(w.store.payments.length, 0);
 });
 
 test('start: a PRODUCTION booking is refused by the sandbox payment path (409, no provider call, nothing written)', async () => {
@@ -504,14 +511,33 @@ test('status: sandbox provider refuses to reconcile an explicitly PRODUCTION pay
   assert.equal(res.body.outcome, 'pending');
 });
 
-test('status: SANDBOX and transitional NULL payments are still reconciled by the sandbox provider', async () => {
-  for (const env of ['SANDBOX', null] as const) {
+test('status: SANDBOX payments are still reconciled by the sandbox provider', async () => {
+  const w = setup();
+  const payment = await started(w);
+  assert.equal(w.store.payments[0].payment_environment, 'SANDBOX');
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX-SANDBOX' });
+  const res = await call(() => w.status(statusEvent(w.bookingId)));
+  assert.equal(res.body.outcome, 'confirmed');
+  assert.equal(w.provider.statusCalls.length, 1);
+});
+
+test('status: a NULL/unknown payment environment is refused rather than reconciled (no provider call, no state change)', async () => {
+  for (const env of [null, 'LIVE']) {
     const w = setup();
     const payment = await started(w);
-    w.store.payments[0].payment_environment = env;
-    w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: `TX-${env}` });
-    const res = await call(() => w.status(statusEvent(w.bookingId)));
-    assert.equal(res.body.outcome, 'confirmed', String(env));
-    assert.equal(w.provider.statusCalls.length, 1);
+    w.store.payments[0].payment_environment = env as never;
+    w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX-X' });
+    const err = mock.method(console, 'error', () => {});
+    let res;
+    try {
+      res = await call(() => w.status(statusEvent(w.bookingId)));
+    } finally {
+      err.mock.restore();
+    }
+    assert.equal(res.statusCode, 200, String(env));
+    assert.equal(w.provider.statusCalls.length, 0, String(env));
+    assert.equal(w.store.payments[0].payment_status, 'pending');
+    assert.equal(w.store.bookings[0].status, 'pending');
+    assert.equal(res.body.outcome, 'pending');
   }
 });

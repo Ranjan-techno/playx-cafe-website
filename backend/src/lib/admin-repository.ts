@@ -228,15 +228,15 @@ export function describePaymentReviewReason(code: string | null | undefined): st
 export type PaymentEnvironmentLabel = 'SANDBOX' | 'PRODUCTION';
 
 /** Maps a typed payments.payment_environment / bookings.booking_environment column value for the
- *  admin response. Whitelist: only the two known values ever reach it; a transitional NULL is
- *  SANDBOX (see environment.ts), anything else null. */
+ *  admin response. Whitelist: only the two known values ever reach it; NULL or anything else is
+ *  null (see environment.ts). */
 export function toPaymentEnvironment(value: string | null | undefined): PaymentEnvironmentLabel | null {
   return effectiveStoredEnvironment(value);
 }
 
 /** Business-logic filter for real money: only payments whose typed payment_environment is
- *  PRODUCTION. A transitional NULL counts as SANDBOX (never PRODUCTION); metadata.paymentEnvironment
- *  is never consulted. */
+ *  PRODUCTION (strict typed comparison; NULL never matches); metadata.paymentEnvironment is never
+ *  consulted. */
 const LIVE_PAYMENT_SQL = `${effectiveEnvironmentSql('payment_environment')} = 'PRODUCTION'`;
 
 export interface CollectedPaymentRow {
@@ -244,7 +244,7 @@ export interface CollectedPaymentRow {
   amount_inr: string;
   /** payments.metadata.refundRequired = true (typed extract, never the raw blob). */
   refund_required: boolean | null;
-  /** Typed payments.payment_environment (never metadata); NULL only on transitional rows. */
+  /** Typed payments.payment_environment (never metadata); NOT NULL since migration 007. */
   payment_environment?: string | null;
 }
 
@@ -262,7 +262,7 @@ export function summarizeCollectedPayments(rows: CollectedPaymentRow[]): {
   let refundCount = 0;
   for (const row of rows) {
     if (row.payment_status !== 'paid') continue;
-    // Typed column only; SANDBOX, transitional NULL (= SANDBOX) and anything unknown are not money.
+    // Typed column only; SANDBOX, NULL and anything unknown are not money.
     if (effectiveStoredEnvironment(row.payment_environment) !== 'PRODUCTION') continue;
     const paise = inrToPaise(row.amount_inr);
     if (row.refund_required === true) {
@@ -446,7 +446,7 @@ interface AdminBookingListRow {
   simulator_codes: string[] | null;
   latest_payment_status: string | null;
   latest_payment_provider: string | null;
-  /** Typed bookings.booking_environment; NULL only on transitional rows. */
+  /** Typed bookings.booking_environment; NOT NULL since migration 007. */
   booking_environment?: string | null;
 }
 
@@ -472,7 +472,7 @@ export interface AdminBookingListItem {
   createdAt: string;
   allocatedSimulators: string[];
   payment: { status: string; provider: string } | null;
-  /** From the typed bookings.booking_environment column (transitional NULL -> SANDBOX). */
+  /** From the typed bookings.booking_environment column (NULL/unknown -> null). */
   bookingEnvironment: PaymentEnvironmentLabel | null;
 }
 
@@ -606,7 +606,7 @@ interface AdminBookingDetailRow {
   notes: string | null;
   created_at: Date;
   updated_at: Date;
-  /** Typed bookings.booking_environment; NULL only on transitional rows. */
+  /** Typed bookings.booking_environment; NOT NULL since migration 007. */
   booking_environment?: string | null;
 }
 
@@ -676,7 +676,7 @@ export interface AdminBookingDetail {
     duplicateOfPaymentId: string | null;
   }[];
   currentPaymentStatus: string | null;
-  /** From the typed bookings.booking_environment column (transitional NULL -> SANDBOX). */
+  /** From the typed bookings.booking_environment column (NULL/unknown -> null). */
   bookingEnvironment: PaymentEnvironmentLabel | null;
   createdAt: string;
   updatedAt: string;
@@ -885,7 +885,7 @@ export interface AdminPaymentListItem {
    *  capacity, or a second payment on an already-paid booking). Never means a refund happened. */
   refundRequired: boolean;
   /** From the typed payments.payment_environment column: 'SANDBOX' marks a PhonePe test
-   *  transaction (never real money; a transitional NULL is SANDBOX), 'PRODUCTION' real money. */
+   *  transaction (never real money), 'PRODUCTION' real money; null if unknown. */
   paymentEnvironment: PaymentEnvironmentLabel | null;
   /** Human-readable reason it needs manual attention (whitelisted wording, null unless refundRequired). */
   reviewReason: string | null;

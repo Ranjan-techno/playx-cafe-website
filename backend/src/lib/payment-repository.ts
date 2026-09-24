@@ -31,7 +31,7 @@ export interface PaymentRow {
   failure_reason: string | null;
   metadata: Record<string, unknown> | null;
   /** Typed SANDBOX/PRODUCTION marker (migration 006) — the source of truth; metadata.paymentEnvironment
-   *  is only a mirror. NULL only on a transitional row written before this code was deployed (see
+   *  is only a mirror. NOT NULL since migration 007; `| null` stays so a stray NULL fails closed (see
    *  environment.ts). */
   payment_environment: AppEnvironment | null;
   /** Set only on a 'paid' row that duplicates an earlier paid payment for the same booking (see
@@ -52,7 +52,7 @@ export interface BookingForPaymentRow {
   racers: number;
   scheduled_start_at: Date;
   scheduled_end_at: Date;
-  /** Typed environment (migration 006); NULL only on a transitional row — see environment.ts. */
+  /** Typed environment (migration 006); NOT NULL since migration 007 — see environment.ts. */
   booking_environment: AppEnvironment | null;
 }
 
@@ -365,8 +365,8 @@ export interface ReconcilableAttempt {
  *
  *  `environment` is required and filters on the typed payment_environment column, so one
  *  environment's reconciler can never pick up (and query its provider about) the other's rows:
- *  SANDBOX also selects transitional NULL rows; PRODUCTION selects PRODUCTION only, never NULL
- *  (see environment.ts's environmentMatchSql). */
+ *  a strict `payment_environment = $1` match — NULL never matches either environment (see
+ *  environment.ts's environmentMatchSql). */
 export async function listPaymentsForReconciliation(
   db: DbClient,
   environment: AppEnvironment,

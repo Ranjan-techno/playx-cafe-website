@@ -473,13 +473,13 @@ test('handler: runs a batch with env-bounded settings, returns the safe summary,
 
 // ---------------------------------------------------------------- environment
 
-/** An open attempt whose typed payment_environment is `env` ('NULL' = transitional NULL row). */
+/** An open attempt whose typed payment_environment is `env` ('NULL' = a NULL row, impossible after 007). */
 async function openAttemptIn(store: FakePaymentDbStore, orderId: string, env: 'SANDBOX' | 'PRODUCTION' | 'NULL', simulatorId: string) {
   const { payment } = await openAttempt(store, orderId, { simulatorId });
   store.payments.find((p) => p.id === payment.id)!.payment_environment = env === 'NULL' ? null : env;
 }
 
-test('environment: a SANDBOX run reconciles SANDBOX and transitional NULL attempts, never PRODUCTION', async () => {
+test('environment: a SANDBOX run reconciles only SANDBOX attempts, never NULL or PRODUCTION', async () => {
   const { store, db, provider } = setup();
   await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
   await openAttemptIn(store, 'ord-null', 'NULL', 'sim-S2');
@@ -487,9 +487,10 @@ test('environment: a SANDBOX run reconciles SANDBOX and transitional NULL attemp
 
   const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
-  assert.deepEqual([...provider.statusCalls].sort(), ['ord-null', 'ord-sb']);
-  assert.equal(summary.scanned, 2);
+  assert.deepEqual(provider.statusCalls, ['ord-sb']);
+  assert.equal(summary.scanned, 1);
   assert.equal(store.payments.find((p) => p.provider_order_id === 'ord-prod')!.metadata?.reconcileCheckedAt, undefined, 'PRODUCTION row untouched');
+  assert.equal(store.payments.find((p) => p.provider_order_id === 'ord-null')!.metadata?.reconcileCheckedAt, undefined, 'NULL row untouched');
 });
 
 test('environment: a (hypothetical) PRODUCTION run selects only PRODUCTION, never NULL', async () => {

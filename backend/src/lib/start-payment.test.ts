@@ -352,10 +352,15 @@ test('environment: a SANDBOX booking gets a SANDBOX attempt (typed column + meta
   assert.equal(store.payments[0].metadata?.environment, 'SANDBOX');
 });
 
-test('environment: a transitional NULL booking is accepted as legacy SANDBOX', async () => {
-  const { store, booking, db, provider } = setup({ bookingEnvironment: null });
-  await startPayment(db, provider, baseInput(booking.id));
-  assert.equal(store.payments[0].payment_environment, 'SANDBOX');
+test('environment: a NULL/unknown booking environment is refused by a SANDBOX start (no longer legacy SANDBOX)', async () => {
+  for (const bookingEnvironment of [null, 'sandbox', 'LIVE'] as const) {
+    const { store, booking, db, provider } = setup({ bookingEnvironment: bookingEnvironment as never });
+    await assert.rejects(() => startPayment(db, provider, baseInput(booking.id)), PaymentEnvironmentMismatchError, String(bookingEnvironment));
+    assert.equal(store.payments.length, 0);
+    assert.deepEqual(holds(store, booking.id)[0].hold_expires_at, new Date(T0 + 15 * MIN));
+    assert.equal(provider.createCalls.length + provider.statusCalls.length, 0);
+    assert.equal(db.inTransaction(), false);
+  }
 });
 
 test('environment: a PRODUCTION booking is rejected by a SANDBOX start — nothing written, hold untouched, no provider call', async () => {
@@ -381,6 +386,18 @@ test('environment: an open PRODUCTION attempt on a sandbox booking is never reus
   assert.equal(provider.createCalls.length, 1);
   assert.equal(provider.statusCalls.length, 0);
   assert.equal(store.payments.length, 1);
+});
+
+test('environment: an open attempt with a NULL/unknown payment environment is never reused nor queried', async () => {
+  for (const paymentEnvironment of [null, 'LIVE']) {
+    const { store, booking, db, provider } = setup();
+    await startPayment(db, provider, baseInput(booking.id));
+    store.payments[0].payment_environment = paymentEnvironment as never;
+    await assert.rejects(() => startPayment(db, provider, baseInput(booking.id)), PaymentEnvironmentMismatchError, String(paymentEnvironment));
+    assert.equal(provider.createCalls.length, 1);
+    assert.equal(provider.statusCalls.length, 0);
+    assert.equal(store.payments.length, 1);
+  }
 });
 
 test('environment: a missing/unknown environment input is refused before any DB work', async () => {

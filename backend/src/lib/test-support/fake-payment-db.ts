@@ -29,7 +29,7 @@ export interface FakeBookingRow {
   cognito_sub?: string;
   booking_number?: number;
   product_name?: string;
-  /** bookings.booking_environment; undefined/null model a transitional NULL row. */
+  /** bookings.booking_environment; undefined/null model a NULL row (impossible after migration 007). */
   booking_environment?: 'SANDBOX' | 'PRODUCTION' | null;
 }
 
@@ -55,7 +55,7 @@ export interface FakePaymentRow {
   failure_reason: string | null;
   metadata: Record<string, unknown> | null;
   duplicate_of_payment_id?: string | null;
-  /** payments.payment_environment; undefined/null model a transitional NULL row. */
+  /** payments.payment_environment; undefined/null model a NULL row (impossible after migration 007). */
   payment_environment?: 'SANDBOX' | 'PRODUCTION' | null;
   created_at: Date;
   updated_at: Date;
@@ -127,7 +127,7 @@ export function seedBooking(
     cognitoSub?: string;
     bookingNumber?: number;
     productName?: string;
-    /** Default 'SANDBOX' (what create-booking.ts writes); pass null for a transitional NULL row. */
+    /** Default 'SANDBOX' (what create-booking.ts writes); pass null to model a NULL row. */
     bookingEnvironment?: 'SANDBOX' | 'PRODUCTION' | null;
   },
 ): FakeBookingRow {

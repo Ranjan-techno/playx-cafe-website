@@ -263,7 +263,7 @@ test('lockBookingForPayment returns the typed booking_environment', async () => 
   await db.query('COMMIT');
 });
 
-/** Three open PhonePe attempts with a live checkout: SANDBOX, transitional NULL, PRODUCTION. */
+/** Three open PhonePe attempts with a live checkout: SANDBOX, NULL (impossible after 007), PRODUCTION. */
 async function seedEnvironmentAttempts(): Promise<{ store: FakePaymentDbStore; db: DbClient }> {
   const store = createFakePaymentDbStore();
   const db = createFakePaymentDbClient(store);
@@ -284,10 +284,10 @@ async function seedEnvironmentAttempts(): Promise<{ store: FakePaymentDbStore; d
   return { store, db };
 }
 
-test('listPaymentsForReconciliation(SANDBOX) selects SANDBOX and transitional NULL, never PRODUCTION', async () => {
+test('listPaymentsForReconciliation(SANDBOX) selects only SANDBOX, never NULL or PRODUCTION', async () => {
   const { db } = await seedEnvironmentAttempts();
   const rows = await listPaymentsForReconciliation(db, 'SANDBOX', 25);
-  assert.deepEqual(rows.map((r) => r.provider_order_id).sort(), ['ord-NULL', 'ord-SANDBOX']);
+  assert.deepEqual(rows.map((r) => r.provider_order_id), ['ord-SANDBOX']);
 });
 
 test('listPaymentsForReconciliation(PRODUCTION) selects only PRODUCTION, never NULL', async () => {
@@ -296,15 +296,16 @@ test('listPaymentsForReconciliation(PRODUCTION) selects only PRODUCTION, never N
   assert.deepEqual(rows.map((r) => r.provider_order_id), ['ord-PRODUCTION']);
 });
 
-test('listPaymentsForReconciliation SQL: SANDBOX adds the NULL branch, PRODUCTION does not; environment is bound, not interpolated', async () => {
+test('listPaymentsForReconciliation SQL: both environments are a strict `= $1` match with no NULL branch; environment is bound, not interpolated', async () => {
   const seen: { text: string; params: unknown[] }[] = [];
   const db: DbClient = { query: async (text: string, params: unknown[] = []) => { seen.push({ text, params }); return { rows: [] }; } } as DbClient;
   await listPaymentsForReconciliation(db, 'SANDBOX', 5);
   await listPaymentsForReconciliation(db, 'PRODUCTION', 5);
-  assert.match(seen[0].text, /\(payment_environment = \$1 OR payment_environment IS NULL\)/);
+  assert.match(seen[0].text, /AND payment_environment = \$1\s/);
+  assert.doesNotMatch(seen[0].text, /payment_environment IS NULL/);
   assert.deepEqual(seen[0].params, ['SANDBOX', 5]);
   assert.match(seen[1].text, /AND payment_environment = \$1\s/);
-  assert.doesNotMatch(seen[1].text, /IS NULL/);
+  assert.doesNotMatch(seen[1].text, /payment_environment IS NULL/);
   assert.deepEqual(seen[1].params, ['PRODUCTION', 5]);
   for (const q of seen) assert.doesNotMatch(q.text, /'(SANDBOX|PRODUCTION)'/);
 });

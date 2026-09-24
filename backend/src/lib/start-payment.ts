@@ -15,8 +15,8 @@
 //
 // ENVIRONMENT: `input.environment` is the provider's validated config environment. TX1 refuses
 // (PaymentEnvironmentMismatchError) a booking — or an existing open attempt — whose typed
-// environment column does not belong to it; a transitional NULL counts as SANDBOX only (see
-// environment.ts). The new attempt's payment_environment is written from the same value.
+// environment column does not belong to it; NULL/unknown matches no environment and is refused
+// (see environment.ts). The new attempt's payment_environment is written from the same value.
 //
 // LOCK ORDER matches confirm-successful-payment.ts / booking-capacity.ts:
 //   payment -> booking -> simulators -> allocations. TX1 has no payment lock to take (it only

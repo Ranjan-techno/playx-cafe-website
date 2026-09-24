@@ -6,19 +6,14 @@
 // (create-booking.ts) and the validated PhonePe config for payments (payment-start.ts). Nothing
 // here ever reads a request body, Origin or hostname.
 //
-// TRANSITIONAL (Stage 1B, between migration 006 and the ENFORCE migration): both columns are still
-// nullable, and a row written by the old code after 006 but before this code was deployed has
-// NULL. PhonePe PRODUCTION has never been enabled, so such a NULL can only be legacy SANDBOX — and
-// ONLY ever matches SANDBOX, never PRODUCTION. Everything NULL-aware lives in this file, behind
-// TRANSITIONAL_NULL_IS_SANDBOX; once ENFORCE has backfilled the NULLs and set NOT NULL, set that
-// flag to false (or delete the NULL branches) and nothing else needs to change.
+// Both columns are NOT NULL with no DEFAULT (database/migrations/007_enforce_payment_environment.sql),
+// so every row carries an explicit environment. Matching is strict: SANDBOX matches only SANDBOX,
+// PRODUCTION only PRODUCTION, and NULL or any unknown value matches nothing (fails closed) — it is
+// never treated as SANDBOX.
 
 export type AppEnvironment = 'SANDBOX' | 'PRODUCTION';
 
 export const APP_ENVIRONMENTS: readonly AppEnvironment[] = ['SANDBOX', 'PRODUCTION'];
-
-/** Remove (or set false) after the ENFORCE migration makes both columns NOT NULL. */
-export const TRANSITIONAL_NULL_IS_SANDBOX = true;
 
 export function isAppEnvironment(value: unknown): value is AppEnvironment {
   return value === 'SANDBOX' || value === 'PRODUCTION';
@@ -33,36 +28,26 @@ export function assertAppEnvironment(value: unknown, what: string): AppEnvironme
   return value;
 }
 
-/** What a stored column value means for business logic. NULL -> SANDBOX only during the
- *  transition; any unexpected value -> null (matches no environment, counts as nothing). */
+/** What a stored column value means for business logic: the two known values as-is; NULL,
+ *  undefined or anything unexpected -> null (matches no environment, counts as nothing). */
 export function effectiveStoredEnvironment(value: string | null | undefined): AppEnvironment | null {
-  if (isAppEnvironment(value)) {
-    return value;
-  }
-  if ((value === null || value === undefined) && TRANSITIONAL_NULL_IS_SANDBOX) {
-    return 'SANDBOX';
-  }
-  return null;
+  return isAppEnvironment(value) ? value : null;
 }
 
-/** True when a stored row belongs to `expected`. A transitional NULL matches SANDBOX only. */
+/** True only when a stored row is exactly `expected`. NULL/unknown never matches. */
 export function storedEnvironmentMatches(value: string | null | undefined, expected: AppEnvironment): boolean {
   return effectiveStoredEnvironment(value) === expected;
 }
 
 /** SQL predicate: `column` belongs to the environment bound at `param` (e.g. '$1'). The caller
- *  binds `environment` itself at that position.
- *    SANDBOX    -> (column = $n OR column IS NULL)   [transitional NULL]
- *    PRODUCTION -> column = $n                      [NULL never matches] */
+ *  binds `environment` itself at that position. Always `column = $n` — NULL never matches. */
 export function environmentMatchSql(column: string, param: string, environment: AppEnvironment): string {
   assertAppEnvironment(environment, 'environment');
-  if (environment === 'SANDBOX' && TRANSITIONAL_NULL_IS_SANDBOX) {
-    return `(${column} = ${param} OR ${column} IS NULL)`;
-  }
   return `${column} = ${param}`;
 }
 
-/** SQL expression for a column's effective environment (reporting/accounting). */
+/** SQL expression for a column's effective environment (reporting/accounting): the typed column
+ *  itself, with no fallback. */
 export function effectiveEnvironmentSql(column: string): string {
-  return TRANSITIONAL_NULL_IS_SANDBOX ? `COALESCE(${column}, 'SANDBOX')` : column;
+  return column;
 }

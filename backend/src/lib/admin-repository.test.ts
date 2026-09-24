@@ -676,7 +676,8 @@ test('mapAdminPaymentListRow: exposes typed refund-required fields with a human 
 
 // ----------------------------------------------------------------------------
 // payments.payment_environment (typed column, migration 006): only PRODUCTION is real money.
-// Transitional NULL = SANDBOX. metadata.paymentEnvironment is never the business source of truth.
+// NULL/unknown is not real money (and is never SANDBOX either — the column is NOT NULL since 007).
+// metadata.paymentEnvironment is never the business source of truth.
 // ----------------------------------------------------------------------------
 
 test('summarizeCollectedPayments: a SANDBOX paid payment is excluded from revenue', () => {
@@ -694,12 +695,12 @@ test('summarizeCollectedPayments: a SANDBOX refundRequired payment is excluded f
   assert.deepEqual(s.revenue, { paidInr: 0 });
 });
 
-test('summarizeCollectedPayments: PRODUCTION paid counts as revenue; transitional NULL is SANDBOX and does not', () => {
+test('summarizeCollectedPayments: PRODUCTION paid counts as revenue; NULL/absent/unknown do not', () => {
   const s = summarizeCollectedPayments([
     { payment_status: 'paid', amount_inr: '999.00', refund_required: false, payment_environment: 'PRODUCTION' },
     { payment_status: 'paid', amount_inr: '250.00', refund_required: true, payment_environment: 'PRODUCTION' },
-    { payment_status: 'paid', amount_inr: '100.00', refund_required: false, payment_environment: null }, // transitional NULL
-    { payment_status: 'paid', amount_inr: '100.00', refund_required: true, payment_environment: null }, // transitional NULL
+    { payment_status: 'paid', amount_inr: '100.00', refund_required: false, payment_environment: null }, // NULL (impossible after 007)
+    { payment_status: 'paid', amount_inr: '100.00', refund_required: true, payment_environment: null }, // NULL (impossible after 007)
     { payment_status: 'paid', amount_inr: '100.00', refund_required: false }, // column absent
     { payment_status: 'paid', amount_inr: '100.00', refund_required: false, payment_environment: 'garbage' },
   ]);
@@ -707,12 +708,14 @@ test('summarizeCollectedPayments: PRODUCTION paid counts as revenue; transitiona
   assert.deepEqual(s.refundRequired, { count: 1, amountInr: 250 });
 });
 
-test('dashboard SQL reads the typed payment_environment column (NULL -> SANDBOX), never metadata', async () => {
+test('dashboard SQL reads the typed payment_environment column strictly (no COALESCE fallback), never metadata', async () => {
   const queries: string[] = [];
   const db = { async query(sql: string) { queries.push(sql); return { rows: [] }; } };
   await getDashboardSummary(db as never, '2026-09-10');
   for (const sql of [queries.find((q) => /refund_required/.test(q))!, queries.find((q) => /GROUP BY payment_status/.test(q))!]) {
-    assert.match(sql, /COALESCE\(payment_environment, 'SANDBOX'\) = 'PRODUCTION'/);
+    assert.match(sql, /\bpayment_environment = 'PRODUCTION'/);
+    assert.doesNotMatch(sql, /COALESCE\(payment_environment/);
+    assert.doesNotMatch(sql, /payment_environment IS NULL/);
     assert.doesNotMatch(sql, /paymentEnvironment/);
   }
   const revenueSql = queries.find((q) => /refund_required/.test(q))!;
@@ -731,8 +734,8 @@ test('admin payment rows expose only a whitelisted paymentEnvironment from the t
   assert.equal(mapAdminPaymentListRow({ ...base, payment_environment: 'SANDBOX' } as never).paymentEnvironment, 'SANDBOX');
   assert.equal(mapAdminPaymentListRow({ ...base, payment_environment: 'PRODUCTION' } as never).paymentEnvironment, 'PRODUCTION');
   assert.equal(mapAdminPaymentListRow({ ...base, payment_environment: '{"x":"secret"}' } as never).paymentEnvironment, null);
-  assert.equal(mapAdminPaymentListRow({ ...base, payment_environment: null } as never).paymentEnvironment, 'SANDBOX', 'transitional NULL');
-  assert.equal(mapAdminPaymentListRow(base as never).paymentEnvironment, 'SANDBOX', 'transitional NULL (absent)');
+  assert.equal(mapAdminPaymentListRow({ ...base, payment_environment: null } as never).paymentEnvironment, null, 'NULL is no longer SANDBOX');
+  assert.equal(mapAdminPaymentListRow(base as never).paymentEnvironment, null, 'absent is no longer SANDBOX');
 });
 
 test('stale/mismatched metadata never overrides the typed column', () => {
@@ -749,7 +752,7 @@ test('stale/mismatched metadata never overrides the typed column', () => {
   assert.deepEqual(s.revenue, { paidInr: 700 });
 });
 
-test('admin booking list/detail expose bookingEnvironment from the typed column (NULL -> SANDBOX)', async () => {
+test('admin booking list/detail expose bookingEnvironment from the typed column (NULL/unknown -> null)', async () => {
   const listRow = {
     id: 'b1', booking_number: 1001, customer_name: null, customer_phone: null, customer_email: null,
     product_code: 'x', product_name: 'X', scheduled_start_at: new Date('2026-09-26T10:00:00Z'), scheduled_end_at: new Date('2026-09-26T10:30:00Z'),
@@ -758,7 +761,8 @@ test('admin booking list/detail expose bookingEnvironment from the typed column 
   };
   assert.equal(mapAdminBookingListRow({ ...listRow, booking_environment: 'PRODUCTION' } as never).bookingEnvironment, 'PRODUCTION');
   assert.equal(mapAdminBookingListRow({ ...listRow, booking_environment: 'SANDBOX' } as never).bookingEnvironment, 'SANDBOX');
-  assert.equal(mapAdminBookingListRow({ ...listRow, booking_environment: null } as never).bookingEnvironment, 'SANDBOX');
+  assert.equal(mapAdminBookingListRow({ ...listRow, booking_environment: null } as never).bookingEnvironment, null);
+  assert.equal(mapAdminBookingListRow({ ...listRow, booking_environment: 'LIVE' } as never).bookingEnvironment, null);
 
   const queries: string[] = [];
   const db = { async query(sql: string) { queries.push(sql); return { rows: [] }; } };
@@ -773,12 +777,13 @@ test('admin booking list/detail expose bookingEnvironment from the typed column 
 // ----------------------------------------------------------------------------
 
 function dashboardCountsFor(rows: Array<{ payment_status: string; env: string | null; metadataEnv?: string }>) {
-  // Stand-in for Postgres: applies the typed-column predicate only if the SQL contains it.
+  // Stand-in for Postgres: applies the typed-column predicate only if the SQL contains it. SQL
+  // semantics: NULL = 'PRODUCTION' is not true, so a NULL row never passes.
   const db = {
     async query(sql: string) {
       if (/GROUP BY payment_status/.test(sql)) {
-        const filtered = /COALESCE\(payment_environment, 'SANDBOX'\) = 'PRODUCTION'/.test(sql)
-          ? rows.filter((r) => (r.env ?? 'SANDBOX') === 'PRODUCTION')
+        const filtered = /\bpayment_environment = 'PRODUCTION'/.test(sql)
+          ? rows.filter((r) => r.env === 'PRODUCTION')
           : rows;
         const counts = new Map<string, number>();
         for (const r of filtered) counts.set(r.payment_status, (counts.get(r.payment_status) ?? 0) + 1);
@@ -800,7 +805,7 @@ test('dashboard counts: SANDBOX paid/pending/failed/expired do not count', async
   assert.deepEqual(s.payments, { paid: 0, pending: 0, failed: 0 });
 });
 
-test('dashboard counts: only typed PRODUCTION rows count; transitional NULL and stale metadata do not', async () => {
+test('dashboard counts: only typed PRODUCTION rows count; NULL and stale metadata do not', async () => {
   const s = await dashboardCountsFor([
     { payment_status: 'paid', env: 'PRODUCTION' },
     { payment_status: 'pending', env: 'PRODUCTION' },

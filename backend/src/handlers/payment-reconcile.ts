@@ -14,8 +14,8 @@ import {
 // payment attempts. Not an HTTP route — there is no API surface and no caller identity. See
 // lib/reconcile-pending-payments.ts for selection/batching and why repeated runs are safe.
 //
-// This is the SANDBOX reconciler: it passes SANDBOX explicitly, so it only ever selects SANDBOX (and
-// transitional NULL) attempts, and refuses to run if its PhonePe secret is not a SANDBOX one.
+// This is the SANDBOX reconciler: it passes SANDBOX explicitly, so it only ever selects SANDBOX
+// attempts, and refuses to run if its PhonePe secret is not a SANDBOX one.
 //
 // Logs only ids, statuses and error class names. Never provider payloads, checkout URLs, tokens or
 // credentials.

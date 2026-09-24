@@ -29,8 +29,8 @@ import { reconcilePayment } from '../lib/reconcile-payment';
 // state and polls again.
 //
 // ENVIRONMENT: an open attempt is reconciled only when its typed payments.payment_environment
-// belongs to the provider's configured environment (a transitional NULL counts as SANDBOX only,
-// see lib/environment.ts). This sandbox Lambda therefore never asks its sandbox PhonePe client
+// belongs to the provider's configured environment (strict typed match; NULL/unknown matches
+// nothing and is never reconciled, see lib/environment.ts). This sandbox Lambda therefore never asks its sandbox PhonePe client
 // about an explicitly PRODUCTION payment: the provider is not called and the last known DB state
 // is reported instead.
 

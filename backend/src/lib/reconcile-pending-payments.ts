@@ -9,8 +9,8 @@
 // a no-op, and terminal attempts are never selected.
 //
 // ENVIRONMENT: a run is for exactly one environment, passed explicitly by the caller (the existing
-// scheduled Lambda passes SANDBOX). Only that environment's attempts are selected (SANDBOX also
-// covers transitional NULL rows; PRODUCTION never does), and the provider must be configured for
+// scheduled Lambda passes SANDBOX). Only that environment's attempts are selected (a strict typed
+// match; NULL never matches either environment), and the provider must be configured for
 // the same environment — otherwise the run refuses to start rather than asking one environment's
 // PhonePe account about the other's orders.
 //
