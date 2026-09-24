@@ -274,7 +274,7 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
       const row = store.bookings.find((b) => b.id === id && b.cognito_sub === sub);
       return {
         rows: (row
-          ? [{ id: row.id, booking_number: row.booking_number, status: row.status, product_name: row.product_name }]
+          ? [{ id: row.id, booking_number: row.booking_number, status: row.status, product_name: row.product_name, booking_environment: row.booking_environment ?? null }]
           : []) as unknown as T[],
       };
     }
@@ -349,6 +349,14 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         heldLockReleases.push(await getOrCreateLock(store.paymentLocks, row.id).acquire());
       }
       return { rows: (row ? [{ ...row }] : []) as unknown as T[] };
+    }
+
+    // findPaymentByProviderOrderId: SELECT * FROM payments WHERE provider = $1 AND
+    // provider_order_id = $2 (no lock).
+    if (/^SELECT \* FROM payments WHERE provider = \$1 AND provider_order_id = \$2$/i.test(sql)) {
+      const [provider, providerOrderId] = params as [PaymentProvider, string];
+      const row = store.payments.find((p) => p.provider === provider && p.provider_order_id === providerOrderId);
+      return { rows: (row ? [{ ...row, metadata: row.metadata ? { ...row.metadata } : row.metadata }] : []) as unknown as T[] };
     }
 
     // sync-payment-status.ts's paymentIdFor: SELECT id FROM payments WHERE provider = $1 AND

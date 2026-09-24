@@ -7,7 +7,12 @@ import { networkConfigs } from './config/network-config';
 import { databaseConfigs } from './config/database-config';
 import { authConfigs } from './config/auth-config';
 import { apiConfigs } from './config/api-config';
-import { paymentConfigs, productionPaymentConfigs, resolveSandboxTesters } from './config/payment-config';
+import {
+  paymentConfigs,
+  productionPaymentConfigs,
+  resolveProductionTesters,
+  resolveSandboxTesters,
+} from './config/payment-config';
 import { NetworkConstruct } from './constructs/network';
 import { DatabaseConstruct } from './constructs/database';
 import { MigrationConstruct } from './constructs/migration';
@@ -135,7 +140,13 @@ export class InfraStack extends cdk.Stack {
       paymentReconcileProductionDlqName: resourceName('payment-reconcile-production-dlq'),
       paymentReconcileProductionDlqAlarmName: resourceName('payment-reconcile-production-dlq-messages'),
       paymentReconcileProductionFunctionName: resourceName('payment-reconcile-production'),
+      // PhonePe cutover Stage 2C: the public PRODUCTION PhonePe webhook, the PRODUCTION payment-status
+      // route, and the production tester allowlist (Cognito subs from `-c phonepeProductionTesters`)
+      // that gates production booking/payment start once their kill switches are later enabled.
+      paymentStatusProductionFunctionName: resourceName('payment-status-production'),
+      paymentWebhookProductionFunctionName: resourceName('payment-webhook-production'),
       phonepeSandboxTesters: resolveSandboxTesters(this.node.tryGetContext('phonepeSandboxTesters')),
+      phonepeProductionTesters: resolveProductionTesters(this.node.tryGetContext('phonepeProductionTesters')),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,
       databaseSecret,

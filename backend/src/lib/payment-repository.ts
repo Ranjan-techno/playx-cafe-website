@@ -307,6 +307,9 @@ export interface CustomerBookingRow {
   status: string;
   /** products.name — a display line for the provider's dashboard, never a pricing input. */
   product_name: string;
+  /** Typed environment (migration 006) — lets the PRODUCTION status endpoint refuse to report on a
+   *  SANDBOX booking (see handlers/payment-status.ts). */
+  booking_environment: AppEnvironment | null;
 }
 
 /** Ownership check AND read in one statement: the booking is returned only if bookings.cognito_sub
@@ -319,7 +322,7 @@ export async function findCustomerBooking(
   cognitoSub: string,
 ): Promise<CustomerBookingRow | null> {
   const { rows } = await db.query<CustomerBookingRow>(
-    `SELECT b.id, b.booking_number, b.status, p.name AS product_name
+    `SELECT b.id, b.booking_number, b.status, p.name AS product_name, b.booking_environment
      FROM bookings b
      JOIN products p ON p.id = b.product_id
      WHERE b.id = $1 AND b.cognito_sub = $2`,
@@ -393,6 +396,22 @@ export async function listPaymentsForReconciliation(
  *  and the status-guarded UPDATEs above, which take their own locks. */
 export async function findPaymentById(db: DbClient, paymentId: string): Promise<PaymentRow | null> {
   const { rows } = await db.query<PaymentRow>(`SELECT * FROM payments WHERE id = $1`, [paymentId]);
+  return rows[0] ?? null;
+}
+
+/** One payment attempt by its natural external key, NOT locked — the PRODUCTION webhook's read of
+ *  the row an authenticated PhonePe callback's merchantOrderId names (see
+ *  production-payment-webhook.ts). Environment, status and amount all come from here, never from
+ *  the callback; state changes still go through reconcilePayment()'s own locked paths. */
+export async function findPaymentByProviderOrderId(
+  db: DbClient,
+  provider: PaymentProvider,
+  providerOrderId: string,
+): Promise<PaymentRow | null> {
+  const { rows } = await db.query<PaymentRow>(`SELECT * FROM payments WHERE provider = $1 AND provider_order_id = $2`, [
+    provider,
+    providerOrderId,
+  ]);
   return rows[0] ?? null;
 }
 

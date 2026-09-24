@@ -3,7 +3,9 @@
 // SDK; no X-VERIFY/salt keys, no hand-rolled auth).
 //
 // Supports createPayment() and getPaymentStatus() only. verifyWebhook()/refundPayment() throw:
-// webhook credentials are not configured yet and automated refunds are out of scope for v1.
+// PhonePe callbacks are authenticated by the PRODUCTION webhook with the SDK's own
+// validateCallback() (phonepe-callback.ts / phonepe-runtime.ts) and only ever TRIGGER a
+// getPaymentStatus() call, and automated refunds are out of scope for v1.
 //
 // The SDK client is injected (PhonePeCheckoutClient) so tests never touch the network and this
 // module never sees credentials — phonepe-runtime.ts builds the real client from config.

@@ -28,11 +28,12 @@ test('Story 2.1 (+ payments egress): VPC keeps its isolated subnets and adds NAT
   // admin-bookings/admin-booking-detail/admin-booking-status/admin-payments/admin-simulators),
   // the PhonePe payment start/status/reconcile functions, and PhonePe cutover Stage 2A's
   // create-booking-production/payment-start-production functions, and Stage 2B's
-  // payment-reconcile-production-fast/payment-reconcile-production functions — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
+  // payment-reconcile-production-fast/payment-reconcile-production functions, and Stage 2C's
+  // payment-status-production/payment-webhook-production functions — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
   // guarded against separately (that flag is explicitly disabled for this VPC — see
   // constructs/network.ts).
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
-  template.resourceCountIs('AWS::Lambda::Function', 24);
+  template.resourceCountIs('AWS::Lambda::Function', 26);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -98,10 +99,10 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   // Story 2.6's products/create-booking/bookings-me functions, guest-first passwordless auth's
   // auth-start/auth-verify functions, its three CUSTOM_AUTH triggers, Phase 2's availability
   // function, Phase 3B's six admin functions, the three PhonePe payment functions, Stage 2A's
-  // two production functions and Stage 2B's two production reconcile functions — see below), but
-  // health/auth-start/auth-verify/the three triggers are the six of the twenty-four that do NOT sit
-  // in the VPC.
-  template.resourceCountIs('AWS::Lambda::Function', 24);
+  // two production functions, Stage 2B's two production reconcile functions and Stage 2C's
+  // production status + webhook functions — see below), but health/auth-start/auth-verify/the three
+  // triggers are the six of the twenty-six that do NOT sit in the VPC.
+  template.resourceCountIs('AWS::Lambda::Function', 26);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -281,14 +282,16 @@ test('Story 2.6: authenticated booking APIs — Cognito JWT authorizer on POST /
     IdentitySource: ['$request.header.Authorization'],
   });
 
-  // Seventeen routes total (incl. PhonePe Phase 2's two payment routes and Stage 2A's POST
-  // /bookings/production + POST /payments/production/start, checked below): GET /health (Story 2.5), GET /products, POST /bookings, and
+  // Nineteen routes total (incl. PhonePe Phase 2's two payment routes, Stage 2A's POST
+  // /bookings/production + POST /payments/production/start and Stage 2C's GET
+  // /payments/production/{bookingId}/status + public POST /payments/production/webhook, checked
+  // below): GET /health (Story 2.5), GET /products, POST /bookings, and
   // GET /bookings/me (this story), POST /auth/start and POST /auth/verify (guest-first
   // passwordless auth, checked separately below), GET /availability (Phase 2, checked separately
   // further below), and Phase 3B's six admin routes (checked separately further below too).
-  // Seventeen integrations, one per route.
-  template.resourceCountIs('AWS::ApiGatewayV2::Route', 17);
-  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 17);
+  // Nineteen integrations, one per route.
+  template.resourceCountIs('AWS::ApiGatewayV2::Route', 19);
+  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 19);
 
   // GET /products is public: no authorizer attached (CloudFormation emits AuthorizationType:
   // 'NONE' explicitly for an unauthenticated route, rather than omitting the property).
@@ -644,6 +647,8 @@ const PAYMENT_FUNCTIONS = [
   'playx-dev-payment-start-production',
   'playx-dev-payment-reconcile-production-fast',
   'playx-dev-payment-reconcile-production',
+  'playx-dev-payment-status-production',
+  'playx-dev-payment-webhook-production',
 ];
 
 /** The two 5-minute scheduled reconcilers (4-minute timeout); every other payment Lambda is 25s. */
@@ -657,6 +662,8 @@ const PHONEPE_SECRET_BY_FUNCTION: Record<string, string> = {
   'playx-dev-payment-start-production': 'playx/phonepe/production',
   'playx-dev-payment-reconcile-production-fast': 'playx/phonepe/production',
   'playx-dev-payment-reconcile-production': 'playx/phonepe/production',
+  'playx-dev-payment-status-production': 'playx/phonepe/production',
+  'playx-dev-payment-webhook-production': 'playx/phonepe/production',
 };
 
 function lambdaEntries(json: Json): [string, Json][] {
@@ -780,7 +787,9 @@ test('PhonePe Phase 2: the PhonePe secret is referenced, never created, and no c
   // Still just the RDS credentials secret from Story 2.2.
   template.resourceCountIs('AWS::SecretsManager::Secret', 1);
   const text = JSON.stringify(json);
-  assert.ok(!/clientSecret|CLIENT_SECRET|webhookPassword|WEBHOOK/i.test(text));
+  // (Stage 2C: "webhook" now legitimately appears in a function name and a route path — but no
+  // credential key or value, in any casing, ever does.)
+  assert.ok(!/client_?secret|webhook_?password|webhook_?username|webhook_?user\b|webhook_?pass\b/i.test(text));
 });
 
 test('PhonePe Phase 2: payment Lambda environment — config wired, sandbox testers fail closed by default', () => {
@@ -796,10 +805,13 @@ test('PhonePe Phase 2: payment Lambda environment — config wired, sandbox test
   const status = env('playx-dev-payment-status');
   assert.equal(status.PHONEPE_SECRET_NAME, 'playx/phonepe/sandbox');
   assert.equal(status.PHONEPE_SANDBOX_TESTERS, undefined, 'status does not need the tester list');
-  // No other Lambda gets any PhonePe configuration.
+  // No other Lambda gets any PhonePe configuration — except (Stage 2C) the production booking
+  // Lambda's PHONEPE_PRODUCTION_TESTERS allowlist, which is not PhonePe configuration.
   for (const [, fn] of lambdaEntries(json)) {
     if (PAYMENT_FUNCTIONS.includes(fn.Properties.FunctionName)) continue;
-    assert.ok(!JSON.stringify(fn.Properties.Environment ?? {}).includes('PHONEPE'), fn.Properties.FunctionName);
+    const vars = { ...(fn.Properties.Environment?.Variables ?? {}) };
+    if (fn.Properties.FunctionName === 'playx-dev-create-booking-production') delete vars.PHONEPE_PRODUCTION_TESTERS;
+    assert.ok(!JSON.stringify(vars).includes('PHONEPE'), fn.Properties.FunctionName);
   }
 });
 
@@ -814,7 +826,7 @@ test('PhonePe Phase 2: sandbox testers come from deploy-time context, trimmed; b
   assert.equal(blankEnv.PHONEPE_SANDBOX_TESTERS, '');
 });
 
-test('PhonePe Phase 2: POST /payments/start and GET /payments/{bookingId}/status are JWT-protected; no webhook route exists', () => {
+test('PhonePe Phase 2: POST /payments/start and GET /payments/{bookingId}/status are JWT-protected; the only webhook route is Stage 2C\'s production one', () => {
   const { template, json } = synth();
   const authorizerId = Object.entries<Json>(json.Resources).find(([, r]) => r.Type === 'AWS::ApiGatewayV2::Authorizer')?.[0];
   for (const routeKey of ['POST /payments/start', 'GET /payments/{bookingId}/status']) {
@@ -827,9 +839,10 @@ test('PhonePe Phase 2: POST /payments/start and GET /payments/{bookingId}/status
   const routeKeys = Object.values<Json>(json.Resources)
     .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
     .map((r) => r.Properties.RouteKey as string);
-  assert.ok(routeKeys.every((k) => !/webhook|callback/i.test(k)), 'no webhook/callback route yet');
-  // + Stage 2A's POST /payments/production/start (checked in its own test below).
-  assert.equal(routeKeys.filter((k) => /^\w+ \/payments/.test(k)).length, 3);
+  assert.deepEqual(routeKeys.filter((k) => /webhook|callback/i.test(k)), ['POST /payments/production/webhook']);
+  // + Stage 2A's POST /payments/production/start and Stage 2C's production status + webhook
+  // (checked in their own tests below).
+  assert.equal(routeKeys.filter((k) => /^\w+ \/payments/.test(k)).length, 5);
   // CORS unchanged: same origins, same methods/headers.
   template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
     CorsConfiguration: Match.objectLike({
@@ -1000,8 +1013,10 @@ test('Stage 2A: CreateBookingProductionFunction — DB access only, no PhonePe s
   const [, fn] = lambdaNamed(json, name);
   assert.equal(statementsFor(json, name).filter(isPhonePeSecretStatement).length, 0);
   assert.ok(!secretsResourcesFor(json, name).includes('phonepe'));
-  assert.ok(!JSON.stringify(fn.Properties.Environment).match(/PHONEPE|PAYMENT_/));
-  assert.deepEqual(Object.keys(fn.Properties.Environment.Variables).sort(), ['BOOKING_CREATE_ENABLED', 'DB_SECRET_ARN']);
+  // Stage 2C: + the production tester allowlist (not PhonePe configuration); nothing else.
+  assert.deepEqual(Object.keys(fn.Properties.Environment.Variables).sort(), ['BOOKING_CREATE_ENABLED', 'DB_SECRET_ARN', 'PHONEPE_PRODUCTION_TESTERS']);
+  const { PHONEPE_PRODUCTION_TESTERS: _testers, ...rest } = fn.Properties.Environment.Variables;
+  assert.ok(!JSON.stringify(rest).match(/PHONEPE|PAYMENT_/));
   // Same isolated placement as the sandbox create-booking Lambda.
   assert.deepEqual(fn.Properties.VpcConfig, lambdaNamed(json, 'playx-dev-create-booking')[1].Properties.VpcConfig);
 });
@@ -1031,14 +1046,19 @@ test('Stage 2A: routes — sandbox and production booking/payment-start routes h
   const routeKeys = Object.values<Json>(json.Resources)
     .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
     .map((r) => r.Properties as Json);
-  // No webhook/callback and no public production payment route; no production status/reconcile yet.
-  assert.ok(routeKeys.every((r) => !/webhook|callback/i.test(r.RouteKey)));
-  for (const r of routeKeys.filter((x) => /production/.test(x.RouteKey))) {
+  // Every production route is JWT-protected EXCEPT Stage 2C's PhonePe webhook (PhonePe holds no
+  // token; the Lambda authenticates each callback itself — see the Stage 2C tests below).
+  for (const r of routeKeys.filter((x) => /production/.test(x.RouteKey) && x.RouteKey !== 'POST /payments/production/webhook')) {
     assert.equal(r.AuthorizationType, 'JWT', `${r.RouteKey} is never public`);
   }
   assert.deepEqual(
     routeKeys.map((r) => r.RouteKey as string).filter((k) => /production/.test(k)).sort(),
-    ['POST /bookings/production', 'POST /payments/production/start'],
+    [
+      'GET /payments/production/{bookingId}/status',
+      'POST /bookings/production',
+      'POST /payments/production/start',
+      'POST /payments/production/webhook',
+    ],
   );
 });
 
@@ -1060,13 +1080,15 @@ test('Stage 2A/2B: shared infrastructure only — no second VPC/RDS/Cognito/NAT/
     .flatMap((r) => r.Properties.Targets.map((t: Json) => json.Resources[t.Arn['Fn::GetAtt'][0]].Properties.FunctionName))
     .sort();
   assert.deepEqual(targets, ['playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production']);
-  // No production payment-status Lambda (and no webhook).
+  // + Stage 2C's production payment-status and webhook Lambdas.
   const names = lambdaEntries(json).map(([, r]) => r.Properties.FunctionName as string);
   assert.deepEqual(names.filter((n) => /production/.test(n)).sort(), [
     'playx-dev-create-booking-production',
     'playx-dev-payment-reconcile-production',
     'playx-dev-payment-reconcile-production-fast',
     'playx-dev-payment-start-production',
+    'playx-dev-payment-status-production',
+    'playx-dev-payment-webhook-production',
   ]);
 });
 
@@ -1285,13 +1307,168 @@ test('Stage 2B: DLQ alarm fires on ApproximateNumberOfMessagesVisible > 0 for th
   assert.equal(alarm.AlarmActions, undefined);
 });
 
-test('Stage 2B: production kill switches stay OFF; no webhook or production status route', () => {
+test('Stage 2B: production kill switches stay OFF; no reconcile route', () => {
   const { json } = synth();
   assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'false');
   assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'false');
   const routeKeys = Object.values<Json>(json.Resources)
     .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
     .map((r) => r.Properties.RouteKey as string);
-  assert.ok(routeKeys.every((k) => !/webhook|callback|reconcile/i.test(k)));
-  assert.deepEqual(routeKeys.filter((k) => /production/.test(k)).sort(), ['POST /bookings/production', 'POST /payments/production/start']);
+  assert.ok(routeKeys.every((k) => !/callback|reconcile/i.test(k)));
+});
+
+// ---------------------------------------------------------------------------------------------
+// PhonePe cutover Stage 2C: public PRODUCTION webhook, PRODUCTION status route, tester allowlist.
+// ---------------------------------------------------------------------------------------------
+
+const TESTER_A = '0d7c2a4e-1111-4a2b-9c3d-4e5f6a7b8c9d';
+const TESTER_B = 'a1b2c3d4-2222-4e5f-8a9b-0c1d2e3f4a5b';
+
+/** Secrets Manager actions this Lambda's role holds, one sorted "a,b" string per statement. */
+function secretsActionsFor(json: Json, name: string): string[] {
+  return statementsFor(json, name)
+    .filter((st) => JSON.stringify(st.Action).includes('secretsmanager'))
+    .map((st) => [st.Action].flat().sort().join(','))
+    .sort();
+}
+
+test('Stage 2C: POST /payments/production/webhook is PUBLIC (no authorizer) and invokes only the webhook Lambda', () => {
+  const { json } = synth();
+  const { route, functionLogicalId } = routeTarget(json, 'POST /payments/production/webhook');
+  assert.equal(route.Properties.AuthorizationType, 'NONE', 'PhonePe holds no Cognito token');
+  assert.equal(route.Properties.AuthorizerId, undefined);
+  assert.equal(json.Resources[functionLogicalId].Properties.FunctionName, 'playx-dev-payment-webhook-production');
+  // POST only: no other method on the webhook path.
+  const webhookRoutes = Object.values<Json>(json.Resources).filter(
+    (r) => r.Type === 'AWS::ApiGatewayV2::Route' && /webhook/.test(r.Properties.RouteKey),
+  );
+  assert.equal(webhookRoutes.length, 1);
+  // It is the ONLY public payment route.
+  for (const r of Object.values<Json>(json.Resources).filter((x) => x.Type === 'AWS::ApiGatewayV2::Route')) {
+    if (/\/payments/.test(r.Properties.RouteKey) && r.Properties.RouteKey !== 'POST /payments/production/webhook') {
+      assert.equal(r.Properties.AuthorizationType, 'JWT', r.Properties.RouteKey);
+    }
+  }
+});
+
+test('Stage 2C: GET /payments/production/{bookingId}/status uses the Cognito JWT authorizer and its own production Lambda', () => {
+  const { json } = synth();
+  const authorizerId = Object.entries<Json>(json.Resources).find(([, r]) => r.Type === 'AWS::ApiGatewayV2::Authorizer')?.[0];
+  const { route, functionLogicalId } = routeTarget(json, 'GET /payments/production/{bookingId}/status');
+  assert.equal(route.Properties.AuthorizationType, 'JWT');
+  assert.deepEqual(route.Properties.AuthorizerId, { Ref: authorizerId });
+  assert.equal(json.Resources[functionLogicalId].Properties.FunctionName, 'playx-dev-payment-status-production');
+  // The sandbox status route is untouched and still hits the sandbox Lambda.
+  const sandbox = routeTarget(json, 'GET /payments/{bookingId}/status');
+  assert.equal(sandbox.route.Properties.AuthorizationType, 'JWT');
+  assert.equal(json.Resources[sandbox.functionLogicalId].Properties.FunctionName, 'playx-dev-payment-status');
+  assert.ok(sandbox.functionLogicalId.startsWith('ApiPaymentStatusFunction'), 'same logical id as before');
+  // Different entry file from the sandbox status Lambda (the production one hard-codes PRODUCTION).
+  assert.notEqual(
+    JSON.stringify(lambdaNamed(json, 'playx-dev-payment-status')[1].Properties.Code.S3Key),
+    JSON.stringify(lambdaNamed(json, 'playx-dev-payment-status-production')[1].Properties.Code.S3Key),
+  );
+});
+
+for (const name of ['playx-dev-payment-webhook-production', 'playx-dev-payment-status-production']) {
+  test(`Stage 2C: ${name} — production secret ONLY (+ DB secret read), no SQS, no credentials or switches in its environment`, () => {
+    const { json } = synth();
+    const env = envOf(json, name);
+    assert.deepEqual(Object.keys(env).sort(), ['DB_SECRET_ARN', 'PHONEPE_ENVIRONMENT', 'PHONEPE_SECRET_NAME']);
+    assert.equal(env.PHONEPE_SECRET_NAME, 'playx/phonepe/production');
+    assert.equal(env.PHONEPE_ENVIRONMENT, 'PRODUCTION');
+    assert.ok(!/sandbox|webhook_?(user|pass)|password|username/i.test(JSON.stringify(env)), 'no sandbox reference, no webhook credential');
+
+    const phonepe = statementsFor(json, name).filter(isPhonePeSecretStatement);
+    assert.equal(phonepe.length, 1);
+    assert.equal(phonepe[0].Effect, 'Allow');
+    assert.equal(phonepe[0].Action, 'secretsmanager:GetSecretValue');
+    const arn = JSON.stringify(phonepe[0].Resource);
+    assert.ok(arn.includes('secret:playx/phonepe/production-??????'));
+    assert.ok(!arn.includes('"*"') && !arn.includes('secret:*') && !arn.includes('playx/phonepe/*'));
+    assert.ok(!secretsResourcesFor(json, name).includes('playx/phonepe/sandbox'), 'NO sandbox secret grant');
+    assert.deepEqual(secretsActionsFor(json, name), ['secretsmanager:DescribeSecret,secretsmanager:GetSecretValue', 'secretsmanager:GetSecretValue']);
+    assert.deepEqual(sqsGrantsFor(json, name).actions, [], 'no SQS permission');
+    for (const st of statementsFor(json, name).filter((x) => !JSON.stringify(x.Action).includes('secretsmanager'))) {
+      assert.ok(!JSON.stringify(st.Action).match(/s3|dynamodb|sqs|sns|ses|cognito|lambda:Invoke/i), JSON.stringify(st.Action));
+    }
+
+    // Same network/runtime pattern as the other payment Lambdas (private-with-egress + shared SG).
+    const fn = lambdaNamed(json, name)[1].Properties;
+    const sandboxStart = lambdaNamed(json, 'playx-dev-payment-start')[1].Properties;
+    assert.deepEqual(fn.VpcConfig, sandboxStart.VpcConfig);
+    assert.equal(fn.Timeout, 25);
+    assert.equal(fn.Runtime, 'nodejs22.x');
+  });
+}
+
+test('Stage 2C: the sandbox payment Lambdas are unchanged — sandbox secret only, no production testers, no production secret', () => {
+  const { json } = synth({ phonepeProductionTesters: TESTER_A });
+  for (const name of ['playx-dev-payment-start', 'playx-dev-payment-status', 'playx-dev-payment-reconcile']) {
+    const secrets = secretsResourcesFor(json, name);
+    assert.ok(secrets.includes('secret:playx/phonepe/sandbox-??????'), name);
+    assert.ok(!secrets.includes('playx/phonepe/production'), name);
+    assert.ok(!('PHONEPE_PRODUCTION_TESTERS' in envOf(json, name)), name);
+  }
+  assert.equal(envOf(json, 'playx-dev-payment-status').PHONEPE_SECRET_NAME, 'playx/phonepe/sandbox');
+});
+
+test('Stage 2C: phonepeProductionTesters context reaches ONLY the production booking + payment-start Lambdas, trimmed and de-duplicated', () => {
+  const { json } = synth({ phonepeProductionTesters: ` ${TESTER_A} ,, ${TESTER_B},${TESTER_A} ` });
+  const holders: string[] = [];
+  for (const [, fn] of lambdaEntries(json)) {
+    const name = fn.Properties.FunctionName as string;
+    const env = fn.Properties.Environment?.Variables ?? {};
+    if ('PHONEPE_PRODUCTION_TESTERS' in env) {
+      holders.push(name);
+      assert.equal(env.PHONEPE_PRODUCTION_TESTERS, `${TESTER_A},${TESTER_B}`, name);
+    }
+    assert.ok(!JSON.stringify(env).includes(TESTER_A) || 'PHONEPE_PRODUCTION_TESTERS' in env, `${name} must not see the list`);
+  }
+  assert.deepEqual(holders.sort(), ['playx-dev-create-booking-production', 'playx-dev-payment-start-production']);
+});
+
+test('Stage 2C: no production tester context -> the list synthesizes EMPTY (backend denies everyone)', () => {
+  const saved = process.env.PHONEPE_PRODUCTION_TESTERS;
+  delete process.env.PHONEPE_PRODUCTION_TESTERS;
+  try {
+    for (const context of [undefined, { phonepeProductionTesters: '' }, { phonepeProductionTesters: '  ' }]) {
+      const { json } = synth(context);
+      assert.equal(envOf(json, 'playx-dev-create-booking-production').PHONEPE_PRODUCTION_TESTERS, '');
+      assert.equal(envOf(json, 'playx-dev-payment-start-production').PHONEPE_PRODUCTION_TESTERS, '');
+    }
+  } finally {
+    if (saved !== undefined) process.env.PHONEPE_PRODUCTION_TESTERS = saved;
+  }
+});
+
+test('Stage 2C: production testers must be Cognito subs — an email or other value fails the synth (never silently trusted)', () => {
+  for (const bad of ['tester@example.com', `${TESTER_A},tester@example.com`, TESTER_A.toUpperCase(), 'not-a-sub', `${TESTER_A}x`]) {
+    assert.throws(() => synth({ phonepeProductionTesters: bad }), /Cognito subs/, bad);
+  }
+});
+
+test('Stage 2C: production kill switches still synthesize OFF — even with production testers configured', () => {
+  const { json } = synth({ phonepeProductionTesters: TESTER_A });
+  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'false');
+  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'false');
+  // Sandbox switches unchanged.
+  assert.equal(envOf(json, 'playx-dev-create-booking').BOOKING_CREATE_ENABLED, 'true');
+  assert.equal(envOf(json, 'playx-dev-payment-start').PAYMENT_START_ENABLED, 'true');
+  // The new Lambdas carry no switch of their own (nothing to enable).
+  for (const name of ['playx-dev-payment-webhook-production', 'playx-dev-payment-status-production']) {
+    const env = envOf(json, name);
+    assert.ok(!('PAYMENT_START_ENABLED' in env) && !('BOOKING_CREATE_ENABLED' in env), name);
+  }
+});
+
+test('Stage 2C: shared infrastructure only — no new queue, rule, secret, authorizer, API or NAT', () => {
+  const { template } = synth();
+  template.resourceCountIs('AWS::SQS::Queue', 2);
+  template.resourceCountIs('AWS::Events::Rule', 2);
+  template.resourceCountIs('AWS::SecretsManager::Secret', 1);
+  template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
+  template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
+  template.resourceCountIs('AWS::EC2::NatGateway', 1);
+  template.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
 });

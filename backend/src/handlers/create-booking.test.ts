@@ -280,7 +280,8 @@ function handlerWorld(): HandlerWorld {
       },
     };
   };
-  const deps = { getDb, resetDb: () => {}, env: { BOOKING_CREATE_ENABLED: 'true' } };
+  // Both subs used below are on the Stage 2C production tester allowlist.
+  const deps = { getDb, resetDb: () => {}, env: { BOOKING_CREATE_ENABLED: 'true', PHONEPE_PRODUCTION_TESTERS: 'sub-1,sub-2' } };
   return {
     store,
     inserts,
@@ -380,7 +381,11 @@ test('handler factory: an unknown environment fails at construction, never per r
 // ----------------------------------------------------------------------------
 
 /** A production-style handler whose DB seam counts every connection and query. */
-function killSwitchBookingWorld(bookingCreateEnabled: string | undefined, environment: 'SANDBOX' | 'PRODUCTION' = 'PRODUCTION') {
+function killSwitchBookingWorld(
+  bookingCreateEnabled: string | undefined,
+  environment: 'SANDBOX' | 'PRODUCTION' = 'PRODUCTION',
+  productionTesters?: string,
+) {
   mock.timers.enable({ apis: ['Date'], now: NOW });
   const store = createFakeDbStore([{ id: 's1', code: 'S1', simulator_type: 'static' }]);
   const calls = { getDb: 0, resetDb: 0, queries: [] as string[] };
@@ -404,7 +409,7 @@ function killSwitchBookingWorld(bookingCreateEnabled: string | undefined, enviro
     resetDb: () => {
       calls.resetDb += 1;
     },
-    env: { BOOKING_CREATE_ENABLED: bookingCreateEnabled },
+    env: { BOOKING_CREATE_ENABLED: bookingCreateEnabled, PHONEPE_PRODUCTION_TESTERS: productionTesters },
   });
   return { store, calls, handler };
 }
@@ -458,4 +463,67 @@ test('booking kill switch: exact "true" keeps the existing booking happy path un
   assert.equal(w.calls.getDb, 1);
   assert.equal(w.store.allocations.length, 1, 'normal hold allocated');
   assert.ok(w.calls.queries.some((q) => /INSERT INTO bookings/.test(q)));
+});
+
+// ----------------------------------------------------------------------------
+// PhonePe cutover Stage 2C: PRODUCTION tester allowlist (PHONEPE_PRODUCTION_TESTERS)
+// ----------------------------------------------------------------------------
+
+test('production tester gate: BOOKING_CREATE_ENABLED=false -> 503 before the gate, for listed and unlisted subs', async () => {
+  for (const sub of ['sub-1', 'sub-stranger']) {
+    const w = killSwitchBookingWorld('false', 'PRODUCTION', 'sub-1');
+    const res = await w.handler(bookingEvent(HANDLER_BODY, sub));
+    assert.equal(res.statusCode, 503);
+    assert.equal(w.calls.getDb, 0);
+    mock.timers.reset();
+  }
+});
+
+test('production tester gate: switch on + missing/empty tester list -> 403 for everyone, no DB, no INSERT, no hold', async () => {
+  for (const testers of [undefined, '', '   ', ' , ']) {
+    const w = killSwitchBookingWorld('true', 'PRODUCTION', testers);
+    const res = await w.handler(bookingEvent(HANDLER_BODY, 'sub-1'));
+    assert.equal(res.statusCode, 403, JSON.stringify(testers));
+    assert.deepEqual(JSON.parse(String(res.body)), {
+      error: 'bookings_not_permitted',
+      message: 'Online booking is not available for this account',
+    });
+    assert.equal(w.calls.getDb, 0);
+    assert.deepEqual(w.calls.queries, []);
+    assert.equal(w.store.allocations.length, 0);
+    mock.timers.reset();
+  }
+});
+
+test('production tester gate: switch on + non-allowlisted sub -> 403; a body claiming another sub/tester status changes nothing', async () => {
+  const w = killSwitchBookingWorld('true', 'PRODUCTION', 'sub-1, sub-2');
+  const body = { ...HANDLER_BODY, sub: 'sub-1', cognitoSub: 'sub-1', tester: true, PHONEPE_PRODUCTION_TESTERS: 'sub-3' };
+  for (const sub of ['sub-3', 'SUB-1', 'sub-1 ']) {
+    const res = await w.handler(bookingEvent(body, sub));
+    assert.equal(res.statusCode, 403, sub);
+    assert.ok(!/PRODUCTION|tester|allowlist/i.test(String(res.body)), 'nothing about the gate is revealed');
+  }
+  assert.equal(w.calls.getDb, 0);
+  assert.equal(w.store.bookings.length, 0);
+});
+
+test('production tester gate: switch on + allowlisted sub -> reaches the normal booking logic (PRODUCTION booking + hold)', async () => {
+  const w = killSwitchBookingWorld('true', 'PRODUCTION', 'sub-other, sub-1');
+  const res = await w.handler(bookingEvent(HANDLER_BODY, 'sub-1'));
+  assert.equal(res.statusCode, 201);
+  assert.equal(w.calls.getDb, 1);
+  assert.equal(w.store.allocations.length, 1);
+  const insert = w.calls.queries.find((q) => /INSERT INTO bookings/.test(q));
+  assert.ok(insert);
+  // ...and normal validation still applies to an allowlisted tester.
+  assert.equal((await w.handler(bookingEvent({ ...HANDLER_BODY, customerPhone: 'nope' }, 'sub-1'))).statusCode, 400);
+});
+
+test('production tester gate: SANDBOX booking is unchanged — no tester list needed, and the production list is ignored', async () => {
+  for (const testers of [undefined, '', 'sub-somebody-else']) {
+    const w = killSwitchBookingWorld('true', 'SANDBOX', testers);
+    const res = await w.handler(bookingEvent(HANDLER_BODY, 'sub-anyone'));
+    assert.equal(res.statusCode, 201, JSON.stringify(testers));
+    mock.timers.reset();
+  }
 });

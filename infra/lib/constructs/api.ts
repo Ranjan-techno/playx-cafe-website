@@ -68,9 +68,18 @@ export interface ApiConstructProps {
   paymentReconcileProductionDlqName: string;
   paymentReconcileProductionDlqAlarmName: string;
   paymentReconcileProductionFunctionName: string;
+  /** PhonePe cutover Stage 2C: GET /payments/production/{bookingId}/status's Lambda (e.g.
+   *  'playx-dev-payment-status-production') and the public PhonePe callback Lambda behind
+   *  POST /payments/production/webhook (e.g. 'playx-dev-payment-webhook-production'). */
+  paymentStatusProductionFunctionName: string;
+  paymentWebhookProductionFunctionName: string;
   /** Comma-separated Cognito subs/verified emails allowed to start SANDBOX payments. Empty fails
    *  closed (nobody may start one) — see config/payment-config.ts. */
   phonepeSandboxTesters: string;
+  /** Stage 2C: comma-separated Cognito subs (only) allowed to create PRODUCTION bookings and start
+   *  PRODUCTION payments once the production kill switches are on. Empty fails closed — see
+   *  config/payment-config.ts's resolveProductionTesters. */
+  phonepeProductionTesters: string;
 
   /** Story 2.1 VPC — the products/booking Lambdas need this to reach the Story 2.2 database. */
   vpc: ec2.IVpc;
@@ -132,6 +141,18 @@ export interface ApiConstructProps {
  * its own EventBridge rule. The production payment-start Lambda gets the queue URL and
  * sqs:SendMessage on that one queue (still disabled, so it never sends). No production
  * payment-status route and no webhook yet.
+ *
+ * PhonePe cutover Stage 2C adds, still with both production kill switches OFF:
+ *   - POST /payments/production/webhook — PUBLIC (no JWT authorizer; PhonePe calls it server to
+ *     server). Its Lambda authenticates each callback with the PhonePe SDK's validateCallback()
+ *     using webhook credentials read from the production PhonePe secret at runtime (never in the
+ *     Lambda environment), then triggers the authoritative PRODUCTION order-status check through
+ *     the shared reconciliation path. Production secret only; no SQS.
+ *   - GET /payments/production/{bookingId}/status — JWT-protected, the shared payment-status
+ *     implementation hard-coded to PRODUCTION rows and the production secret.
+ *   - PHONEPE_PRODUCTION_TESTERS (Cognito subs, from the `phonepeProductionTesters` context) on the
+ *     production create-booking and payment-start Lambdas only — a second server-side gate behind
+ *     their kill switches.
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
@@ -160,6 +181,8 @@ export class ApiConstruct extends Construct {
   public readonly paymentReconcileProductionFastFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentReconcileProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentReconcileProductionRule: events.Rule;
+  public readonly paymentStatusProductionFunction: lambdaNodejs.NodejsFunction;
+  public readonly paymentWebhookProductionFunction: lambdaNodejs.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: ApiConstructProps) {
     super(scope, id);
@@ -220,9 +243,10 @@ export class ApiConstruct extends Construct {
     // PhonePe cutover Stage 2A: same business logic as CreateBookingFunction (create-booking.ts's
     // createBookingHandler), with booking_environment fixed to PRODUCTION by its entry file. Same
     // isolated subnets and DB access; no PhonePe secret or configuration at all.
-    // BOOKING_CREATE_ENABLED is 'false' in Stage 2A (the config type only allows false), so every
-    // request is answered 503 before any DB connection — no PRODUCTION booking can be created or
-    // hold shared simulator inventory before cutover.
+    // BOOKING_CREATE_ENABLED is 'false' in Stages 2A-2C (the config type only allows false), so
+    // every request is answered 503 before any DB connection — no PRODUCTION booking can be created
+    // or hold shared simulator inventory before cutover. Stage 2C: PHONEPE_PRODUCTION_TESTERS (subs
+    // only; empty = nobody) is the second gate that will apply once the switch is turned on.
     this.createBookingProductionFunction = new lambdaNodejs.NodejsFunction(this, 'CreateBookingProductionFunction', {
       ...dbFunctionDefaults,
       functionName: props.createBookingProductionFunctionName,
@@ -230,6 +254,7 @@ export class ApiConstruct extends Construct {
       environment: {
         ...dbFunctionDefaults.environment,
         BOOKING_CREATE_ENABLED: props.productionPaymentConfig.bookingCreateEnabled ? 'true' : 'false',
+        PHONEPE_PRODUCTION_TESTERS: props.phonepeProductionTesters,
       },
     });
     props.databaseSecret.grantRead(this.createBookingProductionFunction);
@@ -389,6 +414,7 @@ export class ApiConstruct extends Construct {
     // reaches ONLY the production secret. PAYMENT_START_ENABLED is 'false' (the config type only
     // allows false in this stage), so every request is answered 503 before the handler touches
     // the DB, the secret or PhonePe. No sandbox tester list: the SANDBOX gate never applies here.
+    // Stage 2C: PHONEPE_PRODUCTION_TESTERS (subs only; empty = nobody) gates it once enabled.
     const productionPayment = props.productionPaymentConfig;
     this.paymentStartProductionFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentStartProductionFunction', {
       ...paymentFunctionDefaults,
@@ -404,6 +430,7 @@ export class ApiConstruct extends Construct {
         // Stage 2B: every PRODUCTION order must start the fast-reconcile chain; the handler fails
         // closed (before PhonePe) without this. Inert while PAYMENT_START_ENABLED is 'false'.
         PAYMENT_RECONCILE_QUEUE_URL: productionQueue.queueUrl,
+        PHONEPE_PRODUCTION_TESTERS: props.phonepeProductionTesters,
       },
     });
     props.databaseSecret.grantRead(this.paymentStartProductionFunction);
@@ -529,6 +556,34 @@ export class ApiConstruct extends Construct {
         }),
       ],
     });
+
+    // PhonePe cutover Stage 2C: the production status endpoint. Same handler code, placement and
+    // timeout as PaymentStatusFunction; its entry file hard-codes PRODUCTION (only PRODUCTION
+    // bookings/payment rows are ever read or reconciled) and its role reads ONLY the production
+    // PhonePe secret. No SQS, no tester list (ownership is enforced per booking).
+    this.paymentStatusProductionFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentStatusProductionFunction', {
+      ...paymentFunctionDefaults,
+      functionName: props.paymentStatusProductionFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/payment-status-production.ts'),
+      environment: productionPhonepeEnv,
+    });
+    props.databaseSecret.grantRead(this.paymentStatusProductionFunction);
+    grantPhonePeSecret(this.paymentStatusProductionFunction, productionPayment.phonepeSecretName);
+
+    // PhonePe cutover Stage 2C: the PRODUCTION PhonePe webhook. Private-with-egress subnets + shared
+    // Lambda SG (RDS over the VPC, PhonePe's order-status API over the NAT), DB secret read and
+    // GetSecretValue on the production PhonePe secret ONLY — the webhook username/password are keys
+    // of that same secret, read at runtime; nothing credential-like is in its environment. No SQS:
+    // an authenticated callback only triggers one authoritative status check, applied through the
+    // shared reconciliation path (the fast chain and the 5-minute fallback keep running regardless).
+    this.paymentWebhookProductionFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentWebhookProductionFunction', {
+      ...paymentFunctionDefaults,
+      functionName: props.paymentWebhookProductionFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/payment-webhook-production.ts'),
+      environment: productionPhonepeEnv,
+    });
+    props.databaseSecret.grantRead(this.paymentWebhookProductionFunction);
+    grantPhonePeSecret(this.paymentWebhookProductionFunction, productionPayment.phonepeSecretName);
 
     // Not VPC-attached, same as healthFunction: these only call Cognito's regional Admin* APIs,
     // never the database.
@@ -698,8 +753,8 @@ export class ApiConstruct extends Construct {
     });
 
     // PhonePe payments (Phase 2). Both behind the Cognito JWT authorizer; each handler additionally
-    // enforces booking ownership (and, for start, the SANDBOX tester allowlist). No webhook route
-    // yet — that is a later phase.
+    // enforces booking ownership (and, for start, the SANDBOX tester allowlist). The only webhook
+    // route is Stage 2C's PRODUCTION one below.
     this.httpApi.addRoutes({
       path: '/payments/start',
       methods: [apigwv2.HttpMethod.POST],
@@ -724,6 +779,29 @@ export class ApiConstruct extends Construct {
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2Integrations.HttpLambdaIntegration('PaymentStatusIntegration', this.paymentStatusFunction),
       authorizer: cognitoAuthorizer,
+    });
+
+    // PhonePe cutover Stage 2C: PRODUCTION payment status — JWT-protected like the sandbox route.
+    this.httpApi.addRoutes({
+      path: '/payments/production/{bookingId}/status',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration(
+        'PaymentStatusProductionIntegration',
+        this.paymentStatusProductionFunction,
+      ),
+      authorizer: cognitoAuthorizer,
+    });
+
+    // PhonePe cutover Stage 2C: PhonePe's server-to-server callback for PRODUCTION orders. PUBLIC —
+    // deliberately no authorizer (PhonePe holds no Cognito token); every request is authenticated
+    // inside the Lambda with the SDK's validateCallback() before any payload field is trusted.
+    this.httpApi.addRoutes({
+      path: '/payments/production/webhook',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new apigwv2Integrations.HttpLambdaIntegration(
+        'PaymentWebhookProductionIntegration',
+        this.paymentWebhookProductionFunction,
+      ),
     });
 
     new cdk.CfnOutput(this, 'UrlOutput', {

@@ -10,8 +10,9 @@ import { findCustomerBooking } from '../lib/payment-repository';
 import { getCheckoutHoldMinutes, getPaymentReturnUrl } from '../lib/payment-settings';
 import type { PhonePeEnvironment } from '../lib/phonepe-config';
 import type * as PhonePeRuntime from '../lib/phonepe-runtime';
+import { assertProductionTesterAllowed } from '../lib/production-access';
 import { createSqsReconcileQueue, isValidQueueUrl, type ReconcileQueue } from '../lib/reconcile-queue';
-import { assertPaymentStartAllowed } from '../lib/sandbox-access';
+import { assertPaymentStartAllowed, type PaymentUserIdentity } from '../lib/sandbox-access';
 import { startPayment } from '../lib/start-payment';
 
 // POST /payments/start — begins a PhonePe checkout for the caller's own pending booking.
@@ -23,8 +24,14 @@ import { startPayment } from '../lib/start-payment';
 //
 // Order of checks (cheapest/most-restrictive first, no provider or DB work before the gate):
 //   PAYMENT_START_ENABLED kill switch (503) -> 401 no verified sub -> 400 bad bookingId ->
-//   SANDBOX tester gate (403) -> ownership (404) -> startPayment() -> re-check the gate against
-//   the environment the secret ACTUALLY declares.
+//   environment tester gate (403) -> ownership (404) -> startPayment() -> re-check the gate
+//   against the environment the secret ACTUALLY declares.
+//
+// Tester gates (both server-side, both fail closed on an empty list):
+//   SANDBOX     PHONEPE_SANDBOX_TESTERS — Cognito subs and/or verified emails (sandbox-access.ts).
+//   PRODUCTION  PHONEPE_PRODUCTION_TESTERS — Cognito subs ONLY (production-access.ts). PhonePe
+//               cutover Stage 2C: even once PAYMENT_START_ENABLED is later turned on for the
+//               production Lambda, only allowlisted subjects may start a production payment.
 //
 // Kill switch: payment initiation runs only when the Lambda's PAYMENT_START_ENABLED is exactly
 // "true" (set explicitly per function in infra/lib/constructs/api.ts). Missing, "false", "TRUE",
@@ -79,6 +86,15 @@ function configuredEnvironment(env: NodeJS.ProcessEnv): PhonePeEnvironment {
   return env.PHONEPE_ENVIRONMENT === 'PRODUCTION' ? 'PRODUCTION' : 'SANDBOX';
 }
 
+/** Throws (mapped to a generic 403) unless `identity` may start a payment in `environment`. */
+function assertEnvironmentAccess(environment: PhonePeEnvironment, identity: PaymentUserIdentity, env: NodeJS.ProcessEnv): void {
+  if (environment === 'PRODUCTION') {
+    assertProductionTesterAllowed(identity.sub, env.PHONEPE_PRODUCTION_TESTERS);
+    return;
+  }
+  assertPaymentStartAllowed(environment, identity, env.PHONEPE_SANDBOX_TESTERS);
+}
+
 /** Same body as a PhonePe config failure: the caller learns nothing about queues or environments. */
 function paymentsUnavailable(): APIGatewayProxyStructuredResultV2 {
   return errorResponse(503, 'payments_unavailable', 'Payments are temporarily unavailable');
@@ -105,7 +121,7 @@ export function createHandler(deps: PaymentStartDeps = defaultDeps) {
     }
 
     try {
-      assertPaymentStartAllowed(configuredEnvironment(deps.env), identity, deps.env.PHONEPE_SANDBOX_TESTERS);
+      assertEnvironmentAccess(configuredEnvironment(deps.env), identity, deps.env);
 
       const db = await deps.getDb();
       const booking = await findCustomerBooking(db, bookingId, identity.sub);
@@ -117,7 +133,7 @@ export function createHandler(deps: PaymentStartDeps = defaultDeps) {
       const baseReturnUrl = getPaymentReturnUrl(deps.env);
       const provider = await deps.getProvider(baseReturnUrl);
       // The secret is the source of truth for which PhonePe environment we are really talking to.
-      assertPaymentStartAllowed(provider.environment, identity, deps.env.PHONEPE_SANDBOX_TESTERS);
+      assertEnvironmentAccess(provider.environment, identity, deps.env);
       const fastReconcile = provider.environment === 'PRODUCTION';
       if (fastReconcile && !hasReconcileQueue) {
         // Deploy config said SANDBOX but the secret is PRODUCTION: still no order without the chain.

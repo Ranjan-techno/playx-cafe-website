@@ -33,6 +33,14 @@ import { reconcilePayment } from '../lib/reconcile-payment';
 // nothing and is never reconciled, see lib/environment.ts). This sandbox Lambda therefore never asks its sandbox PhonePe client
 // about an explicitly PRODUCTION payment: the provider is not called and the last known DB state
 // is reported instead.
+//
+// PhonePe cutover Stage 2C: GET /payments/production/{bookingId}/status
+// (payment-status-production.ts) is this same handler built with `environment: 'PRODUCTION'`: a
+// booking whose typed booking_environment is not PRODUCTION answers 404 (like a booking that does
+// not exist), and only payment rows whose payment_environment is PRODUCTION are ever reconciled or
+// reported — SANDBOX data cannot leak through that route. Its Lambda can read only the production
+// PhonePe secret. Without the option (this file's `handler`, the sandbox route) behavior is
+// unchanged.
 
 export type PaymentOutcome =
   | 'not_started'
@@ -49,7 +57,13 @@ export interface PaymentStatusDeps {
   getProvider: () => Promise<PaymentProviderAdapter & { environment: AppEnvironment }>;
 }
 
-const defaultDeps: PaymentStatusDeps = { getDb, resetDb, getProvider: () => getPhonePePaymentProvider() };
+export const defaultDeps: PaymentStatusDeps = { getDb, resetDb, getProvider: () => getPhonePePaymentProvider() };
+
+export interface PaymentStatusOptions {
+  /** When set, the route only ever sees bookings and payment rows of this typed environment. A
+   *  deploy-time constant of the entry file — never request data. */
+  environment?: AppEnvironment;
+}
 
 function hasLiveCheckout(payment: PaymentRow): boolean {
   const checkout = payment.metadata?.checkout as { redirectUrl?: unknown } | undefined;
@@ -65,7 +79,18 @@ function currentPayment(payments: PaymentRow[]): PaymentRow | undefined {
   );
 }
 
-export function createHandler(deps: PaymentStatusDeps = defaultDeps) {
+export function createHandler(deps: PaymentStatusDeps = defaultDeps, options: PaymentStatusOptions = {}) {
+  const scope = options.environment;
+  const log = scope === 'PRODUCTION' ? 'GET /payments/production/status' : 'GET /payments/status';
+  /** The booking, or null when it is not the caller's — or (scoped route) not of this environment. */
+  const loadBooking = async (db: DbClient, bookingId: string, sub: string) => {
+    const booking = await findCustomerBooking(db, bookingId, sub);
+    return booking && (!scope || storedEnvironmentMatches(booking.booking_environment, scope)) ? booking : null;
+  };
+  const loadPayments = async (db: DbClient, bookingId: string) => {
+    const rows = await listPaymentsForBooking(db, bookingId);
+    return scope ? rows.filter((p) => storedEnvironmentMatches(p.payment_environment, scope)) : rows;
+  };
   return async (event: APIGatewayProxyEventV2WithJWTAuthorizer): Promise<APIGatewayProxyStructuredResultV2> => {
     const identity = readIdentity(event);
     if (!identity) {
@@ -79,12 +104,12 @@ export function createHandler(deps: PaymentStatusDeps = defaultDeps) {
 
     try {
       const db = await deps.getDb();
-      let booking = await findCustomerBooking(db, bookingId, identity.sub);
+      let booking = await loadBooking(db, bookingId, identity.sub);
       if (!booking) {
         return errorResponse(404, 'booking_not_found', 'Booking not found');
       }
 
-      let payments = await listPaymentsForBooking(db, bookingId);
+      let payments = await loadPayments(db, bookingId);
       const open = [...payments].reverse().find(
         (p) => (p.payment_status === 'created' || p.payment_status === 'pending') && hasLiveCheckout(p),
       );
@@ -94,7 +119,7 @@ export function createHandler(deps: PaymentStatusDeps = defaultDeps) {
           if (storedEnvironmentMatches(open.payment_environment, provider.environment)) {
             await reconcilePayment(db, provider, open.provider_order_id);
           } else {
-            console.error('GET /payments/status reconcile refused: payment environment does not match the provider');
+            console.error(`${log} reconcile refused: payment environment does not match the provider`);
           }
         } catch (err) {
           // Provider/credential trouble or a domain-level refusal: keep the last known state.
@@ -106,15 +131,15 @@ export function createHandler(deps: PaymentStatusDeps = defaultDeps) {
           ) {
             throw err;
           }
-          console.error('GET /payments/status reconcile skipped', err.name, err.message);
+          console.error(`${log} reconcile skipped`, err.name, err.message);
         }
         // Re-read what reconciliation may have changed.
-        const fresh = await findCustomerBooking(db, bookingId, identity.sub);
+        const fresh = await loadBooking(db, bookingId, identity.sub);
         if (!fresh) {
           return errorResponse(404, 'booking_not_found', 'Booking not found');
         }
         booking = fresh;
-        payments = await listPaymentsForBooking(db, bookingId);
+        payments = await loadPayments(db, bookingId);
       }
 
       const payment = currentPayment(payments);
@@ -161,11 +186,11 @@ export function createHandler(deps: PaymentStatusDeps = defaultDeps) {
     } catch (err) {
       const mapped = mapPaymentError(err);
       if (mapped) {
-        console.error('GET /payments/status rejected', err instanceof Error ? err.name : 'unknown');
+        console.error(`${log} rejected`, err instanceof Error ? err.name : 'unknown');
         return mapped;
       }
       deps.resetDb();
-      console.error('GET /payments/status failed', err instanceof Error ? err.name : 'unknown');
+      console.error(`${log} failed`, err instanceof Error ? err.name : 'unknown');
       return errorResponse(500, 'internal_error', 'Failed to load payment status');
     }
   };

@@ -21,6 +21,7 @@ import {
   SimulatorCapacityUnavailableError,
 } from './payment-errors';
 import { PhonePeConfigError } from './phonepe-config';
+import { ProductionTesterNotAllowedError } from './production-access';
 import { SandboxTesterNotAllowedError, SandboxTestersNotConfiguredError, type PaymentUserIdentity } from './sandbox-access';
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -72,8 +73,13 @@ export function isSafeCheckoutRedirect(raw: string): boolean {
 /** Maps a thrown error to a sanitized HTTP response, or null if it is not a known domain error
  *  (the caller then logs it and answers a generic 500). */
 export function mapPaymentError(err: unknown): APIGatewayProxyStructuredResultV2 | null {
-  if (err instanceof SandboxTestersNotConfiguredError || err instanceof SandboxTesterNotAllowedError) {
-    // Same body for both: a caller must not learn whether an allowlist exists or who is on it.
+  if (
+    err instanceof SandboxTestersNotConfiguredError ||
+    err instanceof SandboxTesterNotAllowedError ||
+    err instanceof ProductionTesterNotAllowedError
+  ) {
+    // Same body for all three: a caller must not learn whether an allowlist exists, which
+    // environment's list it is, or who is on it.
     return errorResponse(403, 'payments_not_permitted', 'Payments are not available for this account');
   }
   if (err instanceof BookingNotFoundError) {

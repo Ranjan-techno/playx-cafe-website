@@ -6,6 +6,7 @@ import { assertAppEnvironment, type AppEnvironment } from '../lib/environment';
 import { errorResponse, jsonResponse } from '../lib/http';
 import { istPartsToUtcDate, parseTimeToMinutes, validateBookingSchedule } from '../lib/opening-hours';
 import { normalizeIndianPhone } from '../lib/phone';
+import { isProductionTester } from '../lib/production-access';
 import { requirementForProduct } from '../lib/simulator-allocation';
 
 // Story 2.6: POST /bookings — creates a pending booking for the authenticated Cognito user.
@@ -245,6 +246,14 @@ export function createBookingHandler(bookingEnvironment: AppEnvironment, deps: C
       // Defensive only: API Gateway's JWT authorizer should never let a request through without a
       // "sub" claim, since every Cognito-issued token carries one.
       return errorResponse(401, 'unauthenticated', 'Missing subject claim');
+    }
+
+    // PhonePe cutover Stage 2C: PRODUCTION bookings are additionally limited to the production
+    // tester allowlist (PHONEPE_PRODUCTION_TESTERS, verified Cognito subs only — see
+    // lib/production-access.ts), checked before the body is parsed or the DB is touched. An empty
+    // list denies everyone. SANDBOX bookings have no such gate (unchanged).
+    if (environment === 'PRODUCTION' && !isProductionTester(sub, deps.env.PHONEPE_PRODUCTION_TESTERS)) {
+      return errorResponse(403, 'bookings_not_permitted', 'Online booking is not available for this account');
     }
 
     const body = parseBody(event.body);

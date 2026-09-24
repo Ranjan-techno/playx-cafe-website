@@ -249,7 +249,7 @@ test('start: a PRODUCTION booking is refused by the sandbox payment path (409, n
 });
 
 test('start: environment comes from the provider config — a PRODUCTION config needs a PRODUCTION booking; NULL never matches PRODUCTION', async () => {
-  const ok = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION', PAYMENT_RECONCILE_QUEUE_URL: PROD_QUEUE_URL }, { bookingEnvironment: 'PRODUCTION' });
+  const ok = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION', PAYMENT_RECONCILE_QUEUE_URL: PROD_QUEUE_URL, PHONEPE_PRODUCTION_TESTERS: ME }, { bookingEnvironment: 'PRODUCTION' });
   ok.provider.environment = 'PRODUCTION';
   const res = await call(() => ok.start(startEvent({ bookingId: ok.bookingId, paymentEnvironment: 'SANDBOX', environment: 'SANDBOX' })));
   assert.equal(res.statusCode, 200);
@@ -259,7 +259,7 @@ test('start: environment comes from the provider config — a PRODUCTION config 
   const err = mock.method(console, 'error', () => {});
   try {
     for (const bookingEnvironment of ['SANDBOX', null] as const) {
-      const w = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION', PAYMENT_RECONCILE_QUEUE_URL: PROD_QUEUE_URL }, { bookingEnvironment });
+      const w = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION', PAYMENT_RECONCILE_QUEUE_URL: PROD_QUEUE_URL, PHONEPE_PRODUCTION_TESTERS: ME }, { bookingEnvironment });
       w.provider.environment = 'PRODUCTION';
       const denied = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
       assert.equal(denied.statusCode, 409, String(bookingEnvironment));
@@ -272,8 +272,9 @@ test('start: environment comes from the provider config — a PRODUCTION config 
 });
 
 test('SANDBOX gate is re-checked against the environment the secret actually declares', async () => {
-  // Deploy config says PRODUCTION (no gate up front) but the secret is a SANDBOX one: still gated.
-  const w = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION', PHONEPE_SANDBOX_TESTERS: '', PAYMENT_RECONCILE_QUEUE_URL: PROD_QUEUE_URL });
+  // Deploy config says PRODUCTION (the caller passes the production gate up front) but the secret
+  // is a SANDBOX one: the SANDBOX gate still applies.
+  const w = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION', PHONEPE_SANDBOX_TESTERS: '', PHONEPE_PRODUCTION_TESTERS: ME, PAYMENT_RECONCILE_QUEUE_URL: PROD_QUEUE_URL });
   const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
   assert.equal(res.statusCode, 403);
   assert.equal(w.provider.createCalls.length, 0);
@@ -443,6 +444,8 @@ function prodWorld(envOverrides: NodeJS.ProcessEnv = {}) {
       PAYMENT_RETURN_URL: 'https://playxcafe.com/payment-return.html',
       PAYMENT_RECONCILE_QUEUE_URL: PROD_QUEUE_URL,
       PHONEPE_SANDBOX_TESTERS: undefined,
+      // Stage 2C: the production tester allowlist (Cognito subs only).
+      PHONEPE_PRODUCTION_TESTERS: ME,
       ...envOverrides,
     },
     { bookingEnvironment: 'PRODUCTION' },
@@ -483,7 +486,7 @@ test('PRODUCTION start: missing/invalid queue URL fails closed (503) before DB, 
 });
 
 test('PRODUCTION secret behind a SANDBOX deploy config still needs the queue: refused before any PhonePe call', async () => {
-  const w = setup({ PHONEPE_ENVIRONMENT: 'SANDBOX' }, { bookingEnvironment: 'PRODUCTION' });
+  const w = setup({ PHONEPE_ENVIRONMENT: 'SANDBOX', PHONEPE_PRODUCTION_TESTERS: ME }, { bookingEnvironment: 'PRODUCTION' });
   w.provider.environment = 'PRODUCTION';
   const res = await quietly(() => call(() => w.start(startEvent({ bookingId: w.bookingId }))));
   assert.equal(res.statusCode, 503);
@@ -951,4 +954,185 @@ test('status: a NULL/unknown payment environment is refused rather than reconcil
     assert.equal(w.store.bookings[0].status, 'pending');
     assert.equal(res.body.outcome, 'pending');
   }
+});
+
+// ---------------------------------------------------------------- Stage 2C: PRODUCTION tester gate (payment start)
+
+test('PRODUCTION start tester gate: kill switch off -> 503 before the gate, DB or provider, for listed and unlisted subs alike', async () => {
+  for (const sub of [ME, OTHER]) {
+    const w = prodWorld({ PAYMENT_START_ENABLED: 'false' });
+    const calls = { getDb: 0, getProvider: 0 };
+    const start = createStartHandler({
+      env: w.env,
+      getDb: async () => { calls.getDb += 1; return createFakePaymentDbClient(w.store); },
+      resetDb: () => {},
+      getProvider: async () => { calls.getProvider += 1; return w.provider; },
+      getReconcileQueue: () => w.queue,
+    });
+    const res = await call(() => start(startEvent({ bookingId: w.bookingId }, { sub })));
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.error, 'payments_temporarily_unavailable');
+    assert.equal(calls.getDb + calls.getProvider, 0);
+  }
+});
+
+test('PRODUCTION start tester gate: switch on + missing/empty tester list -> 403 for everyone, before DB/provider/SQS', async () => {
+  for (const testers of [undefined, '', '  ', ' , ,']) {
+    const w = prodWorld({ PHONEPE_PRODUCTION_TESTERS: testers });
+    const calls = { getDb: 0, getProvider: 0 };
+    const start = createStartHandler({
+      env: w.env,
+      getDb: async () => { calls.getDb += 1; return createFakePaymentDbClient(w.store); },
+      resetDb: () => {},
+      getProvider: async () => { calls.getProvider += 1; return w.provider; },
+      getReconcileQueue: () => w.queue,
+    });
+    const res = await call(() => start(startEvent({ bookingId: w.bookingId })));
+    assert.equal(res.statusCode, 403, JSON.stringify(testers));
+    assert.equal(res.body.error, 'payments_not_permitted');
+    assert.equal(calls.getDb + calls.getProvider, 0);
+    assert.equal(w.queue.attempts, 0);
+    assert.equal(w.store.payments.length, 0);
+  }
+});
+
+test('PRODUCTION start tester gate: switch on + non-allowlisted sub -> 403 (same body as the sandbox gate), even with a verified email or a body claim', async () => {
+  const w = prodWorld({ PHONEPE_PRODUCTION_TESTERS: 'sub-someone-else, tester@example.com' });
+  const claims = { sub: ME, email: 'tester@example.com', email_verified: 'true' };
+  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId, sub: 'sub-someone-else', testers: ME }, claims)));
+  assert.equal(res.statusCode, 403);
+  assert.deepEqual(res.body, { error: 'payments_not_permitted', message: 'Payments are not available for this account' });
+  assert.ok(!/PRODUCTION|tester|allowlist/i.test(res.raw));
+  assert.equal(w.provider.createCalls.length, 0);
+  assert.equal(w.store.payments.length, 0);
+});
+
+test('PRODUCTION start tester gate: switch on + allowlisted sub -> reaches the normal payment logic (order + fast chain)', async () => {
+  const w = prodWorld({ PHONEPE_PRODUCTION_TESTERS: `sub-x, ${ME} ,sub-y` });
+  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+  assert.equal(res.statusCode, 200);
+  assert.equal(w.provider.createCalls.length, 1);
+  assert.equal(w.store.payments[0].payment_environment, 'PRODUCTION');
+  assert.deepEqual(w.queue.sent.map((x) => x.message.seq), [1]);
+  // ...and the ownership check still applies to an allowlisted tester.
+  const other = prodWorld({ PHONEPE_PRODUCTION_TESTERS: `${ME},${OTHER}` });
+  assert.equal((await call(() => other.start(startEvent({ bookingId: other.bookingId }, { sub: OTHER })))).statusCode, 404);
+});
+
+test('PRODUCTION start tester gate: a PRODUCTION secret behind a SANDBOX deploy config is re-gated on the production list', async () => {
+  const w = setup({ PHONEPE_ENVIRONMENT: 'SANDBOX', PHONEPE_SANDBOX_TESTERS: ME, PHONEPE_PRODUCTION_TESTERS: undefined }, { bookingEnvironment: 'PRODUCTION' });
+  w.provider.environment = 'PRODUCTION';
+  const res = await quietly(() => call(() => w.start(startEvent({ bookingId: w.bookingId }))));
+  assert.equal(res.statusCode, 403);
+  assert.equal(w.provider.createCalls.length, 0);
+  assert.equal(w.store.payments.length, 0);
+});
+
+test('SANDBOX start: the production tester list plays no part (sandbox gate unchanged)', async () => {
+  const onlyProd = setup({ PHONEPE_SANDBOX_TESTERS: '', PHONEPE_PRODUCTION_TESTERS: ME });
+  assert.equal((await call(() => onlyProd.start(startEvent({ bookingId: onlyProd.bookingId })))).statusCode, 403, 'a production tester is not a sandbox tester');
+  const both = setup({ PHONEPE_SANDBOX_TESTERS: ME, PHONEPE_PRODUCTION_TESTERS: '' });
+  assert.equal((await call(() => both.start(startEvent({ bookingId: both.bookingId })))).statusCode, 200, 'an empty production list does not affect sandbox');
+});
+
+// ---------------------------------------------------------------- Stage 2C: GET /payments/production/{bookingId}/status
+
+/** A started PRODUCTION attempt plus the PRODUCTION status handler (payment-status-production.ts's
+ *  configuration) over the same store and provider. */
+async function prodStatusWorld() {
+  const w = prodWorld();
+  const payment = await started(w);
+  const prodStatus = createStatusHandler(
+    { getDb: async () => createFakePaymentDbClient(w.store), resetDb: () => {}, getProvider: async () => w.provider },
+    { environment: 'PRODUCTION' },
+  );
+  return { w, payment, prodStatus };
+}
+
+test('production status: the entry file hard-codes PRODUCTION on the shared payment-status implementation', () => {
+  const fs = require('node:fs');
+  const src = fs.readFileSync(require.resolve('./payment-status-production.ts'), 'utf8') as string;
+  assert.match(src, /^export const handler = createHandler\(defaultDeps, \{ environment: 'PRODUCTION' \}\);$/m);
+  const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(code, /event|process\.env|SANDBOX/, 'nothing request- or env-derived chooses the environment');
+});
+
+test('production status: no JWT -> 401; malformed id -> 400; another customer -> 404', async () => {
+  const { w, prodStatus } = await prodStatusWorld();
+  assert.equal((await call(() => prodStatus(statusEvent(w.bookingId, null)))).statusCode, 401);
+  assert.equal((await call(() => prodStatus(statusEvent('nope')))).statusCode, 400);
+  assert.equal((await call(() => prodStatus(statusEvent(w.bookingId, { sub: OTHER })))).statusCode, 404);
+  assert.equal(w.provider.statusCalls.length, 0);
+});
+
+test('production status: a PRODUCTION attempt is reconciled with the PRODUCTION provider and confirmed', async () => {
+  const { w, payment, prodStatus } = await prodStatusWorld();
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'PENDING' });
+  const pending = await call(() => prodStatus(statusEvent(w.bookingId)));
+  assert.equal(pending.statusCode, 200);
+  assert.equal(pending.body.outcome, 'pending');
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX-PROD-1' });
+  const res = await call(() => prodStatus(statusEvent(w.bookingId)));
+  assert.deepEqual(Object.keys(res.body).sort(), ['bookingId', 'bookingNumber', 'bookingStatus', 'canRetry', 'holdExpiresAt', 'outcome', 'paymentStatus']);
+  assert.equal(res.body.outcome, 'confirmed');
+  assert.equal(res.body.bookingStatus, 'confirmed');
+  assert.deepEqual(w.provider.statusCalls, [payment.provider_order_id, payment.provider_order_id]);
+  assert.ok(!/TX-PROD-1|PRODUCTION/.test(res.raw));
+});
+
+test('production status: a SANDBOX booking cannot be read through the production route (404, no provider call, nothing leaked)', async () => {
+  const w = setup();
+  const payment = await started(w); // a SANDBOX booking with a SANDBOX attempt
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX-SB' });
+  const prodStatus = createStatusHandler(
+    { getDb: async () => createFakePaymentDbClient(w.store), resetDb: () => {}, getProvider: async () => w.provider },
+    { environment: 'PRODUCTION' },
+  );
+  const res = await call(() => prodStatus(statusEvent(w.bookingId)));
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.body, { error: 'booking_not_found', message: 'Booking not found' });
+  assert.equal(w.provider.statusCalls.length, 0);
+  assert.equal(w.store.payments[0].payment_status, 'pending');
+  // NULL/unknown booking environments are not PRODUCTION either.
+  for (const env of [null, 'LIVE']) {
+    w.store.bookings[0].booking_environment = env as never;
+    assert.equal((await call(() => prodStatus(statusEvent(w.bookingId)))).statusCode, 404, String(env));
+  }
+});
+
+test('production status: SANDBOX payment rows on a PRODUCTION booking are neither reconciled nor reported', async () => {
+  const { w, payment, prodStatus } = await prodStatusWorld();
+  // Relabel the only attempt as SANDBOX (and paid) — the production route must behave as if it isn't there.
+  w.store.payments[0].payment_environment = 'SANDBOX';
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX-SB' });
+  const res = await call(() => prodStatus(statusEvent(w.bookingId)));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.paymentStatus, null, 'the SANDBOX row is not reported');
+  assert.equal(w.provider.statusCalls.length, 0, 'and never reconciled');
+  assert.equal(w.store.payments[0].payment_status, 'pending');
+  w.store.payments[0].payment_status = 'paid';
+  const paidElsewhere = await call(() => prodStatus(statusEvent(w.bookingId)));
+  assert.equal(paidElsewhere.body.paymentStatus, null);
+  assert.notEqual(paidElsewhere.body.outcome, 'confirmed');
+});
+
+test('production status: a provider that is not PRODUCTION never reconciles a PRODUCTION attempt', async () => {
+  const { w, payment, prodStatus } = await prodStatusWorld();
+  w.provider.environment = 'SANDBOX';
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX' });
+  const res = await quietly(() => call(() => prodStatus(statusEvent(w.bookingId))));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.outcome, 'pending');
+  assert.equal(w.provider.statusCalls.length, 0);
+  assert.equal(w.store.payments[0].payment_status, 'pending');
+});
+
+test('sandbox status route is unchanged: still reports (without reconciling) a PRODUCTION booking, as before Stage 2C', async () => {
+  const { w, payment } = await prodStatusWorld();
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX' });
+  w.provider.environment = 'SANDBOX'; // the sandbox Lambda's provider
+  const res = await quietly(() => call(() => w.status(statusEvent(w.bookingId))));
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.outcome, 'pending');
+  assert.equal(w.provider.statusCalls.length, 0);
 });

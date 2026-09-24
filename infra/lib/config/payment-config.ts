@@ -52,10 +52,11 @@ export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
  * this runtime is added to.
  *
  * The environment is fixed here, at deploy time: no request header/body/Origin/hostname can
- * choose it. The type pins `phonepeEnvironment` to PRODUCTION and, for Stage 2A, both
+ * choose it. The type pins `phonepeEnvironment` to PRODUCTION and, for Stages 2A-2C, both
  * `paymentStartEnabled` and `bookingCreateEnabled` to the literal `false` — POST
  * /payments/production/start and POST /bookings/production both exist but are inert (503, no DB
  * work, no inventory hold) until a deliberate code change to this type, not just a config flip.
+ * Even then (Stage 2C), only Cognito subs in resolveProductionTesters' list may use them.
  */
 export interface ProductionPaymentConfig
   extends Omit<PaymentConfig, 'phonepeEnvironment' | 'paymentStartEnabled' | 'bookingCreateEnabled'> {
@@ -98,4 +99,34 @@ export function resolveSandboxTesters(contextValue: unknown, env: NodeJS.Process
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
     .join(',');
+}
+
+/** A Cognito User Pool `sub`: a lowercase UUID. */
+const COGNITO_SUB_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * PhonePe cutover Stage 2C: who may create a PRODUCTION booking and start a PRODUCTION payment once
+ * the production kill switches are later turned on — comma-separated Cognito SUBJECTS ONLY, supplied
+ * at deploy time via `cdk deploy -c phonepeProductionTesters=<sub>[,<sub>]` or the
+ * PHONEPE_PRODUCTION_TESTERS environment variable, never committed. Rendered as the
+ * PHONEPE_PRODUCTION_TESTERS Lambda variable on exactly the production create-booking and
+ * payment-start Lambdas (backend/src/lib/production-access.ts enforces it).
+ *
+ * Empty/absent is valid and FAILS CLOSED (nobody). Unlike the sandbox list, an email (or anything
+ * else that is not a Cognito sub) is refused at synth time rather than silently never matching:
+ * the backend trusts only the verified JWT `sub`. Not a secret (plain Lambda configuration).
+ */
+export function resolveProductionTesters(contextValue: unknown, env: NodeJS.ProcessEnv = process.env): string {
+  const raw =
+    typeof contextValue === 'string' && contextValue.trim() !== '' ? contextValue : (env.PHONEPE_PRODUCTION_TESTERS ?? '');
+  const entries = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  for (const entry of entries) {
+    if (!COGNITO_SUB_RE.test(entry)) {
+      throw new Error('phonepeProductionTesters must list Cognito subs (lowercase UUIDs) only');
+    }
+  }
+  return [...new Set(entries)].join(',');
 }
