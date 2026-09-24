@@ -434,8 +434,8 @@ test('kill switch: the handler module never statically imports the PhonePe runti
 
 // ---------------------------------------------------------------- PRODUCTION fast reconciliation (Stage 2B)
 
-/** PaymentStartProductionFunction-shaped world with the kill switch ON (a test-only path — the
- *  deployed Lambda keeps PAYMENT_START_ENABLED=false in this stage). */
+/** PaymentStartProductionFunction-shaped world with the kill switch ON — as deployed from Stage 2D
+ *  (PAYMENT_START_ENABLED=true), still behind the PHONEPE_PRODUCTION_TESTERS allowlist. */
 function prodWorld(envOverrides: NodeJS.ProcessEnv = {}) {
   const w = setup(
     {
@@ -1017,6 +1017,39 @@ test('PRODUCTION start tester gate: switch on + allowlisted sub -> reaches the n
   // ...and the ownership check still applies to an allowlisted tester.
   const other = prodWorld({ PHONEPE_PRODUCTION_TESTERS: `${ME},${OTHER}` });
   assert.equal((await call(() => other.start(startEvent({ bookingId: other.bookingId }, { sub: OTHER })))).statusCode, 404);
+});
+
+test('Stage 2D: switch on + allowlisted sub -> PRODUCTION provider only (production return URL), PRODUCTION queue only, PRODUCTION rows only', async () => {
+  const w = prodWorld();
+  const returnUrls: (string | undefined)[] = [];
+  const start = createStartHandler({
+    env: w.env,
+    getDb: async () => createFakePaymentDbClient(w.store),
+    resetDb: () => {},
+    getProvider: async (returnUrl) => { returnUrls.push(returnUrl); return w.provider; },
+    getReconcileQueue: (url) => { w.queueUrls.push(url); return w.queue; },
+  });
+  // A body trying to steer the environment, amount or return URL changes nothing.
+  const body = { bookingId: w.bookingId, environment: 'SANDBOX', amount: 1, amountPaise: 100, returnUrl: 'https://evil.example/' };
+  const res = await call(() => start(startEvent(body)));
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(returnUrls, ['https://playxcafe.com/payment-return.html']);
+  assert.equal(w.provider.createCalls.length, 1);
+  assert.equal(w.provider.createCalls[0].amountInr, '999.00', 'amount from bookings.price_inr, never the request');
+  assert.match(w.provider.createCalls[0].returnUrl ?? '', /^https:\/\/playxcafe\.com\/payment-return\.html\?bookingId=/);
+  assert.equal(w.store.payments.length, 1);
+  assert.equal(w.store.payments[0].payment_environment, 'PRODUCTION');
+  assert.deepEqual(w.queueUrls, [PROD_QUEUE_URL], 'the production fast-reconcile queue and nothing else');
+});
+
+test('Stage 2D: switch on + allowlisted sub, but the provider is NOT PRODUCTION -> refused, no order, nothing enqueued', async () => {
+  const w = prodWorld();
+  w.provider.environment = 'SANDBOX';
+  const res = await quietly(() => call(() => w.start(startEvent({ bookingId: w.bookingId }))));
+  assert.equal(res.statusCode, 403, 'a sandbox provider re-gates on the (empty) sandbox list');
+  assert.equal(w.provider.createCalls.length, 0);
+  assert.equal(w.store.payments.length, 0);
+  assert.equal(w.queue.attempts, 0);
 });
 
 test('PRODUCTION start tester gate: a PRODUCTION secret behind a SANDBOX deploy config is re-gated on the production list', async () => {

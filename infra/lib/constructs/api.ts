@@ -153,6 +153,12 @@ export interface ApiConstructProps {
  *   - PHONEPE_PRODUCTION_TESTERS (Cognito subs, from the `phonepeProductionTesters` context) on the
  *     production create-booking and payment-start Lambdas only — a second server-side gate behind
  *     their kill switches.
+ *
+ * PhonePe cutover Stage 2D (one controlled production transaction for PhonePe's verification)
+ * turns ON exactly two switches — BOOKING_CREATE_ENABLED on the production create-booking Lambda
+ * and PAYMENT_START_ENABLED on the production payment-start Lambda (productionPaymentConfigs.dev).
+ * The tester allowlist above stays mandatory: an empty list or a non-listed sub is still 403
+ * before any DB/provider work. Sandbox functions, the webhook and the status route are unchanged.
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
@@ -243,10 +249,10 @@ export class ApiConstruct extends Construct {
     // PhonePe cutover Stage 2A: same business logic as CreateBookingFunction (create-booking.ts's
     // createBookingHandler), with booking_environment fixed to PRODUCTION by its entry file. Same
     // isolated subnets and DB access; no PhonePe secret or configuration at all.
-    // BOOKING_CREATE_ENABLED is 'false' in Stages 2A-2C (the config type only allows false), so
-    // every request is answered 503 before any DB connection — no PRODUCTION booking can be created
-    // or hold shared simulator inventory before cutover. Stage 2C: PHONEPE_PRODUCTION_TESTERS (subs
-    // only; empty = nobody) is the second gate that will apply once the switch is turned on.
+    // BOOKING_CREATE_ENABLED was 'false' in Stages 2A-2C (503 before any DB connection). Stage 2D
+    // turns it on for the controlled production transaction; PHONEPE_PRODUCTION_TESTERS (subs only;
+    // empty = nobody) remains the second gate, so only an allowlisted tester can create a
+    // PRODUCTION booking or hold shared simulator inventory — everyone else gets 403 before the DB.
     this.createBookingProductionFunction = new lambdaNodejs.NodejsFunction(this, 'CreateBookingProductionFunction', {
       ...dbFunctionDefaults,
       functionName: props.createBookingProductionFunctionName,
@@ -411,10 +417,11 @@ export class ApiConstruct extends Construct {
     // PhonePe cutover Stage 2A: the isolated PRODUCTION payment-start runtime. Same handler code,
     // subnets, security group and DB access as PaymentStartFunction; its PhonePe environment,
     // secret and return URL are fixed here at deploy time (productionPaymentConfig), and its IAM
-    // reaches ONLY the production secret. PAYMENT_START_ENABLED is 'false' (the config type only
-    // allows false in this stage), so every request is answered 503 before the handler touches
-    // the DB, the secret or PhonePe. No sandbox tester list: the SANDBOX gate never applies here.
-    // Stage 2C: PHONEPE_PRODUCTION_TESTERS (subs only; empty = nobody) gates it once enabled.
+    // reaches ONLY the production secret. PAYMENT_START_ENABLED was 'false' in Stages 2A-2C (503
+    // before the DB, the secret or PhonePe); Stage 2D turns it on for the controlled production
+    // transaction. No sandbox tester list: the SANDBOX gate never applies here. Stage 2C's
+    // PHONEPE_PRODUCTION_TESTERS (subs only; empty = nobody) still answers 403 to every
+    // non-allowlisted caller before the DB, the secret, PhonePe or SQS.
     const productionPayment = props.productionPaymentConfig;
     this.paymentStartProductionFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentStartProductionFunction', {
       ...paymentFunctionDefaults,
@@ -428,7 +435,7 @@ export class ApiConstruct extends Construct {
         PAYMENT_RETURN_URL: productionPayment.returnUrl,
         PAYMENT_START_ENABLED: productionPayment.paymentStartEnabled ? 'true' : 'false',
         // Stage 2B: every PRODUCTION order must start the fast-reconcile chain; the handler fails
-        // closed (before PhonePe) without this. Inert while PAYMENT_START_ENABLED is 'false'.
+        // closed (before PhonePe) without this.
         PAYMENT_RECONCILE_QUEUE_URL: productionQueue.queueUrl,
         PHONEPE_PRODUCTION_TESTERS: props.phonepeProductionTesters,
       },
@@ -762,8 +769,8 @@ export class ApiConstruct extends Construct {
       authorizer: cognitoAuthorizer,
     });
 
-    // PhonePe cutover Stage 2A: PRODUCTION payment start — JWT-protected like the sandbox route,
-    // and hard-disabled server-side (PAYMENT_START_ENABLED=false) in this stage.
+    // PhonePe cutover Stage 2A: PRODUCTION payment start — JWT-protected like the sandbox route.
+    // Enabled in Stage 2D, but only for Cognito subs on the production tester allowlist.
     this.httpApi.addRoutes({
       path: '/payments/production/start',
       methods: [apigwv2.HttpMethod.POST],

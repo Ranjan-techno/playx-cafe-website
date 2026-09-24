@@ -571,7 +571,8 @@ const payNowBtn = document.getElementById('payNowBtn');
 const paymentStepStatus = document.getElementById('paymentStepStatus');
 let paymentStepBookingId = null;
 
-// Null (step stays hidden, no handlers) unless this host is allowed sandbox payments.
+// Null (step stays hidden, no handlers) unless this host shows the PhonePe payment UI
+// (js/api-routes.js's PAYMENT_UI_HOSTNAMES).
 const bookingPaymentClient = typeof PlayXPayments !== 'undefined' && PlayXPayments.isPaymentUiEnabled(window.location.hostname)
   ? PlayXPayments.getBrowserClient()
   : null;
@@ -658,6 +659,9 @@ if (payNowBtn && bookingPaymentClient) {
 }
 
 // The one place that actually calls POST /bookings and renders the outcome -
+// or POST /bookings/production on playxcafe.com: the path comes from the page's
+// hostname alone (js/api-routes.js), never from the draft/form/URL, and the
+// backend gates the PRODUCTION route itself (kill switch + tester allowlist) -
 // used both by an already-signed-in visitor's ordinary submit
 // (attemptDraftAutoCompletion) and by the passwordless OTP flow's automatic
 // post-verification booking (createBookingAfterVerification), so the
@@ -685,7 +689,7 @@ async function submitBookingRequest({
   bookingResult.hidden = true;
 
   try {
-    const response = await fetch(`${AWS_CONFIG.apiBaseUrl}/bookings`, {
+    const response = await fetch(`${AWS_CONFIG.apiBaseUrl}${PlayXApiRoutes.currentRoutes().createBooking}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({

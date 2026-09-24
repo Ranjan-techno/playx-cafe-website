@@ -347,13 +347,17 @@ test('getToken rejection: no network request and a safe session_expired result',
   assert.equal(logged.length, 0);
 });
 
-test('sandbox payment UI: enabled on staging/localhost only, disabled on production hosts', () => {
+test('payment UI: enabled on staging/localhost (SANDBOX) and playxcafe.com (PRODUCTION) only', () => {
   assert.equal(P.isPaymentUiEnabled('staging.playxcafe.com'), true);
   assert.equal(P.isPaymentUiEnabled('localhost'), true);
   assert.equal(P.isPaymentUiEnabled('127.0.0.1'), true);
-  assert.equal(P.isPaymentUiEnabled('playxcafe.com'), false);
-  assert.equal(P.isPaymentUiEnabled('www.playxcafe.com'), false);
+  // Production cutover: the production site shows the payment UI; the backend's production
+  // tester allowlist (not this list) decides who can actually use it.
+  assert.equal(P.isPaymentUiEnabled('playxcafe.com'), true);
+  assert.equal(P.isPaymentUiEnabled('www.playxcafe.com'), true);
   assert.equal(P.isPaymentUiEnabled('evil-staging.playxcafe.com.example.com'), false);
+  assert.equal(P.isPaymentUiEnabled('playxcafe.com.example.com'), false);
+  assert.equal(P.isPaymentUiEnabled('main.d1abc.amplifyapp.com'), false);
   assert.equal(P.isPaymentUiEnabled(undefined), false);
 });
 

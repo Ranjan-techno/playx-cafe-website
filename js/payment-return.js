@@ -3,8 +3,10 @@
 // The URL is never evidence of payment: nothing here reads success=/code=/status= style
 // parameters. The only inputs are (a) which booking to ask about (PlayXPayments.resolveBookingId:
 // the backend-set ?bookingId= or the id stashed before we left for PhonePe - an identifier only)
-// and (b) what GET /payments/{bookingId}/status answers. Requires js/aws-config.js,
-// js/cognito-auth.js and js/payments.js loaded first.
+// and (b) what GET /payments/{bookingId}/status answers - GET /payments/production/{bookingId}/status
+// when this page is served from playxcafe.com (the PRODUCTION return URL), chosen from the page's
+// hostname by js/api-routes.js, never from a URL parameter. Requires js/aws-config.js,
+// js/cognito-auth.js, js/api-routes.js and js/payments.js loaded first.
 
 (function () {
   const el = (id) => document.getElementById(id);

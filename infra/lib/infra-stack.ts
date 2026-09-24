@@ -128,8 +128,9 @@ export class InfraStack extends cdk.Stack {
       paymentConfig: paymentConfigs[props.envConfig.environmentCode],
       // PhonePe cutover Stage 2A: the isolated PRODUCTION PhonePe runtime inside this same stack
       // (POST /bookings/production, POST /payments/production/start). Both routes are hard-disabled
-      // in Stage 2A: booking creation via BOOKING_CREATE_ENABLED=false and payment start via
-      // PAYMENT_START_ENABLED=false.
+      // in Stages 2A-2C: booking creation via BOOKING_CREATE_ENABLED=false and payment start via
+      // PAYMENT_START_ENABLED=false. Stage 2D enables both for the controlled production
+      // transaction; the production tester allowlist below still admits only listed Cognito subs.
       paymentStartProductionFunctionName: resourceName('payment-start-production'),
       productionPaymentConfig: productionPaymentConfigs[props.envConfig.environmentCode],
       // PhonePe cutover Stage 2B: PRODUCTION fast payment reconciliation (SQS queue + DLQ + alarm +

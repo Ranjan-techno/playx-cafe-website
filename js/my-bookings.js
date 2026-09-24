@@ -109,7 +109,8 @@ function splitUpcomingAndHistory(bookings) {
 // bookings show no action at all (their status pill already says so); the backend still
 // rejects a payment against a paid/cancelled/expired booking regardless of what this shows.
 // ---------------------------------------------------------------------
-// Sandbox PhonePe payment UI gate (host list lives in js/payments.js's PAYMENT_UI_CONFIG).
+// PhonePe payment UI gate (host list lives in js/api-routes.js's PAYMENT_UI_HOSTNAMES; which
+// payment routes a host uses - SANDBOX or PRODUCTION - is decided there too).
 function paymentUiEnabled() {
   return typeof PlayXPayments !== 'undefined' && PlayXPayments.isPaymentUiEnabled(window.location.hostname);
 }

@@ -962,13 +962,13 @@ test('Stage 2A: sandbox PaymentStartFunction — sandbox secret/environment, sta
   }
 });
 
-test('Stage 2A: PaymentStartProductionFunction — production secret/environment/return URL, start DISABLED, production-only IAM', () => {
+test('Stage 2A: PaymentStartProductionFunction — production secret/environment/return URL, start explicit (Stage 2D: on), production-only IAM', () => {
   const { json } = synth();
   const name = 'playx-dev-payment-start-production';
   const env = envOf(json, name);
   assert.equal(env.PHONEPE_SECRET_NAME, 'playx/phonepe/production');
   assert.equal(env.PHONEPE_ENVIRONMENT, 'PRODUCTION');
-  assert.equal(env.PAYMENT_START_ENABLED, 'false');
+  assert.equal(env.PAYMENT_START_ENABLED, 'true', 'Stage 2D: explicitly enabled (tester-gated in the backend)');
   assert.equal(env.PAYMENT_RETURN_URL, 'https://playxcafe.com/payment-return.html');
   assert.equal(env.PAYMENT_CHECKOUT_HOLD_MINUTES, '20');
   assert.ok(!('PHONEPE_SANDBOX_TESTERS' in env), 'no sandbox tester list on the production runtime');
@@ -1092,13 +1092,12 @@ test('Stage 2A/2B: shared infrastructure only — no second VPC/RDS/Cognito/NAT/
   ]);
 });
 
-test('Stage 2A: booking-creation kill switch — sandbox CreateBookingFunction enabled, production CreateBookingProductionFunction disabled, both explicit', () => {
+test('Stage 2A: booking-creation kill switch — set explicitly on both create-booking Lambdas (Stage 2D: both on)', () => {
   const { json } = synth();
   assert.equal(envOf(json, 'playx-dev-create-booking').BOOKING_CREATE_ENABLED, 'true');
-  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'false');
-  // Payment start stays exactly as configured: sandbox on, production off.
+  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'true');
   assert.equal(envOf(json, 'playx-dev-payment-start').PAYMENT_START_ENABLED, 'true');
-  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'false');
+  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'true');
   // The switch is only on the two create-booking Lambdas.
   for (const [, fn] of lambdaEntries(json)) {
     const name = fn.Properties.FunctionName as string;
@@ -1207,11 +1206,10 @@ test('Stage 2B: fast worker — production secret ONLY, consume + SendMessage on
   assert.deepEqual(fn.VpcConfig, lambdaNamed(json, 'playx-dev-payment-start')[1].Properties.VpcConfig, 'private-with-egress + shared Lambda SG');
 });
 
-test('Stage 2B: production payment-start gets the queue URL and ONLY sqs:SendMessage on the production fast queue; still DISABLED', () => {
+test('Stage 2B: production payment-start gets the queue URL and ONLY sqs:SendMessage on the production fast queue', () => {
   const { json } = synth();
   const [fastId] = queueNamed(json, 'playx-dev-payment-reconcile-production-fast');
   const env = envOf(json, 'playx-dev-payment-start-production');
-  assert.equal(env.PAYMENT_START_ENABLED, 'false');
   assert.deepEqual(env.PAYMENT_RECONCILE_QUEUE_URL, { Ref: fastId });
   assert.deepEqual(sqsGrantsFor(json, 'playx-dev-payment-start-production'), {
     actions: ['sqs:SendMessage'],
@@ -1307,10 +1305,8 @@ test('Stage 2B: DLQ alarm fires on ApproximateNumberOfMessagesVisible > 0 for th
   assert.equal(alarm.AlarmActions, undefined);
 });
 
-test('Stage 2B: production kill switches stay OFF; no reconcile route', () => {
+test('Stage 2B: no reconcile route', () => {
   const { json } = synth();
-  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'false');
-  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'false');
   const routeKeys = Object.values<Json>(json.Resources)
     .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
     .map((r) => r.Properties.RouteKey as string);
@@ -1448,10 +1444,10 @@ test('Stage 2C: production testers must be Cognito subs — an email or other va
   }
 });
 
-test('Stage 2C: production kill switches still synthesize OFF — even with production testers configured', () => {
+test('Stage 2C: production kill switches are independent of the tester list (Stage 2D: on either way)', () => {
   const { json } = synth({ phonepeProductionTesters: TESTER_A });
-  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'false');
-  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'false');
+  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'true');
+  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'true');
   // Sandbox switches unchanged.
   assert.equal(envOf(json, 'playx-dev-create-booking').BOOKING_CREATE_ENABLED, 'true');
   assert.equal(envOf(json, 'playx-dev-payment-start').PAYMENT_START_ENABLED, 'true');
@@ -1471,4 +1467,104 @@ test('Stage 2C: shared infrastructure only — no new queue, rule, secret, autho
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
   template.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+});
+
+// ---------------------------------------------------------------------------------------------
+// PhonePe cutover Stage 2D: both production kill switches ON for one controlled production
+// transaction; the production tester allowlist stays the second, mandatory gate.
+// ---------------------------------------------------------------------------------------------
+
+const PRODUCTION_SECRET_HOLDERS = [
+  'playx-dev-payment-reconcile-production',
+  'playx-dev-payment-reconcile-production-fast',
+  'playx-dev-payment-start-production',
+  'playx-dev-payment-status-production',
+  'playx-dev-payment-webhook-production',
+];
+
+test('Stage 2D: BOOKING_CREATE_ENABLED=true only on the two create-booking Lambdas; PAYMENT_START_ENABLED=true only on the two payment-start Lambdas', () => {
+  const { json } = synth({ phonepeProductionTesters: TESTER_A });
+  const bookingSwitch: Record<string, string> = {};
+  const paymentSwitch: Record<string, string> = {};
+  for (const [, fn] of lambdaEntries(json)) {
+    const name = fn.Properties.FunctionName as string;
+    const env = fn.Properties.Environment?.Variables ?? {};
+    if ('BOOKING_CREATE_ENABLED' in env) bookingSwitch[name] = env.BOOKING_CREATE_ENABLED;
+    if ('PAYMENT_START_ENABLED' in env) paymentSwitch[name] = env.PAYMENT_START_ENABLED;
+  }
+  assert.deepEqual(bookingSwitch, { 'playx-dev-create-booking': 'true', 'playx-dev-create-booking-production': 'true' });
+  assert.deepEqual(paymentSwitch, { 'playx-dev-payment-start': 'true', 'playx-dev-payment-start-production': 'true' });
+  // The production switches ride on the production entry files / production PhonePe config only.
+  assert.equal(envOf(json, 'playx-dev-payment-start-production').PHONEPE_ENVIRONMENT, 'PRODUCTION');
+  assert.equal(envOf(json, 'playx-dev-payment-start-production').PHONEPE_SECRET_NAME, 'playx/phonepe/production');
+});
+
+test('Stage 2D: PHONEPE_PRODUCTION_TESTERS still reaches both enabled production Lambdas (and nothing else)', () => {
+  const { json } = synth({ phonepeProductionTesters: TESTER_A });
+  for (const name of ['playx-dev-create-booking-production', 'playx-dev-payment-start-production']) {
+    assert.equal(envOf(json, name).PHONEPE_PRODUCTION_TESTERS, TESTER_A, name);
+  }
+  const holders = lambdaEntries(json)
+    .filter(([, fn]) => 'PHONEPE_PRODUCTION_TESTERS' in (fn.Properties.Environment?.Variables ?? {}))
+    .map(([, fn]) => fn.Properties.FunctionName as string)
+    .sort();
+  assert.deepEqual(holders, ['playx-dev-create-booking-production', 'playx-dev-payment-start-production']);
+});
+
+test('Stage 2D: switches on + no tester context still synthesizes an EMPTY allowlist (backend 403s everyone)', () => {
+  const saved = process.env.PHONEPE_PRODUCTION_TESTERS;
+  delete process.env.PHONEPE_PRODUCTION_TESTERS;
+  try {
+    const { json } = synth();
+    assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'true');
+    assert.equal(envOf(json, 'playx-dev-create-booking-production').PHONEPE_PRODUCTION_TESTERS, '');
+    assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'true');
+    assert.equal(envOf(json, 'playx-dev-payment-start-production').PHONEPE_PRODUCTION_TESTERS, '');
+  } finally {
+    if (saved !== undefined) process.env.PHONEPE_PRODUCTION_TESTERS = saved;
+  }
+});
+
+test('Stage 2D: production webhook and production status route/Lambdas are unchanged (no switch, no testers, public/JWT as before)', () => {
+  const { json } = synth({ phonepeProductionTesters: TESTER_A });
+  const webhook = routeTarget(json, 'POST /payments/production/webhook');
+  assert.equal(webhook.route.Properties.AuthorizationType, 'NONE');
+  assert.equal(json.Resources[webhook.functionLogicalId].Properties.FunctionName, 'playx-dev-payment-webhook-production');
+  const status = routeTarget(json, 'GET /payments/production/{bookingId}/status');
+  assert.equal(status.route.Properties.AuthorizationType, 'JWT');
+  assert.equal(json.Resources[status.functionLogicalId].Properties.FunctionName, 'playx-dev-payment-status-production');
+  for (const name of ['playx-dev-payment-webhook-production', 'playx-dev-payment-status-production']) {
+    assert.deepEqual(Object.keys(envOf(json, name)).sort(), ['DB_SECRET_ARN', 'PHONEPE_ENVIRONMENT', 'PHONEPE_SECRET_NAME'], name);
+    assert.equal(envOf(json, name).PHONEPE_ENVIRONMENT, 'PRODUCTION', name);
+  }
+});
+
+test('Stage 2D: sandbox functions remain SANDBOX, with the sandbox secret only', () => {
+  const { json } = synth({ phonepeProductionTesters: TESTER_A });
+  for (const name of ['playx-dev-payment-start', 'playx-dev-payment-status', 'playx-dev-payment-reconcile']) {
+    const env = envOf(json, name);
+    assert.equal(env.PHONEPE_ENVIRONMENT, 'SANDBOX', name);
+    assert.equal(env.PHONEPE_SECRET_NAME, 'playx/phonepe/sandbox', name);
+    const secrets = secretsResourcesFor(json, name);
+    assert.ok(secrets.includes('secret:playx/phonepe/sandbox-??????') && !secrets.includes('playx/phonepe/production'), name);
+  }
+  assert.equal(envOf(json, 'playx-dev-payment-start').PAYMENT_RETURN_URL, 'https://staging.playxcafe.com/payment-return.html');
+  // The sandbox create-booking Lambda has no PhonePe configuration and no production tester list.
+  assert.deepEqual(Object.keys(envOf(json, 'playx-dev-create-booking')).sort(), ['BOOKING_CREATE_ENABLED', 'DB_SECRET_ARN']);
+});
+
+test('Stage 2D: no sandbox secret grant to any production Lambda; no production secret grant to any unrelated Lambda', () => {
+  const { json } = synth({ phonepeProductionTesters: TESTER_A });
+  const productionHolders: string[] = [];
+  for (const [, fn] of lambdaEntries(json)) {
+    const name = fn.Properties.FunctionName as string;
+    const secrets = secretsResourcesFor(json, name);
+    if (secrets.includes('playx/phonepe/production')) productionHolders.push(name);
+    if (/production/.test(name)) {
+      assert.ok(!secrets.includes('playx/phonepe/sandbox'), `${name} must not read the sandbox secret`);
+    }
+  }
+  assert.deepEqual(productionHolders.sort(), PRODUCTION_SECRET_HOLDERS);
+  // The production create-booking Lambda gets no PhonePe secret at all.
+  assert.ok(!secretsResourcesFor(json, 'playx-dev-create-booking-production').includes('phonepe'));
 });

@@ -52,17 +52,22 @@ export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
  * this runtime is added to.
  *
  * The environment is fixed here, at deploy time: no request header/body/Origin/hostname can
- * choose it. The type pins `phonepeEnvironment` to PRODUCTION and, for Stages 2A-2C, both
- * `paymentStartEnabled` and `bookingCreateEnabled` to the literal `false` — POST
- * /payments/production/start and POST /bookings/production both exist but are inert (503, no DB
- * work, no inventory hold) until a deliberate code change to this type, not just a config flip.
- * Even then (Stage 2C), only Cognito subs in resolveProductionTesters' list may use them.
+ * choose it. The type pins `phonepeEnvironment` to PRODUCTION. In Stages 2A-2C both
+ * `paymentStartEnabled` and `bookingCreateEnabled` were pinned to the literal `false`.
+ *
+ * PhonePe cutover Stage 2D (controlled production verification transaction): the 'dev' entry —
+ * the one the deployed stack reads — turns BOTH production switches on, so POST
+ * /bookings/production and POST /payments/production/start reach their handlers. They are still
+ * NOT open to the public: the backend's second gate (backend/src/lib/production-access.ts) admits
+ * only Cognito subs listed in resolveProductionTesters' list and answers 403 — before any DB,
+ * secret, PhonePe or SQS work — to everyone else, including everyone when the list is empty.
+ * The unused 'prod' entry stays off.
  */
 export interface ProductionPaymentConfig
   extends Omit<PaymentConfig, 'phonepeEnvironment' | 'paymentStartEnabled' | 'bookingCreateEnabled'> {
   phonepeEnvironment: 'PRODUCTION';
-  paymentStartEnabled: false;
-  bookingCreateEnabled: false;
+  paymentStartEnabled: boolean;
+  bookingCreateEnabled: boolean;
 }
 
 export const productionPaymentConfigs: Record<'dev' | 'prod', ProductionPaymentConfig> = {
@@ -71,8 +76,9 @@ export const productionPaymentConfigs: Record<'dev' | 'prod', ProductionPaymentC
     phonepeEnvironment: 'PRODUCTION',
     checkoutHoldMinutes: 20,
     returnUrl: 'https://playxcafe.com/payment-return.html',
-    paymentStartEnabled: false,
-    bookingCreateEnabled: false,
+    // Stage 2D: ON for the controlled production transaction — tester-allowlisted subs only.
+    paymentStartEnabled: true,
+    bookingCreateEnabled: true,
   },
   prod: {
     // Not read by any stack this phase (see bin/infra.ts).
