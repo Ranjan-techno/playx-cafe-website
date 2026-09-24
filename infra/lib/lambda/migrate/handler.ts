@@ -20,6 +20,7 @@ import schema002 from '../../../../database/migrations/002_simulator_inventory.s
 import schema003 from '../../../../database/migrations/003_payment_foundation.sql';
 import schema004 from '../../../../database/migrations/004_short_booking_number.sql';
 import schema005 from '../../../../database/migrations/005_duplicate_payment_recording.sql';
+import schema006 from '../../../../database/migrations/006_payment_environment_expansion.sql';
 
 interface Migration {
   filename: string;
@@ -42,6 +43,10 @@ const MIGRATIONS: Migration[] = [
   // Duplicate-payment recording: narrows the one-paid-per-booking unique index to primary payments
   // and adds payments.duplicate_of_payment_id — see the file's own header.
   { filename: '005_duplicate_payment_recording.sql', sql: schema005 },
+  // Payment environment EXPAND step: nullable, no-DEFAULT bookings.booking_environment and
+  // payments.payment_environment, backfilled, plus an environment-aware reconciliation index —
+  // see the file's own header for the EXPAND -> CODE -> ENFORCE rollout.
+  { filename: '006_payment_environment_expansion.sql', sql: schema006 },
 ];
 
 interface DbSecret {
