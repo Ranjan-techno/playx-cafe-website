@@ -1,4 +1,4 @@
-// Phase 3A: typed errors for the payment domain layer (create-payment-attempt.ts,
+// Phase 3A: typed errors for the payment domain layer (start-payment.ts,
 // confirm-successful-payment.ts, sync-payment-status.ts).
 //
 // Each carries a stable, machine-readable `code` — same rationale as http.ts's errorResponse():
@@ -37,7 +37,7 @@ export class PaymentBookingMismatchError extends PaymentDomainError {
 
 /** Thrown when a payment attempt is already in a terminal, non-'paid' state (failed/expired/
  *  refunded) and a caller tries to confirm it as successful anyway. Attempts are one-shot: a
- *  genuinely new try is a new `payments` row (see create-payment-attempt.ts), never a status flip
+ *  genuinely new try is a new `payments` row (see start-payment.ts), never a status flip
  *  on an old one. */
 export class PaymentAlreadyFinalizedError extends PaymentDomainError {
   readonly code = 'payment_already_finalized';
@@ -95,5 +95,72 @@ export class BookingNotPayableError extends PaymentDomainError {
   readonly code = 'booking_not_payable';
   constructor(bookingId: string, status: string) {
     super(`Booking "${bookingId}" is "${status}" — only a "pending" booking can start a new payment attempt`);
+  }
+}
+
+/** The PhonePe (or other provider) call failed. Messages carry only the HTTP status/provider
+ *  error code — never a response body, which could echo request data. `definiteRejection` is true
+ *  only when the provider answered with a 4xx, i.e. we know no order was created; a timeout,
+ *  network error or 5xx is ambiguous (the order may exist), and callers must not assume it
+ *  doesn't. */
+export class PaymentProviderError extends PaymentDomainError {
+  readonly code = 'payment_provider_error';
+  constructor(
+    message: string,
+    readonly definiteRejection: boolean,
+    readonly httpStatusCode?: number,
+    readonly providerCode?: string,
+  ) {
+    super(message);
+  }
+}
+
+/** getOrderStatus reported the order does not exist at the provider. */
+export class PaymentProviderOrderNotFoundError extends PaymentDomainError {
+  readonly code = 'payment_provider_order_not_found';
+  constructor() {
+    super('The payment provider has no record of this order');
+  }
+}
+
+/** Another start-payment call for this booking is (or may still be) creating its provider order. */
+export class PaymentStartInProgressError extends PaymentDomainError {
+  readonly code = 'payment_start_in_progress';
+  constructor(bookingId: string) {
+    super(`A payment for booking "${bookingId}" is already being started — retry shortly`);
+  }
+}
+
+/** The booking's simulator hold lapsed and can no longer be re-established for checkout. */
+export class HoldExpiredError extends PaymentDomainError {
+  readonly code = 'hold_expired';
+  constructor(bookingId: string) {
+    super(`The simulator hold for booking "${bookingId}" has expired and cannot be extended again — please rebook`);
+  }
+}
+
+/** The hold had lapsed and the simulator capacity it needed is no longer free. */
+export class SimulatorCapacityUnavailableError extends PaymentDomainError {
+  readonly code = 'simulator_capacity_unavailable';
+  constructor(bookingId: string) {
+    super(`Simulator capacity for booking "${bookingId}" is no longer available`);
+  }
+}
+
+/** Not enough time left before the session starts / hold expires to run a checkout. */
+export class CheckoutWindowClosedError extends PaymentDomainError {
+  readonly code = 'checkout_window_closed';
+  constructor(bookingId: string) {
+    super(`Booking "${bookingId}" no longer has enough time left to complete a payment`);
+  }
+}
+
+/** The booking (or an existing attempt on it) belongs to a different SANDBOX/PRODUCTION environment
+ *  than the payment provider this Lambda is configured for. A sandbox backend must never take (or
+ *  reconcile) a payment for a production booking, and vice versa. */
+export class PaymentEnvironmentMismatchError extends PaymentDomainError {
+  readonly code = 'payment_environment_mismatch';
+  constructor(bookingId: string, expected: string, actual: string | null) {
+    super(`Booking "${bookingId}" belongs to environment "${actual ?? 'NULL'}", not "${expected}"`);
   }
 }

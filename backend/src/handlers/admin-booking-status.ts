@@ -68,6 +68,12 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
           'invalid_status_transition',
           `Booking is "${result.from}" and cannot transition to "${result.to}"`,
         );
+      case 'capacity_unavailable':
+        return errorResponse(
+          409,
+          'simulator_capacity_unavailable',
+          'This booking\'s hold has expired and its simulator capacity is no longer available',
+        );
       case 'ok':
         return jsonResponse(200, { id: result.id, status: result.status });
       default: {

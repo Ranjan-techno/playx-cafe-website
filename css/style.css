@@ -682,6 +682,43 @@ p { color: var(--text-dim); }
 .booking-status-pill.cancelled, .booking-status-pill.no_show { color: var(--text-dim); }
 .booking-status-pill.completed { color: var(--red); border-color: var(--red); }
 
+/* ===== Payment (post-booking step, My Bookings actions, payment-return.html) =====
+   Driven by js/payments.js / js/payment-return.js. Reuses .btn, .form-error, .auth-card and
+   .booking-summary rather than introducing a second look. */
+.payment-step { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+.payment-step [hidden], .booking-payment-action [hidden] { display: none; }
+.payment-step-title { font-family: var(--font-head); font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+.payment-hold-notice { font-size: 0.88rem; color: var(--text-dim); line-height: 1.5; margin-bottom: 14px; }
+.payment-step .btn, .booking-payment-action .btn { width: 100%; margin-top: 0; }
+.payment-step-status { margin-top: 12px; min-height: 1.2em; font-size: 0.88rem; font-weight: 600; text-align: center; }
+.payment-step-status.error { color: var(--red); }
+.payment-secure-note { margin-top: 10px; font-size: 0.75rem; color: var(--text-dim); text-align: center; }
+.booking-payment-action { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.booking-payment-note { font-size: 0.85rem; color: var(--text-dim); line-height: 1.5; }
+.booking-payment-error { margin-top: 8px; }
+
+.payment-return-card { text-align: center; }
+.payment-return-icon {
+  width: 56px; height: 56px; margin: 0 auto 18px; border-radius: 50%;
+  background: var(--bg); border: 2px solid var(--line); color: var(--text-dim);
+  font-size: 1.6rem; font-weight: 900; display: flex; align-items: center; justify-content: center;
+}
+.payment-return-card[data-state="success"] .payment-return-icon { background: #34d399; border-color: #34d399; color: #04130c; }
+.payment-return-card[data-state="pending"] .payment-return-icon { border-color: #f0b429; color: #f0b429; }
+.payment-return-card[data-state="failed"] .payment-return-icon,
+.payment-return-card[data-state="failed_final"] .payment-return-icon,
+.payment-return-card[data-state="hold_expired"] .payment-return-icon,
+.payment-return-card[data-state="error"] .payment-return-icon { border-color: var(--red); color: var(--red); }
+.payment-return-card[data-state="manual_review"] .payment-return-icon { border-color: #f0b429; color: #f0b429; }
+.payment-return-title { font-size: 1.5rem; margin-bottom: 8px; }
+.payment-return-booking { font-family: var(--font-head); font-size: 1.05rem; color: var(--red); margin-bottom: 10px; }
+.payment-return-message { color: var(--text); margin-bottom: 10px; line-height: 1.5; }
+.payment-return-detail { color: var(--text-dim); font-size: 0.92rem; line-height: 1.5; margin-bottom: 10px; }
+.payment-return-error { margin: 8px 0 0; }
+.payment-return-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 22px; }
+.payment-return-actions [hidden] { display: none; }
+.payment-return-tagline .accent { color: var(--red); }
+
 /* ===== Footer ===== */
 .site-footer { background: var(--bg-alt); border-top: 1px solid var(--line); padding: 64px 0 28px; }
 .footer-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr; gap: 32px; margin-bottom: 40px; }

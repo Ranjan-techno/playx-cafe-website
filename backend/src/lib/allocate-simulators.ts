@@ -69,24 +69,37 @@ interface LegacyBookingRow {
 }
 
 /**
- * Locks the simulator inventory, checks the requested window against every other
- * confirmed/unexpired-hold allocation, and — if the requirement can still be met — inserts one
- * 'hold' row per allocated simulator. Returns null (having allocated nothing) if inventory can't
- * cover the requirement; the caller is responsible for ROLLBACK in that case (see
- * create-booking.ts) since this function never decides whether to commit or roll back a
- * transaction it didn't open.
- *
- * Must run inside a transaction already opened by the caller (`BEGIN` already sent on `db`), with
- * `bookingId` already inserted into `bookings` in that same transaction — an allocation row
- * always references a real booking (booking_allocations.booking_id has no other purpose).
+ * Step 1 of every capacity decision (booking creation, checkout start, late-payment confirmation,
+ * admin confirmation): locks ALL active simulators, always in `ORDER BY code`, for the rest of the
+ * transaction. This is the single serialization point for simulator capacity — see this file's
+ * header. Re-locking within the same transaction is a no-op in Postgres.
  */
-export async function allocateSimulators(db: DbClient, request: AllocationRequest): Promise<AllocationResult | null> {
-  // Locks all active rigs for the duration of this transaction — see this file's header for why
-  // the whole table rather than just the ones this request cares about.
-  const { rows: inventory } = await db.query<SimulatorRow>(
+export async function lockSimulatorInventory(db: DbClient): Promise<SimulatorRow[]> {
+  const { rows } = await db.query<SimulatorRow>(
     `SELECT id, code, simulator_type FROM simulators WHERE is_active = true ORDER BY code FOR UPDATE`,
   );
+  return rows;
+}
 
+export interface CapacityQuery {
+  /** The booking this query is for — excluded from the legacy-booking demand count. */
+  bookingId: string;
+  requirement: Requirement;
+  scheduledStartAt: Date;
+  scheduledEndAt: Date;
+}
+
+/**
+ * Step 2: reads occupancy for the window and picks free simulator(s) for the requirement, or
+ * returns null. MUST run after lockSimulatorInventory() in the same transaction (that lock is what
+ * makes this read-then-write race-free). Only confirmed allocations and unexpired holds block; an
+ * expired hold never does.
+ */
+export async function findAvailableSimulators(
+  db: DbClient,
+  inventory: SimulatorRow[],
+  request: CapacityQuery,
+): Promise<SimulatorRow[] | null> {
   // Only allocations that actually block inventory: 'confirmed' always does; a 'hold' only while
   // its hold_expires_at hasn't passed yet — an expired HOLD is exactly what item 7 means by "must
   // not block future availability", and this filter (not a cleanup job) is what enforces that.
@@ -127,20 +140,61 @@ export async function allocateSimulators(db: DbClient, request: AllocationReques
   }));
   const reserved = legacyReservedCounts(legacy, request.scheduledStartAt, request.scheduledEndAt);
 
-  const picked = pickSimulators(inventory, request.requirement, occupied, reserved);
+  return pickSimulators(inventory, request.requirement, occupied, reserved);
+}
+
+/** Inserts one allocation row per simulator. `holdExpiresAt` non-null -> 'hold'; null ->
+ *  'confirmed' (booking_allocations_hold_expiry_chk ties the two together). */
+export async function insertAllocations(
+  db: DbClient,
+  bookingId: string,
+  simulators: SimulatorRow[],
+  scheduledStartAt: Date,
+  scheduledEndAt: Date,
+  holdExpiresAt: Date | null,
+): Promise<void> {
+  for (const simulator of simulators) {
+    if (holdExpiresAt) {
+      await db.query(
+        `INSERT INTO booking_allocations
+           (booking_id, simulator_id, scheduled_start_at, scheduled_end_at, allocation_status, hold_expires_at)
+         VALUES ($1, $2, $3, $4, 'hold', $5)`,
+        [bookingId, simulator.id, scheduledStartAt, scheduledEndAt, holdExpiresAt],
+      );
+    } else {
+      await db.query(
+        `INSERT INTO booking_allocations
+           (booking_id, simulator_id, scheduled_start_at, scheduled_end_at, allocation_status, hold_expires_at)
+         VALUES ($1, $2, $3, $4, 'confirmed', NULL)`,
+        [bookingId, simulator.id, scheduledStartAt, scheduledEndAt],
+      );
+    }
+  }
+}
+
+/**
+ * Locks the simulator inventory, checks the requested window against every other
+ * confirmed/unexpired-hold allocation, and — if the requirement can still be met — inserts one
+ * 'hold' row per allocated simulator. Returns null (having allocated nothing) if inventory can't
+ * cover the requirement; the caller is responsible for ROLLBACK in that case (see
+ * create-booking.ts) since this function never decides whether to commit or roll back a
+ * transaction it didn't open.
+ *
+ * Must run inside a transaction already opened by the caller (`BEGIN` already sent on `db`), with
+ * `bookingId` already inserted into `bookings` in that same transaction — an allocation row
+ * always references a real booking (booking_allocations.booking_id has no other purpose).
+ */
+export async function allocateSimulators(db: DbClient, request: AllocationRequest): Promise<AllocationResult | null> {
+  // Locks all active rigs for the duration of this transaction — see this file's header for why
+  // the whole table rather than just the ones this request cares about.
+  const inventory = await lockSimulatorInventory(db);
+  const picked = await findAvailableSimulators(db, inventory, request);
   if (picked === null) {
     return null;
   }
 
   const holdExpiresAt = new Date(Date.now() + request.holdMinutes * 60_000);
-  for (const simulator of picked) {
-    await db.query(
-      `INSERT INTO booking_allocations
-         (booking_id, simulator_id, scheduled_start_at, scheduled_end_at, allocation_status, hold_expires_at)
-       VALUES ($1, $2, $3, $4, 'hold', $5)`,
-      [request.bookingId, simulator.id, request.scheduledStartAt, request.scheduledEndAt, holdExpiresAt],
-    );
-  }
+  await insertAllocations(db, request.bookingId, picked, request.scheduledStartAt, request.scheduledEndAt, holdExpiresAt);
 
   return { simulatorIds: picked.map((simulator) => simulator.id), holdExpiresAt };
 }

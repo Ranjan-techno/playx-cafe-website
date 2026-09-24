@@ -77,6 +77,7 @@ export class AuthConstruct extends Construct {
       environment: {
         SES_FROM_EMAIL: authConfig.sesFromEmail,
         SES_FROM_NAME: authConfig.sesFromName,
+        SES_REPLY_TO_EMAIL: authConfig.sesReplyToEmail,
         SES_REGION: authConfig.sesRegion,
       },
     });
@@ -162,7 +163,9 @@ export class AuthConstruct extends Construct {
       email: cognito.UserPoolEmail.withSES({
         fromEmail: authConfig.sesFromEmail,
         fromName: authConfig.sesFromName,
+        replyTo: authConfig.sesReplyToEmail,
         sesRegion: authConfig.sesRegion,
+        sesVerifiedDomain: authConfig.sesVerifiedDomain,
       }),
 
       // Wires up the three CUSTOM_AUTH triggers created above. This updates the existing User
@@ -216,7 +219,7 @@ export class AuthConstruct extends Construct {
     });
 
     // Minimum SES permission to email the OTP. Resource-scoping this to the sender identity's
-    // own ARN (arn:aws:ses:...:identity/playxcafesupport@gmail.com) turns out to reject the
+    // own ARN (arn:aws:ses:...:identity/bookings@playxcafe.com) turns out to reject the
     // SendEmail call itself — SES authorizes SendEmail/SendRawEmail against the *recipient*
     // identity, not the sender's, so a resource scoped to our own verified sender ARN can never
     // match an arbitrary customer's inbox and every send gets AccessDenied. Recipients must stay

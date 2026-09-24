@@ -9,7 +9,7 @@ import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 
 let client: SESClient | undefined;
 
-function getSesClient(): SESClient {
+export function getSesClient(): SESClient {
   if (!client) {
     client = new SESClient({ region: process.env.SES_REGION });
   }
@@ -27,14 +27,19 @@ export async function sendOtpEmail(toEmail: string, code: string): Promise<void>
     throw new Error('SES_FROM_EMAIL env var not configured');
   }
 
+  const replyTo = process.env.SES_REPLY_TO_EMAIL;
+
   const textBody =
-    `Your Play X verification code is:\n\n${code}\n\n` +
-    "This code expires shortly. If you didn't request this code, you can ignore this email.";
+    'Play X Cafe\n\n' +
+    `Your 6-digit verification code is: ${code}\n\n` +
+    'This code is valid for a limited time. If you did not request it, you can safely ignore this email.\n\n' +
+    'Race. Xperience. Hangout.';
 
   await getSesClient().send(
     new SendEmailCommand({
       Source: `${fromName} <${fromEmail}>`,
       Destination: { ToAddresses: [toEmail] },
+      ...(replyTo ? { ReplyToAddresses: [replyTo] } : {}),
       Message: {
         Subject: { Data: 'Your Play X verification code', Charset: 'UTF-8' },
         Body: {

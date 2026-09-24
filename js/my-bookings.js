@@ -2,7 +2,7 @@
 // customer, split client-side into an Upcoming / History toggle. Requires
 // js/aws-config.js + js/cognito-auth.js (auth), js/format-utils.js
 // (date/time/price/status display formatting), and js/product-lookup.js
-// (productCode -> experience/simulator) to be loaded first.
+// (productCode -> experience/simulator) and js/payments.js (pay/retry actions) to be loaded first.
 
 // Escapes a booking's own free-text `notes` (typed by the customer at
 // booking time - see js/script.js's booking form) before it's dropped into
@@ -44,6 +44,7 @@ function renderBookingItem(booking) {
       </div>
       ${booking.notes ? `<p class="booking-notes"><span>Notes</span> ${escapeHtml(booking.notes)}</p>` : ''}
       <p class="booking-reference">${escapeHtml(formatBookingReference(booking.bookingNumber, booking.id))}</p>
+      ${booking.status === 'pending' && booking.upcoming && paymentUiEnabled() ? `<div class="booking-payment-action" data-payment-booking="${Number(booking.bookingNumber)}"><p class="booking-payment-note">Checking payment status...</p></div>` : ''}
     </div>
   `;
 }
@@ -91,12 +92,136 @@ function splitUpcomingAndHistory(bookings) {
   const upcoming = [];
   const history = [];
   bookings.forEach((booking) => {
-    (bookingSortKey(booking) >= nowKey ? upcoming : history).push(booking);
+    const isUpcoming = bookingSortKey(booking) >= nowKey;
+    (isUpcoming ? upcoming : history).push({ ...booking, upcoming: isUpcoming });
   });
   upcoming.sort((a, b) => (bookingSortKey(a) < bookingSortKey(b) ? -1 : 1));
   history.sort((a, b) => (bookingSortKey(a) < bookingSortKey(b) ? 1 : -1));
   return { upcoming, history };
 }
+
+// ---------------------------------------------------------------------
+// Payment actions on unpaid (status 'pending') upcoming bookings. GET /bookings/me carries no
+// payment state, so each pending booking asks GET /payments/{id}/status - the authoritative
+// answer - and shows Pay Now / Payment Processing / Payment Failed - Retry / an explanatory
+// note accordingly. Booking UUIDs are never rendered: cards are keyed by the customer-facing
+// bookingNumber and the id is looked up from memory when a button is clicked. Confirmed
+// bookings show no action at all (their status pill already says so); the backend still
+// rejects a payment against a paid/cancelled/expired booking regardless of what this shows.
+// ---------------------------------------------------------------------
+// PhonePe payment UI gate (host list lives in js/api-routes.js's PAYMENT_UI_HOSTNAMES; which
+// payment routes a host uses - SANDBOX or PRODUCTION - is decided there too).
+function paymentUiEnabled() {
+  return typeof PlayXPayments !== 'undefined' && PlayXPayments.isPaymentUiEnabled(window.location.hostname);
+}
+
+// Set once the payment API says the session is dead: no further status calls this page load.
+let paymentSessionExpired = false;
+
+function findRenderedBooking(bookingNumber) {
+  return [...myBookingsUpcoming, ...myBookingsHistory].find((b) => b.bookingNumber === bookingNumber);
+}
+
+function renderPaymentAction(container, action, errorMessage) {
+  container.innerHTML = '';
+  if (action.note) {
+    const note = document.createElement('p');
+    note.className = 'booking-payment-note';
+    note.textContent = action.note;
+    container.appendChild(note);
+  }
+  if (action.action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-primary btn-sm';
+    btn.dataset.paymentAction = action.action;
+    btn.textContent = action.label;
+    container.appendChild(btn);
+  }
+  if (errorMessage) {
+    const err = document.createElement('p');
+    err.className = 'form-error booking-payment-error';
+    err.setAttribute('role', 'alert');
+    err.textContent = errorMessage;
+    container.appendChild(err);
+  }
+}
+
+async function loadPaymentActions() {
+  if (!paymentUiEnabled()) return;
+  const client = PlayXPayments.getBrowserClient();
+  const containers = document.querySelectorAll('#myBookingsList [data-payment-booking]');
+  await Promise.all([...containers].map(async (container) => {
+    const booking = findRenderedBooking(Number(container.dataset.paymentBooking));
+    if (!booking) return;
+    if (paymentSessionExpired) {
+      renderPaymentAction(container, PlayXPayments.describeStatusFailure({ kind: 'session_expired' }));
+      return;
+    }
+    const result = await client.getPaymentStatus(booking.id);
+    if (!container.isConnected) return; // list re-rendered while the request was in flight
+    if (result.ok && result.status.outcome === 'confirmed') {
+      // Paid since the list loaded: show it as such instead of a stale "Pending Confirmation".
+      refreshMyBookings();
+      return;
+    }
+    if (result.ok) {
+      renderPaymentAction(container, PlayXPayments.describeBookingPaymentAction(result.status));
+    } else {
+      // Status unknown: never offer Pay Now - only a re-check (or nothing, if the session/booking is gone).
+      if (result.kind === 'session_expired') paymentSessionExpired = true;
+      renderPaymentAction(container, PlayXPayments.describeStatusFailure(result));
+    }
+  }));
+}
+
+async function handlePaymentActionClick(event) {
+  const btn = event.target.closest('[data-payment-action]');
+  if (!btn) return;
+  const container = btn.closest('[data-payment-booking]');
+  const booking = container && findRenderedBooking(Number(container.dataset.paymentBooking));
+  if (!booking) return;
+  const client = PlayXPayments.getBrowserClient();
+
+  if (btn.dataset.paymentAction === 'check') {
+    btn.disabled = true;
+    const result = await client.getPaymentStatus(booking.id);
+    if (result.ok && result.status.outcome === 'confirmed') { refreshMyBookings(); return; }
+    if (!result.ok && result.kind === 'session_expired') paymentSessionExpired = true;
+    renderPaymentAction(container, result.ok
+      ? PlayXPayments.describeBookingPaymentAction(result.status)
+      : PlayXPayments.describeStatusFailure(result));
+    return;
+  }
+
+  // 'pay' / 'retry': POST /payments/start, then a full-page redirect to PhonePe.
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = 'Redirecting to PhonePe...';
+  const outcome = await client.startPayment(booking.id);
+  if (outcome.ok || outcome.kind === 'busy') return;
+  if (outcome.kind === 'in_progress') {
+    // Another start is underway: this is "processing", not a retry.
+    renderPaymentAction(container, PlayXPayments.describeStartInProgress());
+    return;
+  }
+  if (outcome.kind === 'session_expired') {
+    paymentSessionExpired = true;
+    renderPaymentAction(container, PlayXPayments.describeStatusFailure(outcome));
+    return;
+  }
+  btn.textContent = originalLabel;
+  btn.disabled = false;
+  if (['hold_expired', 'capacity_unavailable', 'not_payable', 'already_paid', 'not_found'].includes(outcome.kind)) {
+    // The backend says this booking can't be paid - stop offering the button and re-sync the card.
+    renderPaymentAction(container, { note: outcome.message });
+    return;
+  }
+  renderPaymentAction(container, { label: originalLabel, action: btn.dataset.paymentAction }, outcome.message);
+}
+
+const myBookingsListEl = document.getElementById('myBookingsList');
+if (myBookingsListEl) myBookingsListEl.addEventListener('click', handlePaymentActionClick);
 
 let myBookingsUpcoming = [];
 let myBookingsHistory = [];
@@ -124,6 +249,7 @@ function renderMyBookingsView() {
   statusEl.textContent = '';
   listEl.innerHTML = bookings.map(renderBookingItem).join('');
   listEl.hidden = false;
+  loadPaymentActions();
 }
 
 if (myBookingsTabUpcomingBtn && myBookingsTabHistoryBtn) {

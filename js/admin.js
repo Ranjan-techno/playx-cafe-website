@@ -567,7 +567,7 @@
       dashboardCard(
         'Payments Paid',
         summary.payments.paid,
-        breakdownItem('Pending', summary.payments.pending) + breakdownItem('Failed', summary.payments.failed)
+        breakdownItem('Pending', summary.payments.pending) + breakdownItem('Failed', summary.payments.failed) + (summary.refundRequired && summary.refundRequired.count ? breakdownItem('Refund required', summary.refundRequired.count) : '')
       ),
       dashboardCard('Revenue (Paid)', formatBookingPrice(summary.revenue.paidInr), '', true),
       dashboardCard(
@@ -758,13 +758,19 @@
     `;
   }
 
+  // Refund-required / manual-review flag (see js/admin-payment-flags.js) — '' for normal payments.
+  function refundFlag(payment) {
+    const html = window.PlayXAdminPaymentFlags.refundFlagHtml(payment);
+    return html ? `<div>${html}</div>` : '';
+  }
+
   function paymentAttemptRow(p) {
     return `
       <tr>
         <td title="${escapeHtml(p.id)}">${escapeHtml(shortId(p.id))}</td>
         <td>${escapeHtml(p.provider)}</td>
         <td>${escapeHtml(formatBookingPrice(p.amountInr))} ${escapeHtml(p.currency)}</td>
-        <td><span class="admin-payment-pill ${escapeHtml(p.status)}">${escapeHtml(p.status)}</span></td>
+        <td><span class="admin-payment-pill ${escapeHtml(p.status)}">${escapeHtml(p.status)}</span>${refundFlag(p)}</td>
         <td title="${escapeHtml(p.providerOrderId)} / ${escapeHtml(p.providerTransactionId || '')}">${escapeHtml(shortId(p.providerOrderId))}</td>
         <td>${escapeHtml(formatDateTimeDisplay(p.createdAt))}</td>
       </tr>
@@ -955,7 +961,7 @@
         <td data-label="Booking" class="admin-row-clickable" data-booking-id="${escapeHtml(item.bookingId)}" title="${escapeHtml(item.bookingId)}">${escapeHtml(bookingRef(item.bookingNumber, item.bookingId))}</td>
         <td data-label="Provider">${escapeHtml(item.provider)}</td>
         <td data-label="Amount">${escapeHtml(formatBookingPrice(item.amountInr))} ${escapeHtml(item.currency)}</td>
-        <td data-label="Status"><span class="admin-payment-pill ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></td>
+        <td data-label="Status"><span class="admin-payment-pill ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>${refundFlag(item)}</td>
         <td data-label="Order / Txn ID" class="admin-td-wrap" title="${escapeHtml(item.providerOrderId)}${item.providerTransactionId ? ' / ' + escapeHtml(item.providerTransactionId) : ''}">${escapeHtml(shortId(item.providerOrderId))}${item.providerTransactionId ? ' / ' + escapeHtml(shortId(item.providerTransactionId)) : ''}</td>
         <td data-label="Created">${escapeHtml(formatDateTimeDisplay(item.createdAt))}</td>
         <td data-label="Paid">${item.paidAt ? escapeHtml(formatDateTimeDisplay(item.paidAt)) : '—'}</td>

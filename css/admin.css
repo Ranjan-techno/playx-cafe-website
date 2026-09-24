@@ -207,6 +207,10 @@ td.admin-row-clickable:hover { color: var(--red); text-decoration: underline; }
 .admin-payment-pill.pending, .admin-payment-pill.created { color: #f0b429; border-color: #f0b429; }
 .admin-payment-pill.failed, .admin-payment-pill.expired { color: var(--red); border-color: var(--red); }
 .admin-payment-pill.refunded { color: var(--text-dim); }
+/* Paid money that support must refund by hand (duplicate / paid-but-unfulfillable). */
+.admin-refund-flag { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--red); border: 1px solid var(--red); }
+.admin-sandbox-flag { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #60a5fa; border: 1px solid #60a5fa; }
+.admin-manual-review { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.72rem; font-weight: 600; color: #f0b429; border: 1px solid #f0b429; }
 
 /* ============ Simulator board ============ */
 

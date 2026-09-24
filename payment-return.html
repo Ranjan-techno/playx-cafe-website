@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>Payment Status | Play X Cafe</title>
+<meta name="description" content="Check the status of your Play X Cafe race payment.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏎️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ============ SIMPLE HEADER ============ -->
+<header class="auth-topbar">
+  <a href="index.html" class="logo">
+    <span class="logo-mark">PLAY <span class="x-mark">X</span></span>
+    <span class="logo-sub">CAFE</span>
+  </a>
+</header>
+
+<!-- ============ PAYMENT RETURN ============ -->
+<!-- Nothing on this page is decided by the URL: js/payment-return.js asks the backend
+     (GET /payments/{bookingId}/status, or GET /payments/production/{bookingId}/status on
+     playxcafe.com - chosen by hostname in js/api-routes.js) what actually happened and renders
+     only that. -->
+<main class="auth-page">
+  <div class="auth-card payment-return-card" id="paymentReturnCard">
+    <div class="payment-return-icon" id="paymentReturnIcon" aria-hidden="true"></div>
+    <h1 class="payment-return-title" id="paymentReturnTitle">Checking Your Payment</h1>
+    <p class="payment-return-booking" id="paymentReturnBooking" hidden></p>
+    <p class="payment-return-message" id="paymentReturnMessage" role="status" aria-live="polite">Please wait while we confirm your payment&hellip;</p>
+    <p class="payment-return-detail" id="paymentReturnDetail" hidden></p>
+    <p class="form-error payment-return-error" id="paymentReturnError" role="alert" hidden></p>
+    <div class="payment-return-actions">
+      <button type="button" class="btn btn-primary btn-full" id="paymentReturnPrimaryBtn" hidden></button>
+      <a href="index.html#my-bookings" class="btn btn-outline btn-full" id="paymentReturnBookingsLink" hidden>View My Bookings</a>
+      <a href="index.html#booking" class="btn btn-primary btn-full" id="paymentReturnRebookLink" hidden>Make a New Booking</a>
+      <a href="index.html" class="btn btn-text btn-full" id="paymentReturnHomeLink">Back to Home</a>
+    </div>
+    <p class="auth-demo-note payment-return-tagline">Race. <span class="accent">X</span>perience. Hangout.</p>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+<script src="js/aws-config.js"></script>
+<script src="js/cognito-auth.js"></script>
+<script src="js/api-routes.js"></script>
+<script src="js/payments.js"></script>
+<script src="js/payment-return.js"></script>
+</body>
+</html>

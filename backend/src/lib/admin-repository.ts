@@ -9,6 +9,7 @@
 // ILIKE wildcard characters (`%`, `_`, `\`) escaped so a search string can only ever match itself
 // literally, never expand into a broader wildcard the caller didn't intend.
 
+import { inrToPaise, paiseToInr } from './money';
 import type { DbClient } from './allocate-simulators';
 import {
   BOOKING_STATUSES,
@@ -19,7 +20,9 @@ import {
   type BookingStatus,
 } from './booking-status';
 import { istPartsToUtcDate, toIstDateTimeParts } from './opening-hours';
-import { confirmBookingAllocations, type PaymentStatus } from './payment-repository';
+import { secureBookingCapacity } from './booking-capacity';
+import { effectiveEnvironmentSql, effectiveStoredEnvironment } from './environment';
+import { lockBookingForPayment, type PaymentStatus } from './payment-repository';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -149,6 +152,9 @@ export interface DashboardSummary {
   holds: { active: number; expired: number };
   payments: { paid: number; pending: number; failed: number };
   revenue: { paidInr: number };
+  /** Money collected that support must refund manually (duplicate / paid-but-unfulfillable).
+   *  Operational only — never counted in `revenue`. */
+  refundRequired: { count: number; amountInr: number };
   simulators: { total: number; static: number; motion: number };
 }
 
@@ -199,6 +205,79 @@ interface HoldAllocationRow {
  *     unsuccessful outcomes. 'refunded' is deliberately excluded from every bucket (it was 'paid'
  *     first, so double-counting it as revenue-or-not is a future phase's call, not this one's).
  */
+/** Support-facing wording for payments.metadata.reason. A fixed whitelist: an unrecognised or
+ *  missing code yields the generic label, so no arbitrary metadata text ever reaches the admin
+ *  response. */
+export function describePaymentReviewReason(code: string | null | undefined): string {
+  switch (code) {
+    case 'duplicate_payment_booking_already_paid':
+      return 'Duplicate payment (booking already paid)';
+    case 'hold_expired_capacity_unavailable':
+      return 'Paid after reservation expired / capacity unavailable';
+    case 'booking_cancelled':
+      return 'Paid after booking was cancelled';
+    case 'booking_completed':
+      return 'Paid after booking was completed';
+    case 'booking_no_show':
+      return 'Paid after booking was marked no-show';
+    default:
+      return 'Refund required';
+  }
+}
+
+export type PaymentEnvironmentLabel = 'SANDBOX' | 'PRODUCTION';
+
+/** Maps a typed payments.payment_environment / bookings.booking_environment column value for the
+ *  admin response. Whitelist: only the two known values ever reach it; NULL or anything else is
+ *  null (see environment.ts). */
+export function toPaymentEnvironment(value: string | null | undefined): PaymentEnvironmentLabel | null {
+  return effectiveStoredEnvironment(value);
+}
+
+/** Business-logic filter for real money: only payments whose typed payment_environment is
+ *  PRODUCTION (strict typed comparison; NULL never matches); metadata.paymentEnvironment is never
+ *  consulted. */
+const LIVE_PAYMENT_SQL = `${effectiveEnvironmentSql('payment_environment')} = 'PRODUCTION'`;
+
+export interface CollectedPaymentRow {
+  payment_status: string;
+  amount_inr: string;
+  /** payments.metadata.refundRequired = true (typed extract, never the raw blob). */
+  refund_required: boolean | null;
+  /** Typed payments.payment_environment (never metadata); NOT NULL since migration 007. */
+  payment_environment?: string | null;
+}
+
+/** Revenue = genuine PRODUCTION PAID payments that Play X Cafe actually keeps. SANDBOX rows are
+ *  test transactions: excluded from BOTH revenue and refund exposure. A paid payment flagged refundRequired
+ *  (duplicate collection, or paid after the reservation was lost) is customer money awaiting a
+ *  manual refund, so it is reported separately and never as revenue. Refunded rows are neither.
+ *  Summed in integer paise, never floating point. */
+export function summarizeCollectedPayments(rows: CollectedPaymentRow[]): {
+  revenue: { paidInr: number };
+  refundRequired: { count: number; amountInr: number };
+} {
+  let revenuePaise = 0;
+  let refundPaise = 0;
+  let refundCount = 0;
+  for (const row of rows) {
+    if (row.payment_status !== 'paid') continue;
+    // Typed column only; SANDBOX, NULL and anything unknown are not money.
+    if (effectiveStoredEnvironment(row.payment_environment) !== 'PRODUCTION') continue;
+    const paise = inrToPaise(row.amount_inr);
+    if (row.refund_required === true) {
+      refundPaise += paise;
+      refundCount += 1;
+    } else {
+      revenuePaise += paise;
+    }
+  }
+  return {
+    revenue: { paidInr: Number(paiseToInr(revenuePaise)) },
+    refundRequired: { count: refundCount, amountInr: Number(paiseToInr(refundPaise)) },
+  };
+}
+
 export function buildDashboardSummary(
   date: string,
   bookingCounts: BookingStatusCountRow[],
@@ -207,6 +286,7 @@ export function buildDashboardSummary(
   simulatorCounts: SimulatorTypeCountRow[],
   holdRows: HoldAllocationRow[],
   now: Date,
+  refundRequired: { count: number; amountInr: number } = { count: 0, amountInr: 0 },
 ): DashboardSummary {
   const bookingsByStatus = new Map(bookingCounts.map((row) => [row.status, Number(row.count)]));
   const paymentsByStatus = new Map(paymentCounts.map((row) => [row.payment_status, Number(row.count)]));
@@ -238,6 +318,7 @@ export function buildDashboardSummary(
       failed: (paymentsByStatus.get('failed') ?? 0) + (paymentsByStatus.get('expired') ?? 0),
     },
     revenue: { paidInr: paidRevenueInr },
+    refundRequired,
     simulators: { total: staticCount + motionCount, static: staticCount, motion: motionCount },
   };
 }
@@ -267,16 +348,23 @@ export async function getDashboardSummary(db: DbClient, istDate: string): Promis
     `SELECT payment_status, COUNT(*) AS count
      FROM payments
      WHERE created_at >= $1 AND created_at < $2
+       AND ${LIVE_PAYMENT_SQL}
      GROUP BY payment_status`,
     [start, end],
   );
 
-  const { rows: revenueRows } = await db.query<{ sum: string | null }>(
-    `SELECT COALESCE(SUM(amount_inr), 0) AS sum
+  // Raw rows (typed extracts only), summarized by summarizeCollectedPayments() so the
+  // revenue-vs-refund-required rule is unit-testable. Refunded rows are excluded by status.
+  const { rows: collectedRows } = await db.query<CollectedPaymentRow>(
+    `SELECT payment_status, amount_inr,
+            (metadata ->> 'refundRequired') = 'true' AS refund_required,
+            payment_environment
      FROM payments
-     WHERE payment_status = 'paid' AND paid_at >= $1 AND paid_at < $2`,
+     WHERE payment_status = 'paid' AND paid_at >= $1 AND paid_at < $2
+       AND ${LIVE_PAYMENT_SQL}`,
     [start, end],
   );
+  const collected = summarizeCollectedPayments(collectedRows);
 
   const { rows: simulatorCounts } = await db.query<SimulatorTypeCountRow>(
     `SELECT simulator_type, COUNT(*) AS count FROM simulators WHERE is_active = true GROUP BY simulator_type`,
@@ -291,7 +379,7 @@ export async function getDashboardSummary(db: DbClient, istDate: string): Promis
     [start, end],
   );
 
-  return buildDashboardSummary(istDate, bookingCounts, paymentCounts, Number(revenueRows[0]?.sum ?? 0), simulatorCounts, holdRows, new Date());
+  return buildDashboardSummary(istDate, bookingCounts, paymentCounts, collected.revenue.paidInr, simulatorCounts, holdRows, new Date(), collected.refundRequired);
 }
 
 // ============================================================================
@@ -358,6 +446,8 @@ interface AdminBookingListRow {
   simulator_codes: string[] | null;
   latest_payment_status: string | null;
   latest_payment_provider: string | null;
+  /** Typed bookings.booking_environment; NOT NULL since migration 007. */
+  booking_environment?: string | null;
 }
 
 export interface AdminBookingListItem {
@@ -382,6 +472,8 @@ export interface AdminBookingListItem {
   createdAt: string;
   allocatedSimulators: string[];
   payment: { status: string; provider: string } | null;
+  /** From the typed bookings.booking_environment column (NULL/unknown -> null). */
+  bookingEnvironment: PaymentEnvironmentLabel | null;
 }
 
 export function mapAdminBookingListRow(row: AdminBookingListRow): AdminBookingListItem {
@@ -404,6 +496,7 @@ export function mapAdminBookingListRow(row: AdminBookingListRow): AdminBookingLi
     payment: row.latest_payment_status
       ? { status: row.latest_payment_status, provider: row.latest_payment_provider ?? 'unknown' }
       : null,
+    bookingEnvironment: toPaymentEnvironment(row.booking_environment),
   };
 }
 
@@ -462,7 +555,8 @@ export async function listAdminBookings(db: DbClient, query: AdminBookingsQuery)
        b.scheduled_start_at, b.scheduled_end_at, b.duration_minutes, b.price_inr, b.status, b.created_at,
        alloc.codes AS simulator_codes,
        pay.payment_status AS latest_payment_status,
-       pay.provider AS latest_payment_provider
+       pay.provider AS latest_payment_provider,
+       b.booking_environment
      FROM bookings b
      JOIN products p ON p.id = b.product_id
      LEFT JOIN LATERAL (
@@ -512,6 +606,8 @@ interface AdminBookingDetailRow {
   notes: string | null;
   created_at: Date;
   updated_at: Date;
+  /** Typed bookings.booking_environment; NOT NULL since migration 007. */
+  booking_environment?: string | null;
 }
 
 interface AdminAllocationDetailRow {
@@ -534,6 +630,10 @@ interface AdminPaymentAttemptRow {
   failure_reason: string | null;
   created_at: Date;
   paid_at: Date | null;
+  refund_required?: boolean | null;
+  payment_environment?: string | null;
+  review_reason?: string | null;
+  duplicate_of_payment_id?: string | null;
 }
 
 export interface AdminBookingDetail {
@@ -570,8 +670,14 @@ export interface AdminBookingDetail {
     failureReason: string | null;
     createdAt: string;
     paidAt: string | null;
+    refundRequired: boolean;
+    paymentEnvironment: PaymentEnvironmentLabel | null;
+    reviewReason: string | null;
+    duplicateOfPaymentId: string | null;
   }[];
   currentPaymentStatus: string | null;
+  /** From the typed bookings.booking_environment column (NULL/unknown -> null). */
+  bookingEnvironment: PaymentEnvironmentLabel | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -628,8 +734,13 @@ export function buildAdminBookingDetail(
       failureReason: p.failure_reason,
       createdAt: p.created_at.toISOString(),
       paidAt: p.paid_at ? p.paid_at.toISOString() : null,
+      refundRequired: p.refund_required === true,
+      paymentEnvironment: toPaymentEnvironment(p.payment_environment),
+      reviewReason: p.refund_required === true ? describePaymentReviewReason(p.review_reason) : null,
+      duplicateOfPaymentId: p.duplicate_of_payment_id ?? null,
     })),
     currentPaymentStatus,
+    bookingEnvironment: toPaymentEnvironment(booking.booking_environment),
     createdAt: booking.created_at.toISOString(),
     updatedAt: booking.updated_at.toISOString(),
   };
@@ -643,7 +754,8 @@ export async function getAdminBookingDetail(db: DbClient, bookingId: string): Pr
   const { rows } = await db.query<AdminBookingDetailRow>(
     `SELECT b.id, b.booking_number, b.customer_name, b.customer_phone, b.customer_email,
             p.product_code, p.name AS product_name, b.racers, b.duration_minutes, b.simulator_type,
-            b.price_inr, b.status, b.scheduled_start_at, b.scheduled_end_at, b.notes, b.created_at, b.updated_at
+            b.price_inr, b.status, b.scheduled_start_at, b.scheduled_end_at, b.notes, b.created_at, b.updated_at,
+            b.booking_environment
      FROM bookings b
      JOIN products p ON p.id = b.product_id
      WHERE b.id = $1`,
@@ -666,7 +778,11 @@ export async function getAdminBookingDetail(db: DbClient, bookingId: string): Pr
 
   const { rows: payments } = await db.query<AdminPaymentAttemptRow>(
     `SELECT id, provider, provider_order_id, provider_transaction_id, amount_inr, currency,
-            payment_status, failure_reason, created_at, paid_at
+            payment_status, failure_reason, created_at, paid_at,
+            (metadata ->> 'refundRequired') = 'true' AS refund_required,
+            payment_environment,
+            metadata ->> 'reason' AS review_reason,
+            duplicate_of_payment_id
      FROM payments
      WHERE booking_id = $1
      ORDER BY created_at DESC`,
@@ -741,6 +857,12 @@ interface AdminPaymentListRow {
   failure_reason: string | null;
   created_at: Date;
   paid_at: Date | null;
+  /** Typed extracts from payments.metadata (never the raw blob) — see the list query —
+   *  plus the typed payment_environment column. */
+  refund_required?: boolean | null;
+  payment_environment?: string | null;
+  review_reason?: string | null;
+  duplicate_of_payment_id?: string | null;
 }
 
 export interface AdminPaymentListItem {
@@ -759,6 +881,16 @@ export interface AdminPaymentListItem {
   failureReason: string | null;
   createdAt: string;
   paidAt: string | null;
+  /** True when money was collected that support must refund manually (late payment with no
+   *  capacity, or a second payment on an already-paid booking). Never means a refund happened. */
+  refundRequired: boolean;
+  /** From the typed payments.payment_environment column: 'SANDBOX' marks a PhonePe test
+   *  transaction (never real money), 'PRODUCTION' real money; null if unknown. */
+  paymentEnvironment: PaymentEnvironmentLabel | null;
+  /** Human-readable reason it needs manual attention (whitelisted wording, null unless refundRequired). */
+  reviewReason: string | null;
+  /** For a duplicate payment: the payment that actually confirmed the booking. */
+  duplicateOfPaymentId: string | null;
 }
 
 /** Deliberately never includes payments.metadata (the raw provider payload) — see this phase's
@@ -778,6 +910,10 @@ export function mapAdminPaymentListRow(row: AdminPaymentListRow): AdminPaymentLi
     failureReason: row.failure_reason,
     createdAt: row.created_at.toISOString(),
     paidAt: row.paid_at ? row.paid_at.toISOString() : null,
+    refundRequired: row.refund_required === true,
+    paymentEnvironment: toPaymentEnvironment(row.payment_environment),
+    reviewReason: row.refund_required === true ? describePaymentReviewReason(row.review_reason) : null,
+    duplicateOfPaymentId: row.duplicate_of_payment_id ?? null,
   };
 }
 
@@ -817,7 +953,11 @@ export async function listAdminPayments(db: DbClient, query: AdminPaymentsQuery)
 
   const { rows } = await db.query<AdminPaymentListRow>(
     `SELECT p.id, p.booking_id, b.booking_number, p.provider, p.provider_order_id, p.provider_transaction_id,
-            p.amount_inr, p.currency, p.payment_status, p.failure_reason, p.created_at, p.paid_at
+            p.amount_inr, p.currency, p.payment_status, p.failure_reason, p.created_at, p.paid_at,
+            (p.metadata ->> 'refundRequired') = 'true' AS refund_required,
+            p.payment_environment,
+            p.metadata ->> 'reason' AS review_reason,
+            p.duplicate_of_payment_id
      FROM payments p
      JOIN bookings b ON b.id = p.booking_id
      ${whereClause}
@@ -949,27 +1089,26 @@ export async function getSimulatorBoard(db: DbClient, istDate: string): Promise<
 export type TransitionBookingStatusResult =
   | { outcome: 'not_found' }
   | { outcome: 'invalid_transition'; from: string; to: BookingStatus }
-  | { outcome: 'ok'; id: string; status: BookingStatus };
+  /** pending -> confirmed was refused: the booking's hold had expired and its simulator capacity
+   *  is no longer free. Nothing was changed. */
+  | { outcome: 'capacity_unavailable' }
+  | { outcome: 'ok'; id: string; status: BookingStatus; reallocated?: boolean };
 
 /**
  * Locks the booking row, validates the requested transition against booking-status.ts's whitelist,
  * and then does exactly one of:
  *   - for a target that confirmsAllocationOnTransition() (today: 'confirmed' — an admin manually
- *     confirming a pending walk-in/cash booking): confirms this booking's still-HOLD allocation
- *     row(s) — allocation_status = 'confirmed', hold_expires_at = NULL — via the same
- *     confirmBookingAllocations() a successful payment already uses, so the booking is never left
- *     'confirmed' while an allocation is still a temporary, expirable HOLD (this phase's audit
- *     brief, Issue 1).
+ *     confirming a pending walk-in/cash booking): secures the booking's simulator capacity via
+ *     secureBookingCapacity() — the same primitive a successful payment uses, under the same
+ *     simulators lock create-booking uses. A still-valid hold is confirmed; an EXPIRED hold is
+ *     re-allocated only if capacity is still free, otherwise the transition is refused with
+ *     'capacity_unavailable' and rolled back. This is what stops a manual confirmation from ever
+ *     booking a simulator that has since been given to someone else.
  *   - for a target that releasesAllocationOnTransition() (today: 'cancelled'): releases this
  *     booking's still-blocking (hold or confirmed) allocation rows, so a cancelled booking's
- *     simulator(s) stop blocking future availability immediately (see this phase's brief, item 8's
- *     "critical example").
+ *     simulator(s) stop blocking future availability immediately.
  * All of this happens in the one transaction started by `BEGIN` below — a thrown error at any
- * point rolls the whole thing back (booking status, allocation rows) via the catch block, so a
- * booking can never be left 'confirmed'/'cancelled' with its allocations in a stale state. Never
- * touches the payments table either way — payment state stays entirely separate, per item 9; this
- * endpoint represents an explicit manual/offline confirmation, never a substitute for
- * confirm-successful-payment.ts's PhonePe-driven one.
+ * point rolls the whole thing back. Never touches the payments table either way.
  */
 export async function transitionBookingStatus(
   db: DbClient,
@@ -979,11 +1118,7 @@ export async function transitionBookingStatus(
   try {
     await db.query('BEGIN');
 
-    const { rows } = await db.query<{ id: string; status: string }>(
-      `SELECT id, status FROM bookings WHERE id = $1 FOR UPDATE`,
-      [bookingId],
-    );
-    const booking = rows[0];
+    const booking = await lockBookingForPayment(db, bookingId);
     if (!booking) {
       await db.query('ROLLBACK');
       return { outcome: 'not_found' };
@@ -995,14 +1130,20 @@ export async function transitionBookingStatus(
       return { outcome: 'invalid_transition', from: currentStatus, to: targetStatus };
     }
 
+    let reallocated = false;
+    if (confirmsAllocationOnTransition(targetStatus)) {
+      // See this function's doc comment: never a blind HOLD -> confirmed flip.
+      const capacity = await secureBookingCapacity(db, booking);
+      if (capacity.kind === 'unavailable') {
+        await db.query('ROLLBACK');
+        return { outcome: 'capacity_unavailable' };
+      }
+      reallocated = capacity.kind === 'reallocated';
+    }
+
     await db.query(`UPDATE bookings SET status = $2 WHERE id = $1`, [bookingId, targetStatus]);
 
-    if (confirmsAllocationOnTransition(targetStatus)) {
-      // Reuses payment-repository.ts's writer rather than duplicating its SQL — see this
-      // function's doc comment. Idempotent/no-op on any allocation not currently 'hold' (e.g.
-      // already 'confirmed'), same as when a successful payment calls it.
-      await confirmBookingAllocations(db, bookingId);
-    } else if (releasesAllocationOnTransition(targetStatus)) {
+    if (releasesAllocationOnTransition(targetStatus)) {
       await db.query(
         `UPDATE booking_allocations
          SET allocation_status = 'released', hold_expires_at = NULL
@@ -1012,7 +1153,7 @@ export async function transitionBookingStatus(
     }
 
     await db.query('COMMIT');
-    return { outcome: 'ok', id: bookingId, status: targetStatus };
+    return { outcome: 'ok', id: bookingId, status: targetStatus, ...(reallocated ? { reallocated: true } : {}) };
   } catch (err) {
     await db.query('ROLLBACK').catch(() => {});
     throw err;

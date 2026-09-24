@@ -3,11 +3,36 @@ import assert from 'node:assert/strict';
 import type { DbClient } from './allocate-simulators';
 import { transitionBookingStatus } from './admin-repository';
 import {
-  createFakeAdminDbClient,
-  createFakeAdminDbStore,
-  seedAdminAllocation,
-  seedAdminBooking,
-} from './test-support/fake-admin-db';
+  createFakePaymentDbClient as createFakeAdminDbClient,
+  createFakePaymentDbStore as createFakeAdminDbStore,
+  seedBooking,
+  type FakePaymentDbStore,
+} from './test-support/fake-payment-db';
+
+// Thin adapters over the shared fake DB (test-support/fake-payment-db.ts) — one fake now backs
+// payments, allocation and admin transitions so they all share the same simulator lock.
+function seedAdminBooking(store: FakePaymentDbStore, input: { status: string }) {
+  return seedBooking(store, { status: input.status, priceInr: '100.00', holdAllocations: 0 });
+}
+let adminSimIndex = 0;
+function seedAdminAllocation(
+  store: FakePaymentDbStore,
+  input: { bookingId: string; status: 'hold' | 'confirmed' | 'released'; holdExpiresAt?: Date | null },
+) {
+  const booking = store.bookings.find((b) => b.id === input.bookingId)!;
+  const simulator = store.simulators.filter((s) => s.simulator_type === 'static')[adminSimIndex++ % 2];
+  const allocation = {
+    id: `admin-alloc-${store.allocations.length + 1}-${adminSimIndex}`,
+    booking_id: booking.id,
+    simulator_id: simulator.id,
+    scheduled_start_at: booking.scheduled_start_at,
+    scheduled_end_at: booking.scheduled_end_at,
+    allocation_status: input.status,
+    hold_expires_at: input.status === 'hold' ? (input.holdExpiresAt ?? new Date(Date.now() + 15 * 60_000)) : null,
+  };
+  store.allocations.push(allocation);
+  return allocation;
+}
 
 // Phase 3B: PATCH /admin/bookings/{id}/status — the one admin-repository.ts function that owns a
 // real transaction (lock -> validate -> update bookings -> conditionally release allocations ->
@@ -179,4 +204,82 @@ test('unknown booking id: returns not_found rather than throwing or fabricating 
   const result = await transitionBookingStatus(db, 'does-not-exist', 'cancelled');
 
   assert.deepEqual(result, { outcome: 'not_found' });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Capacity safety: admin pending -> confirmed must go through the same capacity primitive as a
+// successful payment — it may never flip an EXPIRED hold to confirmed over someone else's booking.
+// ---------------------------------------------------------------------------------------------
+import { afterEach, mock } from 'node:test';
+import { findDoubleBookings } from './test-support/fake-payment-db';
+
+afterEach(() => mock.timers.reset());
+
+const T0 = Date.UTC(2026, 8, 25, 6, 0, 0);
+const MIN = 60_000;
+const SLOT_START = new Date(T0 + 24 * 60 * MIN);
+const SLOT_END = new Date(SLOT_START.getTime() + 30 * MIN);
+
+function pendingWithHold(store: FakePaymentDbStore, simulatorId = 'sim-S1') {
+  return seedBooking(store, {
+    priceInr: '100.00', simulatorIds: [simulatorId], holdExpiresAt: new Date(T0 + 15 * MIN), start: SLOT_START, end: SLOT_END,
+  });
+}
+const takenBy = (store: FakePaymentDbStore, simulatorId: string) =>
+  seedBooking(store, { priceInr: '1.00', status: 'confirmed', allocationStatus: 'confirmed', simulatorIds: [simulatorId], start: SLOT_START, end: SLOT_END });
+
+test('admin confirm with a still-valid hold works as before', async () => {
+  mock.timers.enable({ apis: ['Date'], now: T0 + 5 * MIN });
+  const store = createFakeAdminDbStore();
+  const booking = pendingWithHold(store);
+  const result = await transitionBookingStatus(createFakeAdminDbClient(store), booking.id, 'confirmed');
+  assert.deepEqual(result, { outcome: 'ok', id: booking.id, status: 'confirmed' });
+  assert.deepEqual(store.allocations.map((a) => a.allocation_status), ['confirmed']);
+});
+
+test('admin confirm with an EXPIRED hold whose rig was given to someone else is REFUSED and rolled back — the unsafe blind flip is gone', async () => {
+  mock.timers.enable({ apis: ['Date'], now: T0 + 16 * MIN });
+  const store = createFakeAdminDbStore();
+  const booking = pendingWithHold(store);
+  takenBy(store, 'sim-S1');
+  takenBy(store, 'sim-S2');
+  const before = JSON.stringify([store.allocations, store.bookings]);
+
+  const result = await transitionBookingStatus(createFakeAdminDbClient(store), booking.id, 'confirmed');
+
+  assert.deepEqual(result, { outcome: 'capacity_unavailable' });
+  assert.equal(JSON.stringify([store.allocations, store.bookings]), before, 'nothing changed: still pending, hold untouched');
+  assert.deepEqual(findDoubleBookings(store, new Date(T0 + 16 * MIN)), []);
+});
+
+test('admin confirm with an EXPIRED hold, original rig taken, alternate rig free: re-allocated (reported) and confirmed — never double-booked', async () => {
+  mock.timers.enable({ apis: ['Date'], now: T0 + 16 * MIN });
+  const store = createFakeAdminDbStore();
+  const booking = pendingWithHold(store);
+  takenBy(store, 'sim-S1');
+
+  const result = await transitionBookingStatus(createFakeAdminDbClient(store), booking.id, 'confirmed');
+
+  assert.deepEqual(result, { outcome: 'ok', id: booking.id, status: 'confirmed', reallocated: true });
+  const live = store.allocations.filter((a) => a.booking_id === booking.id && a.allocation_status !== 'released');
+  assert.deepEqual(live.map((a) => [a.simulator_id, a.allocation_status]), [['sim-S2', 'confirmed']]);
+  assert.deepEqual(findDoubleBookings(store, new Date(T0 + 16 * MIN)), []);
+});
+
+test('admin confirm with an EXPIRED hold and the same rig still free: re-confirmed on that rig', async () => {
+  mock.timers.enable({ apis: ['Date'], now: T0 + 16 * MIN });
+  const store = createFakeAdminDbStore();
+  const booking = pendingWithHold(store);
+  const result = await transitionBookingStatus(createFakeAdminDbClient(store), booking.id, 'confirmed');
+  assert.equal(result.outcome, 'ok');
+  assert.deepEqual(store.allocations.filter((a) => a.allocation_status === 'confirmed').map((a) => a.simulator_id), ['sim-S1']);
+});
+
+test('admin confirm takes the shared lock order: booking -> simulators -> allocations', async () => {
+  mock.timers.enable({ apis: ['Date'], now: T0 + 5 * MIN });
+  const store = createFakeAdminDbStore();
+  const booking = pendingWithHold(store);
+  const db = createFakeAdminDbClient(store);
+  await transitionBookingStatus(db, booking.id, 'confirmed');
+  assert.deepEqual(db.lockLog, ['booking', 'simulators', 'allocations']);
 });

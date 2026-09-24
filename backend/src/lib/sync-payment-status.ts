@@ -20,7 +20,7 @@ export interface ApplyProviderOutcomeInput {
   providerOrderId: string;
   outcome: ProviderOutcome;
   providerTransactionId?: string;
-  amountInr?: number;
+  amountInr?: number | string;
   currency?: string;
   failureReason?: string;
   /** True for a payment whose hold window is known to have lapsed (e.g. the caller is a
@@ -30,7 +30,10 @@ export interface ApplyProviderOutcomeInput {
 }
 
 export type ApplyProviderOutcomeResult =
-  | { status: 'confirmed'; paymentId: string; bookingId: string; alreadyConfirmed: boolean }
+  | { status: 'confirmed'; paymentId: string; bookingId: string; alreadyConfirmed: boolean; outcome: 'confirmed' | 'confirmed_after_reallocation' }
+  /** The payment is PAID but the booking could not be confirmed (expired hold + no capacity, or a
+   *  booking already cancelled): payments.metadata.refundRequired is set for manual refund. */
+  | { status: 'paid_refund_required'; paymentId: string; bookingId: string; alreadyConfirmed: boolean; duplicateOfPaymentId?: string }
   | { status: 'failed' }
   | { status: 'expired' }
   | { status: 'pending' };
@@ -66,7 +69,10 @@ export async function applyProviderOutcome(db: DbClient, input: ApplyProviderOut
         currency: input.currency,
         providerTransactionId: input.providerTransactionId,
       });
-      return { status: 'confirmed', ...result };
+      if (result.outcome === 'refund_required') {
+        return { status: 'paid_refund_required', paymentId: result.paymentId, bookingId: result.bookingId, alreadyConfirmed: result.alreadyConfirmed, ...(result.duplicateOfPaymentId ? { duplicateOfPaymentId: result.duplicateOfPaymentId } : {}) };
+      }
+      return { status: 'confirmed', paymentId: result.paymentId, bookingId: result.bookingId, alreadyConfirmed: result.alreadyConfirmed, outcome: result.outcome };
     }
     case 'FAILED': {
       await markPaymentFailed(db, await paymentIdFor(db, input), input.failureReason ?? 'Provider reported failure');

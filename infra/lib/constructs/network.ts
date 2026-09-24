@@ -8,15 +8,25 @@ export interface NetworkConstructProps {
   vpcCidr: string;
   /** Number of Availability Zones to spread subnets across. */
   maxAzs: number;
+  /** NAT Gateways serving the PRIVATE_WITH_EGRESS subnets (see NetworkConfig.natGateways). */
+  natGateways: number;
 }
 
 /**
- * Story 2.1 network foundation: one VPC, PRIVATE_ISOLATED subnets only, no NAT Gateway.
+ * Story 2.1 network foundation (PRIVATE_ISOLATED subnets, no internet route) plus the additive
+ * PhonePe-payments egress path.
  *
- * No route to the internet exists from these subnets (no NAT, no Internet Gateway route).
- * That's intentional for this phase — nothing deployed yet needs outbound internet access.
- * Future stories that add compute needing AWS-service access without a NAT Gateway should
- * add VPC (interface/gateway) endpoints here rather than switching subnets to PRIVATE_WITH_EGRESS.
+ * The 'private-isolated' subnets are UNCHANGED and remain where RDS, the DB subnet group, the
+ * Secrets Manager interface endpoint and every non-payment Lambda live. They must stay FIRST in
+ * subnetConfiguration: CDK allocates CIDRs in configuration order, so appending new groups after
+ * them leaves the deployed subnets' CIDRs (and logical IDs) untouched.
+ *
+ * Added for payments only:
+ *   - 'public' (/28 per AZ): exists solely to host the NAT Gateway; nothing else is placed there.
+ *   - 'private-egress' (/24 per AZ, PRIVATE_WITH_EGRESS): default route via the NAT Gateway. Only
+ *     the payment Lambdas attach here — they reach RDS over the VPC-local route (same VPC, same
+ *     Lambda security group) and PhonePe over the NAT.
+ * A single NAT Gateway serves both AZs (cost control for the MVP).
  */
 export class NetworkConstruct extends Construct {
   public readonly vpc: ec2.Vpc;
@@ -28,11 +38,11 @@ export class NetworkConstruct extends Construct {
       vpcName: props.vpcName,
       ipAddresses: ec2.IpAddresses.cidr(props.vpcCidr),
       maxAzs: props.maxAzs,
-      natGateways: 0,
+      natGateways: props.natGateways,
       // cdk.json enables the restrictDefaultSecurityGroup feature flag, which would
       // otherwise provision a custom-resource Lambda to strip the default security
-      // group's rules. Story 2.1 excludes Lambda, so opt out explicitly — isolated
-      // subnets have no internet route regardless, and nothing uses the default SG yet.
+      // group's rules. Story 2.1 excludes Lambda, so opt out explicitly — nothing uses the
+      // default SG (every resource here has its own).
       restrictDefaultSecurityGroup: false,
       subnetConfiguration: [
         {
@@ -40,6 +50,9 @@ export class NetworkConstruct extends Construct {
           subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
           cidrMask: 24,
         },
+        // Appended AFTER private-isolated on purpose — see the class comment.
+        { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 28 },
+        { name: 'private-egress', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
       ],
     });
   }

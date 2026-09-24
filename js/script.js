@@ -558,7 +558,110 @@ function clearPendingBookingDraft() {
   sessionStorage.removeItem(PENDING_BOOKING_STORAGE_KEY);
 }
 
+// ----------------------------------------------------------------------
+// Payment step (Phase 4) - shown inside #bookingResult right after POST /bookings
+// succeeds. The booking id lives only in this closure (never rendered); clicking
+// PAY SECURELY WITH PHONEPE runs PlayXPayments' startPayment(), which POSTs
+// { bookingId } alone and, on success, navigates the whole page to PhonePe (never an
+// iframe). Amount/status shown above come from the backend's booking response and are
+// display-only: the backend charges the price it has on file. See js/payments.js.
+// ----------------------------------------------------------------------
+const paymentStep = document.getElementById('paymentStep');
+const payNowBtn = document.getElementById('payNowBtn');
+const paymentStepStatus = document.getElementById('paymentStepStatus');
+let paymentStepBookingId = null;
+
+// Null (step stays hidden, no handlers) unless this host shows the PhonePe payment UI
+// (js/api-routes.js's PAYMENT_UI_HOSTNAMES).
+const bookingPaymentClient = typeof PlayXPayments !== 'undefined' && PlayXPayments.isPaymentUiEnabled(window.location.hostname)
+  ? PlayXPayments.getBrowserClient()
+  : null;
+let paymentStepMode = 'pay'; // 'pay' | 'check'
+
+function setPaymentStepMode(mode, statusText, isError) {
+  paymentStepMode = mode;
+  payNowBtn.hidden = false;
+  payNowBtn.disabled = false;
+  payNowBtn.textContent = mode === 'check' ? 'CHECK PAYMENT STATUS' : 'PAY SECURELY WITH PHONEPE';
+  paymentStepStatus.classList.toggle('error', !!isError);
+  paymentStepStatus.textContent = statusText || '';
+}
+
+function setupPaymentStep(booking) {
+  if (!paymentStep || !bookingPaymentClient || !booking || !PlayXPayments.isUuid(booking.id) || booking.status !== 'pending') {
+    if (paymentStep) paymentStep.hidden = true;
+    return;
+  }
+  paymentStepBookingId = booking.id;
+  setPaymentStepMode('pay');
+  const notice = document.getElementById('paymentHoldNotice');
+  if (notice && booking.holdExpiresAt) {
+    const until = new Date(booking.holdExpiresAt);
+    if (!Number.isNaN(until.getTime())) {
+      const time = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', hour12: true }).format(until);
+      notice.textContent = `Your race is reserved until about ${time} IST while you pay. If payment isn't completed by then, the reservation is released and you'll need to book again.`;
+    }
+  }
+  paymentStep.hidden = false;
+}
+
+async function checkPaymentStepStatus() {
+  payNowBtn.disabled = true;
+  paymentStepStatus.classList.remove('error');
+  paymentStepStatus.textContent = 'Checking payment status...';
+  const result = await bookingPaymentClient.getPaymentStatus(paymentStepBookingId);
+  if (!result.ok) {
+    if (result.kind === 'session_expired' || result.kind === 'not_found') {
+      payNowBtn.hidden = true;
+      paymentStepStatus.classList.add('error');
+      paymentStepStatus.textContent = result.message;
+      return;
+    }
+    // State unknown: never fall back to Pay.
+    setPaymentStepMode('check', 'Unable to verify payment status.', true);
+    payNowBtn.textContent = 'CHECK AGAIN';
+    return;
+  }
+  const action = PlayXPayments.describeBookingPaymentAction(result.status);
+  if (action.action === 'pay' || action.action === 'retry') {
+    setPaymentStepMode('pay', action.action === 'retry' ? 'Your payment was not completed. You can try again.' : '');
+  } else if (action.action === 'check') {
+    setPaymentStepMode('check', 'Payment Processing');
+  } else {
+    payNowBtn.hidden = true;
+    paymentStepStatus.classList.remove('error');
+    paymentStepStatus.textContent = action.label || action.note;
+    if (result.status.outcome === 'confirmed' && typeof refreshMyBookings === 'function') refreshMyBookings();
+  }
+}
+
+if (payNowBtn && bookingPaymentClient) {
+  payNowBtn.addEventListener('click', async () => {
+    if (!paymentStepBookingId || payNowBtn.disabled) return;
+    if (paymentStepMode === 'check') { await checkPaymentStepStatus(); return; }
+    payNowBtn.disabled = true; // double-click guard; startPayment() has its own too
+    paymentStepStatus.classList.remove('error');
+    paymentStepStatus.textContent = 'Connecting you to PhonePe...';
+    payNowBtn.textContent = 'REDIRECTING TO PHONEPE...';
+    const outcome = await bookingPaymentClient.startPayment(paymentStepBookingId);
+    if (outcome.ok || outcome.kind === 'busy') return; // navigating away to PhonePe
+    if (outcome.kind === 'in_progress') {
+      // A start is already underway: "processing", not a retry.
+      setPaymentStepMode('check', 'Payment Processing');
+      return;
+    }
+    payNowBtn.textContent = 'PAY SECURELY WITH PHONEPE';
+    paymentStepStatus.classList.add('error');
+    paymentStepStatus.textContent = outcome.message;
+    // Only offer another try where one could help; an expired/paid/not-payable booking can't be retried.
+    payNowBtn.disabled = ['hold_expired', 'already_paid', 'not_payable', 'not_found', 'capacity_unavailable', 'checkout_window_closed', 'not_permitted'].includes(outcome.kind);
+  });
+}
+
 // The one place that actually calls POST /bookings and renders the outcome -
+// or POST /bookings/production on playxcafe.com: the path comes from the page's
+// hostname alone (js/api-routes.js), never from the draft/form/URL, and the
+// backend gates the PRODUCTION route itself (kill switch + tester allowlist) -
 // used both by an already-signed-in visitor's ordinary submit
 // (attemptDraftAutoCompletion) and by the passwordless OTP flow's automatic
 // post-verification booking (createBookingAfterVerification), so the
@@ -586,7 +689,7 @@ async function submitBookingRequest({
   bookingResult.hidden = true;
 
   try {
-    const response = await fetch(`${AWS_CONFIG.apiBaseUrl}/bookings`, {
+    const response = await fetch(`${AWS_CONFIG.apiBaseUrl}${PlayXApiRoutes.currentRoutes().createBooking}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -647,6 +750,7 @@ async function submitBookingRequest({
       }
     }
     bookingResult.hidden = false;
+    setupPaymentStep(result);
     bookingResult.focus();
     bookingForm.reset();
     // Reflect the new booking in the My Bookings list (js/my-bookings.js)

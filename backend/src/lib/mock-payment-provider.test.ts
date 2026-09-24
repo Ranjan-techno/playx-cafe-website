@@ -4,11 +4,11 @@ import { MockPaymentProvider } from './mock-payment-provider';
 
 // The mock provider is test-only (see its file header) — this suite checks its own behavior in
 // isolation, independent of the domain-layer tests that use it as a stand-in
-// PaymentProviderAdapter elsewhere (create-payment-attempt.test.ts, sync-payment-status.test.ts).
+// PaymentProviderAdapter elsewhere (start-payment.test.ts, sync-payment-status.test.ts).
 
 test('createPayment records the order and returns a raw payload for audit', async () => {
   const provider = new MockPaymentProvider();
-  const result = await provider.createPayment({ providerOrderId: 'order-1', amountInr: 100, currency: 'INR', description: 'Test' });
+  const result = await provider.createPayment({ providerOrderId: 'order-1', amountInr: '100.00', currency: 'INR', description: 'Test' });
   assert.deepEqual(result.raw, { mock: true, providerOrderId: 'order-1' });
 });
 

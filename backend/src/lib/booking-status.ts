@@ -68,11 +68,10 @@ export function releasesAllocationOnTransition(to: BookingStatus): boolean {
  *  an admin manually confirming a pending booking (a walk-in/cash sale, confirmed offline — see
  *  this file's ALLOWED_TRANSITIONS comment) must never leave the booking 'confirmed' while its
  *  allocation(s) are still a temporary HOLD that can later expire (this phase's audit brief,
- *  Issue 1). This mirrors, but is entirely separate from, payment-repository.ts's
- *  confirmBookingAllocations() — the identical write a *successful payment* triggers via
- *  confirm-successful-payment.ts; admin-repository.ts reuses that same function rather than
- *  duplicating its SQL, so there is exactly one writer of "HOLD -> confirmed, hold_expires_at =
- *  NULL" regardless of which of the two flows triggers it. */
+ *  Issue 1). Confirmation is NOT a blind HOLD -> confirmed flip: admin-repository.ts's
+ *  transitionBookingStatus() runs booking-capacity.ts's secureBookingCapacity() — the same
+ *  primitive a successful payment uses — so an expired hold is only confirmed if its capacity is
+ *  still free (re-allocated if needed), never over another booking. */
 export function confirmsAllocationOnTransition(to: BookingStatus): boolean {
   return to === 'confirmed';
 }

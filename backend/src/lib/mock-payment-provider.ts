@@ -35,7 +35,11 @@ export class MockPaymentProvider implements PaymentProviderAdapter {
 
   async createPayment(request: CreatePaymentRequest): Promise<CreatePaymentResult> {
     this.createdOrders.add(request.providerOrderId);
-    return { raw: { mock: true, providerOrderId: request.providerOrderId } };
+    return {
+      redirectUrl: `https://mock-checkout.invalid/pay/${request.providerOrderId}`,
+      providerOrderRef: `mock-${request.providerOrderId}`,
+      raw: { mock: true, providerOrderId: request.providerOrderId },
+    };
   }
 
   async getPaymentStatus(providerOrderId: string): Promise<ProviderStatusResult> {

@@ -557,6 +557,16 @@
       <!-- Only shown when POST /bookings returns an id - "if useful" per the
            Phase 3 spec, so a backend response without one just hides this. -->
       <p class="booking-reference" id="resultReference" hidden></p>
+      <!-- Payment step: shown once the booking exists (js/script.js's setupPaymentStep()). The
+           amount above is the backend's; POST /payments/start sends only the booking id and
+           the backend charges the price it has on file. -->
+      <div class="payment-step" id="paymentStep" hidden>
+        <h4 class="payment-step-title">Complete Your Payment</h4>
+        <p class="payment-hold-notice" id="paymentHoldNotice">Your race is reserved for a short time while you pay. If payment isn't completed, the reservation is released automatically and you'll need to book again.</p>
+        <button type="button" class="btn btn-primary btn-lg" id="payNowBtn">PAY SECURELY WITH PHONEPE</button>
+        <p class="payment-step-status" id="paymentStepStatus" role="status" aria-live="polite"></p>
+        <p class="payment-secure-note">You'll be taken to PhonePe to pay. Your booking is confirmed only after we verify the payment.</p>
+      </div>
       <div class="reservation-review-actions">
         <a href="#my-bookings" class="btn btn-outline">View My Bookings</a>
         <a href="#top" class="btn btn-primary">Back to Home</a>
@@ -766,6 +776,8 @@
 <script src="js/race-pass.js"></script>
 <script src="js/scroll-reveal.js"></script>
 <script src="js/format-utils.js"></script>
+<script src="js/api-routes.js"></script>
+<script src="js/payments.js"></script>
 <script src="js/my-bookings.js"></script>
 <script src="js/script.js"></script>
 </body>
