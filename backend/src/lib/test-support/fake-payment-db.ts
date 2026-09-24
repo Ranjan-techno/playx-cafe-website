@@ -306,6 +306,28 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
       return { rows: (row ? [{ ...row }] : []) as unknown as T[] };
     }
 
+    // findPaymentById: SELECT * FROM payments WHERE id = $1 (no lock)
+    if (/^SELECT \* FROM payments WHERE id = \$1$/i.test(sql)) {
+      const [id] = params as [string];
+      const row = store.payments.find((p) => p.id === id);
+      return { rows: (row ? [{ ...row, metadata: row.metadata ? { ...row.metadata } : row.metadata }] : []) as unknown as T[] };
+    }
+
+    // advanceFastReconcileSeq: forward-only compare-and-set of metadata.fastReconcileSeq
+    // (fromSeq -> fromSeq + 1) on an open attempt.
+    if (/^UPDATE payments\b/i.test(sql) && /'fastReconcileSeq'/.test(sql)) {
+      const [paymentId, expectedSeq] = params as [string, number];
+      const nextSeq = expectedSeq + 1;
+      const row = store.payments.find((p) => p.id === paymentId);
+      const current = Number((row?.metadata as { fastReconcileSeq?: unknown } | null)?.fastReconcileSeq ?? 0);
+      if (row && (row.payment_status === 'created' || row.payment_status === 'pending') && current === expectedSeq) {
+        touch(row);
+        row.metadata = { ...(row.metadata ?? {}), fastReconcileSeq: nextSeq };
+        return { rows: [{ id: row.id }] as unknown as T[] };
+      }
+      return { rows: [] };
+    }
+
     // lockPaymentById: SELECT * FROM payments WHERE id = $1 FOR UPDATE
     if (/FROM payments\b/i.test(sql) && /WHERE id = \$1 FOR UPDATE/i.test(sql)) {
       const [id] = params as [string];

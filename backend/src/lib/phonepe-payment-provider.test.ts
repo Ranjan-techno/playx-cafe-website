@@ -12,7 +12,12 @@ import {
   type StandardCheckoutPayResponse,
 } from '@phonepe-pg/pg-sdk-node';
 import { PaymentProviderError, PaymentProviderOrderNotFoundError } from './payment-errors';
-import { PhonePePaymentProvider, mapOrderState, type PhonePeCheckoutClient } from './phonepe-payment-provider';
+import {
+  PhonePePaymentProvider,
+  mapOrderState,
+  normalizeProviderExpiry,
+  type PhonePeCheckoutClient,
+} from './phonepe-payment-provider';
 
 // ---------------------------------------------------------------------------------------------
 // SDK compatibility: the real StandardCheckoutClient, but with the SDK's own axios pointed at an
@@ -211,4 +216,49 @@ test('webhook verification and refunds are explicitly not implemented in v1', as
   assert.equal(provider.provider, 'phonepe');
   await assert.rejects(() => provider.verifyWebhook('{}', {}), /not implemented/);
   await assert.rejects(() => provider.refundPayment({ providerOrderId: 'o', providerTransactionId: 't', amountInr: 1, reason: 'r' }), /not implemented/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Stage 2B: provider order expiry (expireAt) normalization — what the fast reconciler stops at.
+// ---------------------------------------------------------------------------------------------
+const EXPIRY_MS = Date.UTC(2026, 8, 25, 6, 20, 0); // 2026-09-25T06:20:00Z
+
+test('normalizeProviderExpiry: epoch millis and epoch seconds normalize to the same UTC instant', () => {
+  assert.equal(normalizeProviderExpiry(EXPIRY_MS)?.toISOString(), '2026-09-25T06:20:00.000Z');
+  assert.equal(normalizeProviderExpiry(EXPIRY_MS / 1000)?.toISOString(), '2026-09-25T06:20:00.000Z');
+  assert.equal(normalizeProviderExpiry(String(EXPIRY_MS))?.toISOString(), '2026-09-25T06:20:00.000Z');
+  assert.equal(normalizeProviderExpiry(` ${EXPIRY_MS / 1000} `)?.toISOString(), '2026-09-25T06:20:00.000Z');
+});
+
+test('normalizeProviderExpiry: missing, malformed or implausible values are dropped, never guessed', () => {
+  for (const bad of [undefined, null, 0, -1, 1, 1234, Number.NaN, Infinity, '', 'soon', '2026-09-25T06:20:00Z', '1.5e12', {}, [], true,
+    Date.UTC(2019, 0, 1), Date.UTC(2101, 0, 1)]) {
+    assert.equal(normalizeProviderExpiry(bad), undefined, JSON.stringify(bad));
+  }
+});
+
+test('createPayment/getPaymentStatus expose the normalized provider expiry (either casing); an unusable one is omitted', async () => {
+  const created = await providerWith({
+    pay: async () => ({ orderId: 'O', state: 'PENDING', expireAt: EXPIRY_MS, redirectUrl: 'https://pay.example/x' }) as StandardCheckoutPayResponse,
+  }).createPayment({ providerOrderId: 'o', amountInr: '1.00', currency: 'INR', description: '' });
+  assert.equal(created.providerExpiresAt?.toISOString(), '2026-09-25T06:20:00.000Z');
+
+  const snake = await providerWith({
+    pay: async () => ({ orderId: 'O', state: 'PENDING', expire_at: EXPIRY_MS / 1000, redirectUrl: 'https://pay.example/x' }) as unknown as StandardCheckoutPayResponse,
+  }).createPayment({ providerOrderId: 'o', amountInr: '1.00', currency: 'INR', description: '' });
+  assert.equal(snake.providerExpiresAt?.toISOString(), '2026-09-25T06:20:00.000Z');
+
+  const junk = await providerWith({
+    pay: async () => ({ orderId: 'O', state: 'PENDING', expireAt: 1, redirectUrl: 'https://pay.example/x' }) as StandardCheckoutPayResponse,
+  }).createPayment({ providerOrderId: 'o', amountInr: '1.00', currency: 'INR', description: '' });
+  assert.equal('providerExpiresAt' in junk, false);
+
+  for (const state of ['PENDING', 'FAILED', 'COMPLETED']) {
+    const status = await providerWith({
+      getOrderStatus: async () => orderStatus({ state, expireAt: EXPIRY_MS, paymentDetails: [{ transactionId: 'T', state: 'COMPLETED' }] as OrderStatusResponse['paymentDetails'] }),
+    }).getPaymentStatus('o');
+    assert.equal(status.providerExpiresAt?.toISOString(), '2026-09-25T06:20:00.000Z', state);
+  }
+  const none = await providerWith({ getOrderStatus: async () => orderStatus({ state: 'PENDING', expireAt: 0 }) }).getPaymentStatus('o');
+  assert.equal(none.providerExpiresAt, undefined);
 });

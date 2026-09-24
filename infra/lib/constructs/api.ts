@@ -3,14 +3,17 @@ import * as cdk from 'aws-cdk-lib/core';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2Authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { ApiConfig } from '../config/api-config';
 import { PaymentConfig, ProductionPaymentConfig } from '../config/payment-config';
@@ -56,6 +59,15 @@ export interface ApiConstructProps {
   paymentStartProductionFunctionName: string;
   /** The isolated PRODUCTION PhonePe runtime's config (payment start hard-disabled in Stage 2A). */
   productionPaymentConfig: ProductionPaymentConfig;
+  /** PhonePe cutover Stage 2B: PRODUCTION fast payment reconciliation — the SQS worker Lambda
+   *  (e.g. 'playx-dev-payment-reconcile-production-fast'), its queue and DLQ names, the DLQ alarm
+   *  name, and the 5-minute PRODUCTION fallback reconciler (e.g.
+   *  'playx-dev-payment-reconcile-production'). */
+  paymentReconcileProductionFastFunctionName: string;
+  paymentReconcileProductionFastQueueName: string;
+  paymentReconcileProductionDlqName: string;
+  paymentReconcileProductionDlqAlarmName: string;
+  paymentReconcileProductionFunctionName: string;
   /** Comma-separated Cognito subs/verified emails allowed to start SANDBOX payments. Empty fails
    *  closed (nobody may start one) — see config/payment-config.ts. */
   phonepeSandboxTesters: string;
@@ -112,8 +124,14 @@ export interface ApiConstructProps {
  * booking_environment='PRODUCTION', BOOKING_CREATE_ENABLED=false so it returns 503 before any DB
  * work) and POST /payments/production/start (the same payment-start.ts
  * handler, configured with the production PhonePe secret and PAYMENT_START_ENABLED=false, so it
- * returns 503 before touching the secret, the DB or PhonePe). No production payment-status,
- * reconciliation, webhook or queue yet.
+ * returns 503 before touching the secret, the DB or PhonePe).
+ *
+ * PhonePe cutover Stage 2B adds PRODUCTION payment reconciliation, deployable idle before go-live:
+ * an SQS fast-reconcile queue (+ DLQ and a DLQ-depth alarm) driving PhonePe's mandatory PENDING
+ * status-check cadence through a worker Lambda, plus a 5-minute PRODUCTION fallback reconciler on
+ * its own EventBridge rule. The production payment-start Lambda gets the queue URL and
+ * sqs:SendMessage on that one queue (still disabled, so it never sends). No production
+ * payment-status route and no webhook yet.
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
@@ -136,6 +154,12 @@ export class ApiConstruct extends Construct {
   public readonly paymentStatusFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentReconcileFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentReconcileRule: events.Rule;
+  public readonly paymentReconcileProductionFastQueue: sqs.Queue;
+  public readonly paymentReconcileProductionDlq: sqs.Queue;
+  public readonly paymentReconcileProductionDlqAlarm: cloudwatch.Alarm;
+  public readonly paymentReconcileProductionFastFunction: lambdaNodejs.NodejsFunction;
+  public readonly paymentReconcileProductionFunction: lambdaNodejs.NodejsFunction;
+  public readonly paymentReconcileProductionRule: events.Rule;
 
   constructor(scope: Construct, id: string, props: ApiConstructProps) {
     super(scope, id);
@@ -328,6 +352,37 @@ export class ApiConstruct extends Construct {
     props.databaseSecret.grantRead(this.paymentStartFunction);
     grantPhonePeSecret(this.paymentStartFunction);
 
+    // PhonePe cutover Stage 2B: the PRODUCTION fast-reconcile queue. Standard (not FIFO): the
+    // worker tolerates duplicate delivery (a stale/duplicate link is acknowledged without a provider
+    // call — see backend/src/lib/fast-reconcile-payment.ts), and messages carry only
+    // { paymentId, seq }. Created before the payment-start Lambda, which needs its URL.
+    //   - visibility timeout 150s = 6x the worker's 25s timeout (AWS's guidance for SQS-triggered
+    //     Lambdas), so an in-flight message is never redelivered mid-invocation;
+    //   - retention 1 day: a link is only useful until the order expires (minutes); anything older is
+    //     covered by the 5-minute fallback reconciler;
+    //   - after 5 failed receives a message moves to the DLQ (14 days' retention, alarmed below).
+    this.paymentReconcileProductionDlq = new sqs.Queue(this, 'PaymentReconcileProductionDlq', {
+      queueName: props.paymentReconcileProductionDlqName,
+      retentionPeriod: cdk.Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+    });
+    this.paymentReconcileProductionFastQueue = new sqs.Queue(this, 'PaymentReconcileProductionFastQueue', {
+      queueName: props.paymentReconcileProductionFastQueueName,
+      visibilityTimeout: cdk.Duration.seconds(150),
+      retentionPeriod: cdk.Duration.days(1),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      deadLetterQueue: { queue: this.paymentReconcileProductionDlq, maxReceiveCount: 5 },
+    });
+    const productionQueue = this.paymentReconcileProductionFastQueue;
+    // SendMessage ONLY, on exactly this queue — no GetQueueAttributes/GetQueueUrl (the URL comes from
+    // the environment), no wildcard. Used by the production payment-start Lambda and the worker's
+    // delayed requeue. The sandbox payment Lambdas never get it.
+    const grantProductionQueueSend = (fn: lambdaNodejs.NodejsFunction): void => {
+      fn.addToRolePolicy(new iam.PolicyStatement({ actions: ['sqs:SendMessage'], resources: [productionQueue.queueArn] }));
+    };
+
     // PhonePe cutover Stage 2A: the isolated PRODUCTION payment-start runtime. Same handler code,
     // subnets, security group and DB access as PaymentStartFunction; its PhonePe environment,
     // secret and return URL are fixed here at deploy time (productionPaymentConfig), and its IAM
@@ -346,10 +401,14 @@ export class ApiConstruct extends Construct {
         PAYMENT_CHECKOUT_HOLD_MINUTES: String(productionPayment.checkoutHoldMinutes),
         PAYMENT_RETURN_URL: productionPayment.returnUrl,
         PAYMENT_START_ENABLED: productionPayment.paymentStartEnabled ? 'true' : 'false',
+        // Stage 2B: every PRODUCTION order must start the fast-reconcile chain; the handler fails
+        // closed (before PhonePe) without this. Inert while PAYMENT_START_ENABLED is 'false'.
+        PAYMENT_RECONCILE_QUEUE_URL: productionQueue.queueUrl,
       },
     });
     props.databaseSecret.grantRead(this.paymentStartProductionFunction);
     grantPhonePeSecret(this.paymentStartProductionFunction, productionPayment.phonepeSecretName);
+    grantProductionQueueSend(this.paymentStartProductionFunction);
 
     this.paymentStatusFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentStatusFunction', {
       ...paymentFunctionDefaults,
@@ -386,6 +445,85 @@ export class ApiConstruct extends Construct {
       targets: [
         new eventsTargets.LambdaFunction(this.paymentReconcileFunction, {
           // The next scheduled run is the retry; async retries would only overlap it.
+          retryAttempts: 0,
+          maxEventAge: cdk.Duration.minutes(5),
+        }),
+      ],
+    });
+
+    // PhonePe cutover Stage 2B: PRODUCTION reconciliation. Both Lambdas run exactly like the sandbox
+    // reconciler (private-with-egress subnets, shared Lambda SG, RDS over the VPC, PhonePe over the
+    // existing NAT) but read ONLY the production PhonePe secret. Their PRODUCTION environment is
+    // hard-coded in their entry files; PHONEPE_ENVIRONMENT here is only the loader's independent
+    // cross-check against the secret.
+    const productionPhonepeEnv = {
+      DB_SECRET_ARN: props.databaseSecret.secretArn,
+      PHONEPE_SECRET_NAME: productionPayment.phonepeSecretName,
+      PHONEPE_ENVIRONMENT: productionPayment.phonepeEnvironment,
+    };
+
+    // The fast worker: one message = one PhonePe status check for one attempt, then (if still
+    // PENDING and before the order's expiry) a delayed SendMessage of the next link to the SAME
+    // queue. Batch size 1, so one slow/failing check never holds up or re-drives another.
+    //
+    // No reserved concurrency (AWS recommends at least 5 for an SQS-triggered function; lower
+    // values throttle ordinary deliveries, which then wait out the visibility timeout and count
+    // towards the DLQ's maxReceiveCount). Duplicate same-seq deliveries are therefore possible and
+    // may run concurrently; the chain's send-first/self-activating sequence protocol keeps them
+    // from forking or corrupting it — see backend/src/lib/fast-reconcile-payment.ts.
+    this.paymentReconcileProductionFastFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentReconcileProductionFastFunction', {
+      ...paymentFunctionDefaults,
+      functionName: props.paymentReconcileProductionFastFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/payment-reconcile-production-fast.ts'),
+      environment: {
+        ...productionPhonepeEnv,
+        PAYMENT_RECONCILE_QUEUE_URL: productionQueue.queueUrl,
+      },
+    });
+    props.databaseSecret.grantRead(this.paymentReconcileProductionFastFunction);
+    grantPhonePeSecret(this.paymentReconcileProductionFastFunction, productionPayment.phonepeSecretName);
+    // Receive/Delete/ChangeMessageVisibility (+ the event source mapping's GetQueueAttributes) on
+    // this queue only, granted by the event source itself.
+    this.paymentReconcileProductionFastFunction.addEventSource(
+      new lambdaEventSources.SqsEventSource(productionQueue, { batchSize: 1 }),
+    );
+    grantProductionQueueSend(this.paymentReconcileProductionFastFunction);
+
+    // A DLQ message means a link failed 5 times (DB/PhonePe/config problem) — that attempt's fast
+    // cadence has stopped and only the 5-minute fallback still covers it. Must be seen.
+    this.paymentReconcileProductionDlqAlarm = new cloudwatch.Alarm(this, 'PaymentReconcileProductionDlqAlarm', {
+      alarmName: props.paymentReconcileProductionDlqAlarmName,
+      alarmDescription: 'PRODUCTION PhonePe fast payment reconciliation: messages in the dead-letter queue',
+      metric: this.paymentReconcileProductionDlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(1),
+        statistic: cloudwatch.Stats.MAXIMUM,
+      }),
+      threshold: 0,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // The 5-minute PRODUCTION fallback: defense in depth behind the fast chain (lost messages,
+    // worker problems, attempts still open after the fast cadence stopped at expiry). No SQS access.
+    this.paymentReconcileProductionFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentReconcileProductionFunction', {
+      ...paymentFunctionDefaults,
+      functionName: props.paymentReconcileProductionFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/payment-reconcile-production.ts'),
+      timeout: cdk.Duration.minutes(4),
+      environment: {
+        ...productionPhonepeEnv,
+        RECONCILE_BATCH_SIZE: '25',
+      },
+    });
+    props.databaseSecret.grantRead(this.paymentReconcileProductionFunction);
+    grantPhonePeSecret(this.paymentReconcileProductionFunction, productionPayment.phonepeSecretName);
+
+    this.paymentReconcileProductionRule = new events.Rule(this, 'PaymentReconcileProductionSchedule', {
+      description: 'Every 5 minutes: reconcile open PRODUCTION PhonePe payment attempts (fallback sweep)',
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [
+        new eventsTargets.LambdaFunction(this.paymentReconcileProductionFunction, {
           retryAttempts: 0,
           maxEventAge: cdk.Duration.minutes(5),
         }),

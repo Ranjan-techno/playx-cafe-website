@@ -164,7 +164,7 @@ export async function startPayment(
     }
 
     // ---- TX2 --------------------------------------------------------------------------------
-    await recordPaymentCreated(db, payment.id, created.redirectUrl, created.providerOrderRef);
+    await recordPaymentCreated(db, payment.id, created.redirectUrl, created.providerOrderRef, created.providerExpiresAt);
     return {
       paymentId: payment.id,
       providerOrderId: payment.provider_order_id,
@@ -324,12 +324,20 @@ async function reservePaymentAttempt(
 }
 
 /** TX2, success: persist what the provider returned and move 'created' -> 'pending'. A no-op if
- *  something else (a reconciliation) already moved the attempt on. */
+ *  something else (a reconciliation) already moved the attempt on.
+ *
+ *  metadata.paymentInitiatedAt is when the provider acknowledged the order — what the PRODUCTION
+ *  fast-reconcile cadence is measured from (first check 22s later). metadata.providerExpiresAt is
+ *  the provider's OWN statement of when the order expires (already
+ *  normalized to a UTC instant by the adapter — see normalizeProviderExpiry), kept alongside our
+ *  requested metadata.orderExpiresAt. The PRODUCTION fast reconciler stops its cadence there (see
+ *  fast-reconcile-payment.ts). Omitted when the provider reported nothing usable. */
 async function recordPaymentCreated(
   db: DbClient,
   paymentId: string,
   redirectUrl: string,
   providerOrderRef: string | undefined,
+  providerExpiresAt: Date | undefined,
 ): Promise<void> {
   try {
     await db.query('BEGIN');
@@ -337,6 +345,8 @@ async function recordPaymentCreated(
     if (payment && payment.payment_status === 'created') {
       await mergePaymentMetadata(db, paymentId, {
         checkout: { redirectUrl, providerOrderRef: providerOrderRef ?? null },
+        paymentInitiatedAt: new Date().toISOString(),
+        ...(providerExpiresAt ? { providerExpiresAt: providerExpiresAt.toISOString() } : {}),
       });
       await markPaymentPending(db, paymentId);
     }

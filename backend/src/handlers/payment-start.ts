@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import type { DbClient } from '../lib/allocate-simulators';
 import { getDb, resetDb } from '../lib/db';
+import { ensureFastReconcileScheduled, FastReconcileScheduleError } from '../lib/fast-reconcile-payment';
 import { errorResponse, jsonResponse } from '../lib/http';
 import { PaymentProviderError } from '../lib/payment-errors';
 import { isSafeCheckoutRedirect, mapPaymentError, parseBookingIdFromBody, readIdentity } from '../lib/payment-http';
@@ -9,6 +10,7 @@ import { findCustomerBooking } from '../lib/payment-repository';
 import { getCheckoutHoldMinutes, getPaymentReturnUrl } from '../lib/payment-settings';
 import type { PhonePeEnvironment } from '../lib/phonepe-config';
 import type * as PhonePeRuntime from '../lib/phonepe-runtime';
+import { createSqsReconcileQueue, isValidQueueUrl, type ReconcileQueue } from '../lib/reconcile-queue';
 import { assertPaymentStartAllowed } from '../lib/sandbox-access';
 import { startPayment } from '../lib/start-payment';
 
@@ -30,11 +32,28 @@ import { startPayment } from '../lib/start-payment';
 // 503 as its very first step: no DB connection, no Secrets Manager read, no PhonePe SDK load, no
 // provider construction, no payment row and no provider call. The response names neither the
 // environment nor the reason.
+//
+// PRODUCTION fast reconciliation (PhonePe cutover Stage 2B): every PRODUCTION checkout MUST be
+// followed by PhonePe's mandatory status-check cadence, driven by the production fast-reconcile SQS
+// queue (PAYMENT_RECONCILE_QUEUE_URL). So, for PRODUCTION only:
+//   - a missing/invalid queue URL fails closed (503) BEFORE the DB, the secret or PhonePe — checked
+//     against both the deploy config (PHONEPE_ENVIRONMENT) and, again, the environment the secret
+//     actually declares, before startPayment() can create an order;
+//   - after startPayment() has created (or reused) the order AND persisted it, the first chain link
+//     is enqueued (22s after initiation). If that fails — or the chain can't be confirmed to exist
+//     (attempt no longer open, fast window already over) — the customer gets a 503 instead of the
+//     redirect; the persisted attempt is kept, and a retry reuses it (no second PhonePe order) and
+//     schedules the chain then. A reused attempt whose chain already started gets a recovery copy
+//     of its current link instead, so a dead-lettered chain is revived before the redirect (see
+//     lib/fast-reconcile-payment.ts's ensureFastReconcileScheduled).
+// SANDBOX is untouched: no queue, no URL required, its reconciliation stays the 5-minute sweep.
 
 export interface PaymentStartDeps {
   getDb: () => Promise<DbClient>;
   resetDb: () => void;
   getProvider: (returnUrl?: string) => Promise<PaymentProviderAdapter & { environment: PhonePeEnvironment }>;
+  /** Builds the PRODUCTION fast-reconcile queue client; called only on the PRODUCTION path. */
+  getReconcileQueue: (queueUrl: string) => ReconcileQueue;
   env: NodeJS.ProcessEnv;
 }
 
@@ -45,6 +64,7 @@ const defaultDeps: PaymentStartDeps = {
   // PhonePe SDK; esbuild still bundles the module.
   getProvider: async (returnUrl) =>
     (require('../lib/phonepe-runtime') as typeof PhonePeRuntime).getPhonePePaymentProvider(returnUrl),
+  getReconcileQueue: createSqsReconcileQueue,
   env: process.env,
 };
 
@@ -59,10 +79,21 @@ function configuredEnvironment(env: NodeJS.ProcessEnv): PhonePeEnvironment {
   return env.PHONEPE_ENVIRONMENT === 'PRODUCTION' ? 'PRODUCTION' : 'SANDBOX';
 }
 
+/** Same body as a PhonePe config failure: the caller learns nothing about queues or environments. */
+function paymentsUnavailable(): APIGatewayProxyStructuredResultV2 {
+  return errorResponse(503, 'payments_unavailable', 'Payments are temporarily unavailable');
+}
+
 export function createHandler(deps: PaymentStartDeps = defaultDeps) {
   return async (event: APIGatewayProxyEventV2WithJWTAuthorizer): Promise<APIGatewayProxyStructuredResultV2> => {
     if (!isPaymentStartEnabled(deps.env)) {
       return errorResponse(503, 'payments_temporarily_unavailable', 'Online payments are temporarily unavailable');
+    }
+    const queueUrl = deps.env.PAYMENT_RECONCILE_QUEUE_URL;
+    const hasReconcileQueue = isValidQueueUrl(queueUrl);
+    if (configuredEnvironment(deps.env) === 'PRODUCTION' && !hasReconcileQueue) {
+      console.error('POST /payments/start: PRODUCTION fast reconciliation queue is not configured');
+      return paymentsUnavailable();
     }
     const identity = readIdentity(event);
     if (!identity) {
@@ -87,6 +118,12 @@ export function createHandler(deps: PaymentStartDeps = defaultDeps) {
       const provider = await deps.getProvider(baseReturnUrl);
       // The secret is the source of truth for which PhonePe environment we are really talking to.
       assertPaymentStartAllowed(provider.environment, identity, deps.env.PHONEPE_SANDBOX_TESTERS);
+      const fastReconcile = provider.environment === 'PRODUCTION';
+      if (fastReconcile && !hasReconcileQueue) {
+        // Deploy config said SANDBOX but the secret is PRODUCTION: still no order without the chain.
+        console.error('POST /payments/start: PRODUCTION fast reconciliation queue is not configured');
+        return paymentsUnavailable();
+      }
 
       let returnUrl: string | undefined;
       if (baseReturnUrl) {
@@ -108,6 +145,20 @@ export function createHandler(deps: PaymentStartDeps = defaultDeps) {
         throw new PaymentProviderError('Provider returned an unexpected redirect URL', false);
       }
 
+      if (fastReconcile) {
+        // Only now: the order exists at PhonePe and is persisted locally (startPayment's TX2, or a
+        // reused attempt). Throws FastReconcileScheduleError if SQS refuses — no redirect then.
+        const chain = await ensureFastReconcileScheduled(db, deps.getReconcileQueue(queueUrl as string), started.paymentId);
+        // Hand out the redirect only when a message for the attempt's current link was just sent
+        // successfully (first link, or a recovery copy of the current one — a seq > 0 alone does
+        // not prove the chain is still alive). An attempt that is no longer open, or whose fast
+        // window has already ended, gets the same generic 503.
+        if (chain !== 'scheduled' && chain !== 'recovery_scheduled') {
+          console.error('POST /payments/start: fast reconciliation not in place', chain);
+          return paymentsUnavailable();
+        }
+      }
+
       return jsonResponse(200, {
         bookingId,
         bookingNumber: booking.booking_number,
@@ -116,6 +167,11 @@ export function createHandler(deps: PaymentStartDeps = defaultDeps) {
         expiresAt: started.expiresAt.toISOString(),
       });
     } catch (err) {
+      if (err instanceof FastReconcileScheduleError) {
+        // The attempt (and its PhonePe order) stays persisted; a retry reuses it and schedules then.
+        console.error('POST /payments/start: fast reconciliation could not be scheduled', err.message);
+        return paymentsUnavailable();
+      }
       const mapped = mapPaymentError(err);
       if (mapped) {
         // Message only: provider errors are already reduced to status/code by the adapter.

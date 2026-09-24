@@ -54,6 +54,43 @@ export function mapOrderState(state: string | undefined): ProviderOutcome {
   }
 }
 
+/** Anything below this is taken to be epoch SECONDS (1e12 ms is Sept 2001; 1e12 s is ~33,000 years
+ *  out), so both representations normalize to the same instant. */
+const EPOCH_SECONDS_THRESHOLD = 1e12;
+/** Sanity window for a provider-reported expiry: after 2020-01-01 and before 2100-01-01. */
+const MIN_EXPIRY_MS = Date.UTC(2020, 0, 1);
+const MAX_EXPIRY_MS = Date.UTC(2100, 0, 1);
+
+/** Normalizes PhonePe's order expiry (typed `expireAt: number`, documented as epoch millis; the raw
+ *  API field is `expire_at`) into one UTC Date. Defensive about the runtime shape: epoch seconds or
+ *  milliseconds, as a number or an all-digit string. Anything else (missing, non-numeric,
+ *  fractional garbage, outside a sane window) -> undefined: an expiry we can't trust is dropped,
+ *  never guessed. */
+export function normalizeProviderExpiry(value: unknown): Date | undefined {
+  let n: number;
+  if (typeof value === 'number') {
+    n = value;
+  } else if (typeof value === 'string' && /^\d{1,16}$/.test(value.trim())) {
+    n = Number(value.trim());
+  } else {
+    return undefined;
+  }
+  if (!Number.isFinite(n) || n <= 0) {
+    return undefined;
+  }
+  const ms = n < EPOCH_SECONDS_THRESHOLD ? n * 1000 : n;
+  if (ms < MIN_EXPIRY_MS || ms > MAX_EXPIRY_MS) {
+    return undefined;
+  }
+  return new Date(Math.trunc(ms));
+}
+
+/** The expiry field off an SDK response, whichever casing the runtime object actually carries. */
+function expiryOf(response: unknown): Date | undefined {
+  const r = response as { expireAt?: unknown; expire_at?: unknown } | null | undefined;
+  return normalizeProviderExpiry(r?.expireAt ?? r?.expire_at);
+}
+
 /** Reduces an SDK exception to status/code only — SDK errors carry the raw response `data`. */
 function toProviderError(operation: string, err: unknown): PaymentProviderError {
   const e = err as { httpStatusCode?: number; code?: string } | null;
@@ -104,9 +141,11 @@ export class PhonePePaymentProvider implements PaymentProviderAdapter {
       // The order may exist on PhonePe's side, so this is ambiguous, not a definite rejection.
       throw new PaymentProviderError('PhonePe create order returned no redirect URL', false);
     }
+    const providerExpiresAt = expiryOf(response);
     return {
       redirectUrl: response.redirectUrl,
       providerOrderRef: response.orderId,
+      ...(providerExpiresAt ? { providerExpiresAt } : {}),
       raw: { orderId: response.orderId, state: response.state, expireAt: response.expireAt },
     };
   }
@@ -123,6 +162,8 @@ export class PhonePePaymentProvider implements PaymentProviderAdapter {
     }
 
     const outcome = mapOrderState(response.state);
+    const providerExpiresAt = expiryOf(response);
+    const expiry = providerExpiresAt ? { providerExpiresAt } : {};
     // Only the non-sensitive summary is kept: paymentDetails carries instrument/bank details.
     const raw = {
       orderId: response.orderId,
@@ -138,6 +179,7 @@ export class PhonePePaymentProvider implements PaymentProviderAdapter {
         providerTransactionId: completed?.transactionId,
         amountInr: paiseToInr(response.amount),
         currency: 'INR',
+        ...expiry,
         raw,
       };
     }
@@ -145,10 +187,11 @@ export class PhonePePaymentProvider implements PaymentProviderAdapter {
       return {
         outcome,
         failureReason: [response.errorCode, response.detailedErrorCode].filter(Boolean).join('/') || 'FAILED',
+        ...expiry,
         raw,
       };
     }
-    return { outcome, raw };
+    return { outcome, ...expiry, raw };
   }
 
   async verifyWebhook(

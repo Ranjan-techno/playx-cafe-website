@@ -27,11 +27,12 @@ test('Story 2.1 (+ payments egress): VPC keeps its isolated subnets and adds NAT
   // availability function, and Phase 3B's six PLAY X ADMIN functions (admin-dashboard/
   // admin-bookings/admin-booking-detail/admin-booking-status/admin-payments/admin-simulators),
   // the PhonePe payment start/status/reconcile functions, and PhonePe cutover Stage 2A's
-  // create-booking-production/payment-start-production functions — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
+  // create-booking-production/payment-start-production functions, and Stage 2B's
+  // payment-reconcile-production-fast/payment-reconcile-production functions — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
   // guarded against separately (that flag is explicitly disabled for this VPC — see
   // constructs/network.ts).
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
-  template.resourceCountIs('AWS::Lambda::Function', 22);
+  template.resourceCountIs('AWS::Lambda::Function', 24);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -96,10 +97,11 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   // Nineteen Lambda functions exist in the stack (this one, Story 2.5's health-check function,
   // Story 2.6's products/create-booking/bookings-me functions, guest-first passwordless auth's
   // auth-start/auth-verify functions, its three CUSTOM_AUTH triggers, Phase 2's availability
-  // function, Phase 3B's six admin functions, the three PhonePe payment functions and Stage 2A's
-  // two production functions — see below), but health/auth-start/auth-verify/the three triggers
-  // are the six of the twenty-two that do NOT sit in the VPC.
-  template.resourceCountIs('AWS::Lambda::Function', 22);
+  // function, Phase 3B's six admin functions, the three PhonePe payment functions, Stage 2A's
+  // two production functions and Stage 2B's two production reconcile functions — see below), but
+  // health/auth-start/auth-verify/the three triggers are the six of the twenty-four that do NOT sit
+  // in the VPC.
+  template.resourceCountIs('AWS::Lambda::Function', 24);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -640,7 +642,12 @@ const PAYMENT_FUNCTIONS = [
   'playx-dev-payment-status',
   'playx-dev-payment-reconcile',
   'playx-dev-payment-start-production',
+  'playx-dev-payment-reconcile-production-fast',
+  'playx-dev-payment-reconcile-production',
 ];
+
+/** The two 5-minute scheduled reconcilers (4-minute timeout); every other payment Lambda is 25s. */
+const SCHEDULED_RECONCILERS = ['playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production'];
 
 /** Which one PhonePe secret each payment Lambda may read. */
 const PHONEPE_SECRET_BY_FUNCTION: Record<string, string> = {
@@ -648,6 +655,8 @@ const PHONEPE_SECRET_BY_FUNCTION: Record<string, string> = {
   'playx-dev-payment-status': 'playx/phonepe/sandbox',
   'playx-dev-payment-reconcile': 'playx/phonepe/sandbox',
   'playx-dev-payment-start-production': 'playx/phonepe/production',
+  'playx-dev-payment-reconcile-production-fast': 'playx/phonepe/production',
+  'playx-dev-payment-reconcile-production': 'playx/phonepe/production',
 };
 
 function lambdaEntries(json: Json): [string, Json][] {
@@ -735,7 +744,7 @@ test('PhonePe Phase 2: payment Lambdas use private-with-egress subnets and the s
   }
   for (const name of PAYMENT_FUNCTIONS) {
     const fn = lambdaEntries(json).find(([, r]) => r.Properties.FunctionName === name)?.[1];
-    assert.equal(fn?.Properties.Timeout, name === 'playx-dev-payment-reconcile' ? 240 : 25);
+    assert.equal(fn?.Properties.Timeout, SCHEDULED_RECONCILERS.includes(name) ? 240 : 25);
     assert.equal(fn?.Properties.Runtime, 'nodejs22.x');
   }
 });
@@ -839,20 +848,26 @@ test('PhonePe Phase 2: POST /payments/start and GET /payments/{bookingId}/status
 
 test('Phase 5A: payment reconciliation runs on an EventBridge schedule every 5 minutes, targeting only the reconcile Lambda, with no retries', () => {
   const { template, json } = synth();
-  template.resourceCountIs('AWS::Events::Rule', 1);
-  const [ruleId, rule] = Object.entries<Json>(json.Resources).find(([, r]) => r.Type === 'AWS::Events::Rule')!;
+  // The sandbox rule + (Stage 2B) the separate PRODUCTION fallback rule.
+  template.resourceCountIs('AWS::Events::Rule', 2);
+  const reconcile = lambdaEntries(json).find(([, r]) => r.Properties.FunctionName === 'playx-dev-payment-reconcile')!;
+  const [ruleId, rule] = Object.entries<Json>(json.Resources).find(
+    ([, r]) => r.Type === 'AWS::Events::Rule' && r.Properties.Targets.some((t: Json) => t.Arn['Fn::GetAtt']?.[0] === reconcile[0]),
+  )!;
+  assert.ok(ruleId.startsWith('ApiPaymentReconcileSchedule'), 'the sandbox rule keeps its logical id');
   assert.equal(rule.Properties.ScheduleExpression, 'rate(5 minutes)');
   assert.equal(rule.Properties.State, 'ENABLED');
   assert.equal(rule.Properties.Targets.length, 1);
   const target = rule.Properties.Targets[0];
   assert.equal(target.RetryPolicy.MaximumRetryAttempts, 0);
-
-  const reconcile = lambdaEntries(json).find(([, r]) => r.Properties.FunctionName === 'playx-dev-payment-reconcile')!;
   assert.deepEqual(target.Arn, { 'Fn::GetAtt': [reconcile[0], 'Arn'] });
 
-  // The rule (and only the rule) may invoke it.
+  // Only this rule may invoke the sandbox reconciler.
   const permissions = Object.values<Json>(json.Resources).filter(
-    (r) => r.Type === 'AWS::Lambda::Permission' && r.Properties.Principal === 'events.amazonaws.com',
+    (r) =>
+      r.Type === 'AWS::Lambda::Permission' &&
+      r.Properties.Principal === 'events.amazonaws.com' &&
+      JSON.stringify(r.Properties.FunctionName).includes(reconcile[0]),
   );
   assert.equal(permissions.length, 1);
   assert.deepEqual(permissions[0].Properties.SourceArn, { 'Fn::GetAtt': [ruleId, 'Arn'] });
@@ -961,7 +976,11 @@ test('Stage 2A: PaymentStartProductionFunction — production secret/environment
     .map((st) => [st.Action].flat().sort().join(','))
     .sort();
   assert.deepEqual(secretsActions, ['secretsmanager:DescribeSecret,secretsmanager:GetSecretValue', 'secretsmanager:GetSecretValue']);
-  for (const st of statementsFor(json, name).filter((x) => !JSON.stringify(x.Action).includes('secretsmanager'))) {
+  // Stage 2B: + exactly sqs:SendMessage on the production fast-reconcile queue; nothing else.
+  const sqsStatements = statementsFor(json, name).filter((x) => JSON.stringify(x.Action).includes('sqs'));
+  assert.equal(sqsStatements.length, 1);
+  assert.equal(sqsStatements[0].Action, 'sqs:SendMessage');
+  for (const st of statementsFor(json, name).filter((x) => !JSON.stringify(x.Action).match(/secretsmanager|sqs/))) {
     assert.ok(!JSON.stringify(st.Action).match(/s3|dynamodb|sqs|sns|ses|cognito|lambda:Invoke/i), JSON.stringify(st.Action));
   }
 
@@ -1023,7 +1042,7 @@ test('Stage 2A: routes — sandbox and production booking/payment-start routes h
   );
 });
 
-test('Stage 2A: shared infrastructure only — no second VPC/RDS/Cognito/NAT/API, no SQS, no new schedule, no new secret', () => {
+test('Stage 2A/2B: shared infrastructure only — no second VPC/RDS/Cognito/NAT/API; only Stage 2B\'s two queues and one extra schedule; no new secret', () => {
   const { template, json } = synth();
   template.resourceCountIs('AWS::EC2::VPC', 1);
   template.resourceCountIs('AWS::RDS::DBInstance', 1);
@@ -1032,17 +1051,21 @@ test('Stage 2A: shared infrastructure only — no second VPC/RDS/Cognito/NAT/API
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
-  template.resourceCountIs('AWS::SQS::Queue', 0);
-  template.resourceCountIs('AWS::Events::Rule', 1);
+  template.resourceCountIs('AWS::SQS::Queue', 2);
+  template.resourceCountIs('AWS::Events::Rule', 2);
   template.resourceCountIs('AWS::SecretsManager::Secret', 1);
-  // The only EventBridge target is still the sandbox reconcile Lambda.
-  const rule = Object.values<Json>(json.Resources).find((r) => r.Type === 'AWS::Events::Rule')!;
-  const targetId = rule.Properties.Targets[0].Arn['Fn::GetAtt'][0];
-  assert.equal(json.Resources[targetId].Properties.FunctionName, 'playx-dev-payment-reconcile');
-  // No production payment-status / reconcile Lambda.
+  // The two EventBridge targets are exactly the sandbox and production 5-minute reconcilers.
+  const targets = Object.values<Json>(json.Resources)
+    .filter((r) => r.Type === 'AWS::Events::Rule')
+    .flatMap((r) => r.Properties.Targets.map((t: Json) => json.Resources[t.Arn['Fn::GetAtt'][0]].Properties.FunctionName))
+    .sort();
+  assert.deepEqual(targets, ['playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production']);
+  // No production payment-status Lambda (and no webhook).
   const names = lambdaEntries(json).map(([, r]) => r.Properties.FunctionName as string);
   assert.deepEqual(names.filter((n) => /production/.test(n)).sort(), [
     'playx-dev-create-booking-production',
+    'playx-dev-payment-reconcile-production',
+    'playx-dev-payment-reconcile-production-fast',
     'playx-dev-payment-start-production',
   ]);
 });
@@ -1060,4 +1083,215 @@ test('Stage 2A: booking-creation kill switch — sandbox CreateBookingFunction e
     if (name === 'playx-dev-create-booking' || name === 'playx-dev-create-booking-production') continue;
     assert.ok(!JSON.stringify(fn.Properties.Environment ?? {}).includes('BOOKING_CREATE_ENABLED'), name);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// PhonePe cutover Stage 2B: PRODUCTION fast payment reconciliation (SQS + worker + fallback).
+// ---------------------------------------------------------------------------------------------
+
+function queueNamed(json: Json, name: string): [string, Json] {
+  const entry = Object.entries<Json>(json.Resources).find(([, r]) => r.Type === 'AWS::SQS::Queue' && r.Properties.QueueName === name);
+  assert.ok(entry, `queue ${name} exists`);
+  return entry;
+}
+
+/** Every SQS action this Lambda's role may perform, sorted, with the queue logical id(s) they target. */
+function sqsGrantsFor(json: Json, name: string): { actions: string[]; resources: string[] } {
+  const statements = statementsFor(json, name).filter((st) => JSON.stringify(st.Action).includes('sqs:'));
+  return {
+    actions: statements.flatMap((st) => [st.Action].flat() as string[]).sort(),
+    resources: [...new Set(statements.map((st) => JSON.stringify(st.Resource)))],
+  };
+}
+
+test('Stage 2B: standard fast queue + DLQ — redrive after 5 receives, visibility > worker timeout, DLQ outlives the source', () => {
+  const { json } = synth();
+  const [fastId, fast] = queueNamed(json, 'playx-dev-payment-reconcile-production-fast');
+  const [dlqId, dlq] = queueNamed(json, 'playx-dev-payment-reconcile-production-dlq');
+  assert.equal(fast.Properties.FifoQueue, undefined, 'standard queue, not FIFO');
+  assert.equal(dlq.Properties.FifoQueue, undefined);
+  assert.deepEqual(fast.Properties.RedrivePolicy, { deadLetterTargetArn: { 'Fn::GetAtt': [dlqId, 'Arn'] }, maxReceiveCount: 5 });
+  const worker = lambdaNamed(json, 'playx-dev-payment-reconcile-production-fast')[1];
+  assert.equal(worker.Properties.Timeout, 25);
+  assert.ok(fast.Properties.VisibilityTimeout >= 6 * worker.Properties.Timeout, 'visibility timeout safely above the Lambda timeout');
+  assert.equal(fast.Properties.MessageRetentionPeriod, 86400);
+  assert.equal(dlq.Properties.MessageRetentionPeriod, 1209600);
+  assert.ok(dlq.Properties.MessageRetentionPeriod > fast.Properties.MessageRetentionPeriod);
+  for (const q of [fast, dlq]) {
+    assert.equal(q.Properties.SqsManagedSseEnabled, true, 'encrypted at rest');
+  }
+  // TLS-only queue policies on both.
+  for (const id of [fastId, dlqId]) {
+    const policy = Object.values<Json>(json.Resources).find(
+      (r) => r.Type === 'AWS::SQS::QueuePolicy' && r.Properties.Queues.some((q: Json) => q.Ref === id),
+    );
+    assert.ok(policy, `${id} has a queue policy`);
+    assert.equal(policy.Properties.PolicyDocument.Statement[0].Effect, 'Deny');
+    assert.deepEqual(policy.Properties.PolicyDocument.Statement[0].Condition, { Bool: { 'aws:SecureTransport': 'false' } });
+  }
+});
+
+test('Stage 2B: the fast worker consumes ONLY the production fast queue, batch size 1', () => {
+  const { json } = synth();
+  const [fastId] = queueNamed(json, 'playx-dev-payment-reconcile-production-fast');
+  const [workerId] = lambdaNamed(json, 'playx-dev-payment-reconcile-production-fast');
+  const mappings = Object.values<Json>(json.Resources).filter((r) => r.Type === 'AWS::Lambda::EventSourceMapping');
+  assert.equal(mappings.length, 1, 'the only event source mapping in the stack');
+  assert.equal(mappings[0].Properties.BatchSize, 1);
+  assert.deepEqual(mappings[0].Properties.EventSourceArn, { 'Fn::GetAtt': [fastId, 'Arn'] });
+  assert.deepEqual(mappings[0].Properties.FunctionName, { Ref: workerId });
+  assert.equal(mappings[0].Properties.Enabled, undefined, 'enabled (default) — idle until something enqueues');
+});
+
+test('Stage 2B: the fast worker has NO reserved concurrency (no SQS-delivery throttling) and no event-source max-concurrency', () => {
+  const { json } = synth();
+  const [, worker] = lambdaNamed(json, 'playx-dev-payment-reconcile-production-fast');
+  assert.equal(worker.Properties.ReservedConcurrentExecutions, undefined);
+  const mapping = Object.values<Json>(json.Resources).find((r) => r.Type === 'AWS::Lambda::EventSourceMapping')!;
+  assert.equal(mapping.Properties.BatchSize, 1);
+  assert.equal(mapping.Properties.ScalingConfig, undefined, 'no event-source max-concurrency override');
+});
+
+test('Stage 2B: fast worker — production secret ONLY, consume + SendMessage on its own queue only, same network as payment Lambdas', () => {
+  const { json } = synth();
+  const name = 'playx-dev-payment-reconcile-production-fast';
+  const [fastId] = queueNamed(json, 'playx-dev-payment-reconcile-production-fast');
+  const env = envOf(json, name);
+  assert.equal(env.PHONEPE_SECRET_NAME, 'playx/phonepe/production');
+  assert.equal(env.PHONEPE_ENVIRONMENT, 'PRODUCTION');
+  assert.deepEqual(env.PAYMENT_RECONCILE_QUEUE_URL, { Ref: fastId });
+  assert.ok(!JSON.stringify(env).includes('sandbox'));
+  assert.ok(!('PAYMENT_START_ENABLED' in env) && !('PHONEPE_SANDBOX_TESTERS' in env));
+
+  const secrets = secretsResourcesFor(json, name);
+  assert.ok(secrets.includes('secret:playx/phonepe/production-??????'));
+  assert.ok(!secrets.includes('playx/phonepe/sandbox'), 'NO sandbox secret');
+  assert.ok(!secrets.includes('playx/phonepe/*'));
+
+  const grants = sqsGrantsFor(json, name);
+  assert.deepEqual(grants.actions, [
+    'sqs:ChangeMessageVisibility',
+    'sqs:DeleteMessage',
+    'sqs:GetQueueAttributes',
+    'sqs:GetQueueUrl',
+    'sqs:ReceiveMessage',
+    'sqs:SendMessage',
+  ]);
+  assert.deepEqual(grants.resources, [JSON.stringify({ 'Fn::GetAtt': [fastId, 'Arn'] })], 'only the production fast queue — never the DLQ, never *');
+  for (const st of statementsFor(json, name).filter((x) => !JSON.stringify(x.Action).match(/secretsmanager|sqs:/))) {
+    assert.ok(!JSON.stringify(st.Action).match(/s3|dynamodb|sns|ses|cognito|lambda:Invoke/i), JSON.stringify(st.Action));
+  }
+  const fn = lambdaNamed(json, name)[1].Properties;
+  assert.deepEqual(fn.VpcConfig, lambdaNamed(json, 'playx-dev-payment-start')[1].Properties.VpcConfig, 'private-with-egress + shared Lambda SG');
+});
+
+test('Stage 2B: production payment-start gets the queue URL and ONLY sqs:SendMessage on the production fast queue; still DISABLED', () => {
+  const { json } = synth();
+  const [fastId] = queueNamed(json, 'playx-dev-payment-reconcile-production-fast');
+  const env = envOf(json, 'playx-dev-payment-start-production');
+  assert.equal(env.PAYMENT_START_ENABLED, 'false');
+  assert.deepEqual(env.PAYMENT_RECONCILE_QUEUE_URL, { Ref: fastId });
+  assert.deepEqual(sqsGrantsFor(json, 'playx-dev-payment-start-production'), {
+    actions: ['sqs:SendMessage'],
+    resources: [JSON.stringify({ 'Fn::GetAtt': [fastId, 'Arn'] })],
+  });
+});
+
+test('Stage 2B: sandbox payment Lambdas and every non-payment Lambda have NO SQS access and no queue URL', () => {
+  const { json } = synth();
+  const queueUsers = [
+    'playx-dev-payment-start-production',
+    'playx-dev-payment-reconcile-production-fast',
+  ];
+  for (const [, fn] of lambdaEntries(json)) {
+    const name = fn.Properties.FunctionName as string;
+    if (queueUsers.includes(name)) continue;
+    assert.deepEqual(sqsGrantsFor(json, name).actions, [], `${name} has no SQS permission`);
+    assert.ok(!JSON.stringify(fn.Properties.Environment ?? {}).includes('PAYMENT_RECONCILE_QUEUE_URL'), name);
+  }
+  for (const name of ['playx-dev-payment-start', 'playx-dev-payment-status', 'playx-dev-payment-reconcile']) {
+    assert.ok(!secretsResourcesFor(json, name).includes('playx/phonepe/production'), `${name} stays sandbox-only`);
+  }
+});
+
+test('Stage 2B: production 5-minute fallback — own rule rate(5 minutes), production secret only, no SQS', () => {
+  const { json } = synth();
+  const name = 'playx-dev-payment-reconcile-production';
+  const [fnId, fn] = lambdaNamed(json, name);
+  const env = fn.Properties.Environment.Variables;
+  assert.equal(env.PHONEPE_SECRET_NAME, 'playx/phonepe/production');
+  assert.equal(env.PHONEPE_ENVIRONMENT, 'PRODUCTION');
+  assert.equal(env.RECONCILE_BATCH_SIZE, '25');
+  assert.ok(!('PAYMENT_RECONCILE_QUEUE_URL' in env));
+  assert.equal(fn.Properties.Timeout, 240);
+
+  const secrets = secretsResourcesFor(json, name);
+  assert.ok(secrets.includes('secret:playx/phonepe/production-??????'));
+  assert.ok(!secrets.includes('playx/phonepe/sandbox'));
+  assert.deepEqual(sqsGrantsFor(json, name).actions, []);
+
+  const [ruleId, rule] = Object.entries<Json>(json.Resources).find(
+    ([, r]) => r.Type === 'AWS::Events::Rule' && r.Properties.Targets.some((t: Json) => t.Arn['Fn::GetAtt']?.[0] === fnId),
+  )!;
+  assert.equal(rule.Properties.ScheduleExpression, 'rate(5 minutes)');
+  assert.equal(rule.Properties.State, 'ENABLED');
+  assert.equal(rule.Properties.Targets.length, 1);
+  assert.equal(rule.Properties.Targets[0].RetryPolicy.MaximumRetryAttempts, 0);
+  assert.equal(rule.Properties.Targets[0].Input, undefined, 'no event payload is passed (it could not choose the environment anyway)');
+  const permissions = Object.values<Json>(json.Resources).filter(
+    (r) => r.Type === 'AWS::Lambda::Permission' && JSON.stringify(r.Properties.FunctionName).includes(fnId),
+  );
+  assert.equal(permissions.length, 1);
+  assert.deepEqual(permissions[0].Properties.SourceArn, { 'Fn::GetAtt': [ruleId, 'Arn'] });
+});
+
+test('Stage 2B: the existing sandbox reconciler and its rule are unchanged', () => {
+  const { json } = synth();
+  const [fnId, fn] = lambdaNamed(json, 'playx-dev-payment-reconcile');
+  assert.ok(fnId.startsWith('ApiPaymentReconcileFunction'), 'same logical id');
+  assert.equal(fn.Properties.Environment.Variables.PHONEPE_SECRET_NAME, 'playx/phonepe/sandbox');
+  assert.equal(fn.Properties.Environment.Variables.PHONEPE_ENVIRONMENT, 'SANDBOX');
+  assert.equal(fn.Properties.Timeout, 240);
+  const rules = Object.entries<Json>(json.Resources).filter(
+    ([, r]) => r.Type === 'AWS::Events::Rule' && r.Properties.Targets.some((t: Json) => t.Arn['Fn::GetAtt']?.[0] === fnId),
+  );
+  assert.equal(rules.length, 1);
+  assert.ok(rules[0][0].startsWith('ApiPaymentReconcileSchedule'));
+  assert.equal(rules[0][1].Properties.ScheduleExpression, 'rate(5 minutes)');
+  // Different entry file from the production fallback (each hard-codes its own environment).
+  assert.notEqual(
+    JSON.stringify(fn.Properties.Code.S3Key),
+    JSON.stringify(lambdaNamed(json, 'playx-dev-payment-reconcile-production')[1].Properties.Code.S3Key),
+  );
+});
+
+test('Stage 2B: DLQ alarm fires on ApproximateNumberOfMessagesVisible > 0 for the production DLQ', () => {
+  const { template, json } = synth();
+  template.resourceCountIs('AWS::CloudWatch::Alarm', 1);
+  const alarm = Object.values<Json>(json.Resources).find((r) => r.Type === 'AWS::CloudWatch::Alarm')!.Properties;
+  const [dlqId] = queueNamed(json, 'playx-dev-payment-reconcile-production-dlq');
+  assert.equal(alarm.AlarmName, 'playx-dev-payment-reconcile-production-dlq-messages');
+  assert.equal(alarm.Namespace, 'AWS/SQS');
+  assert.equal(alarm.MetricName, 'ApproximateNumberOfMessagesVisible');
+  assert.deepEqual(alarm.Dimensions, [{ Name: 'QueueName', Value: { 'Fn::GetAtt': [dlqId, 'QueueName'] } }]);
+  assert.equal(alarm.ComparisonOperator, 'GreaterThanThreshold');
+  assert.equal(alarm.Threshold, 0);
+  assert.equal(alarm.EvaluationPeriods, 1);
+  assert.equal(alarm.Statistic, 'Maximum');
+  assert.equal(alarm.Period, 60);
+  assert.equal(alarm.TreatMissingData, 'notBreaching');
+  // No SNS/email integration added in this stage.
+  template.resourceCountIs('AWS::SNS::Topic', 0);
+  assert.equal(alarm.AlarmActions, undefined);
+});
+
+test('Stage 2B: production kill switches stay OFF; no webhook or production status route', () => {
+  const { json } = synth();
+  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'false');
+  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'false');
+  const routeKeys = Object.values<Json>(json.Resources)
+    .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
+    .map((r) => r.Properties.RouteKey as string);
+  assert.ok(routeKeys.every((k) => !/webhook|callback|reconcile/i.test(k)));
+  assert.deepEqual(routeKeys.filter((k) => /production/.test(k)).sort(), ['POST /bookings/production', 'POST /payments/production/start']);
 });

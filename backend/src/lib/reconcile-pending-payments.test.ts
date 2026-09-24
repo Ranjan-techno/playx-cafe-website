@@ -11,7 +11,8 @@ import {
   type FakePaymentDbStore,
 } from './test-support/fake-payment-db';
 import { ScriptedProvider } from './test-support/scripted-provider';
-import { createHandler, RECONCILER_ENVIRONMENT } from '../handlers/payment-reconcile';
+import { createHandler, createReconcileHandler, RECONCILER_ENVIRONMENT } from '../handlers/payment-reconcile';
+import { RECONCILER_ENVIRONMENT as PRODUCTION_RECONCILER_ENVIRONMENT } from '../handlers/payment-reconcile-production';
 import type { DbClient } from './allocate-simulators';
 
 const T0 = Date.UTC(2026, 8, 25, 6, 0, 0);
@@ -549,4 +550,91 @@ test('environment: the scheduled handler fails closed if its PhonePe secret is n
     err.mock.restore();
   }
   assert.equal(provider.statusCalls.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// PhonePe cutover Stage 2B: the PRODUCTION 5-minute fallback reconciler.
+// ---------------------------------------------------------------------------------------------
+
+/** Wraps a DB client to record the environment each reconciliation SELECT is bound to. */
+function selectSpy(db: DbClient): { spy: DbClient; selects: unknown[][] } {
+  const selects: unknown[][] = [];
+  const spy = {
+    query: async (text: string, params: unknown[] = []) => {
+      if (/payment_status IN \('created', 'pending'\)/.test(text) && /LIMIT \$2/.test(text)) selects.push(params);
+      return db.query(text, params);
+    },
+  } as DbClient;
+  return { spy, selects };
+}
+
+test('production fallback: its entry file hard-codes PRODUCTION; the sandbox one stays SANDBOX', () => {
+  assert.equal(PRODUCTION_RECONCILER_ENVIRONMENT, 'PRODUCTION');
+  assert.equal(RECONCILER_ENVIRONMENT, 'SANDBOX');
+  const src = require('node:fs').readFileSync(require.resolve('../handlers/payment-reconcile-production.ts'), 'utf8') as string;
+  assert.match(src, /createReconcileHandler\(RECONCILER_ENVIRONMENT, defaultDeps\)/);
+  assert.doesNotMatch(src, /process\.env/, 'no runtime environment variable can select the environment');
+});
+
+test('production fallback: reconciles only PRODUCTION rows (never SANDBOX or NULL), whatever the event says', async () => {
+  const { store, db, provider } = setup();
+  provider.environment = 'PRODUCTION';
+  await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
+  await openAttemptIn(store, 'ord-null', 'NULL', 'sim-S2');
+  await openAttemptIn(store, 'ord-prod', 'PRODUCTION', 'sim-M1');
+  const { spy, selects } = selectSpy(db);
+  const handler = createReconcileHandler('PRODUCTION', {
+    getDb: async () => spy, resetDb: () => {}, getProvider: async () => provider,
+    env: { PHONEPE_ENVIRONMENT: 'SANDBOX', RECONCILER_ENVIRONMENT: 'SANDBOX' },
+  });
+  const log = mock.method(console, 'log', () => {});
+  try {
+    await handler({ environment: 'SANDBOX', detail: { environment: 'SANDBOX' } });
+  } finally {
+    log.mock.restore();
+  }
+  assert.deepEqual(selects.map((p) => p[0]), ['PRODUCTION']);
+  assert.deepEqual(provider.statusCalls, ['ord-prod']);
+});
+
+test('production fallback: refuses to run with a SANDBOX secret (no provider call)', async () => {
+  const { store, db, provider } = setup();
+  await openAttemptIn(store, 'ord-prod', 'PRODUCTION', 'sim-M1');
+  provider.environment = 'SANDBOX';
+  const handler = createReconcileHandler('PRODUCTION', { getDb: async () => db, resetDb: () => {}, getProvider: async () => provider, env: {} });
+  const err = mock.method(console, 'error', () => {});
+  try {
+    await assert.rejects(() => handler({}), /configured for SANDBOX, not PRODUCTION/);
+  } finally {
+    err.mock.restore();
+  }
+  assert.equal(provider.statusCalls.length, 0);
+});
+
+test('sandbox fallback: an event payload asking for PRODUCTION is ignored — still SANDBOX only', async () => {
+  const { store, db, provider } = setup();
+  await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
+  await openAttemptIn(store, 'ord-prod', 'PRODUCTION', 'sim-M1');
+  const { spy, selects } = selectSpy(db);
+  const handler = createHandler({ getDb: async () => spy, resetDb: () => {}, getProvider: async () => provider, env: { PHONEPE_ENVIRONMENT: 'PRODUCTION' } });
+  const log = mock.method(console, 'log', () => {});
+  try {
+    await handler({ environment: 'PRODUCTION' });
+  } finally {
+    log.mock.restore();
+  }
+  assert.deepEqual(selects.map((p) => p[0]), ['SANDBOX']);
+  assert.deepEqual(provider.statusCalls, ['ord-sb']);
+});
+
+test('production fallback also settles a PRODUCTION attempt left unresolved after the fast window (e.g. a lost message)', async () => {
+  const { store, db, provider } = setup();
+  provider.environment = 'PRODUCTION';
+  await openAttemptIn(store, 'ord-prod', 'PRODUCTION', 'sim-M1');
+  const payment = store.payments.find((p) => p.provider_order_id === 'ord-prod')!;
+  payment.metadata = { ...(payment.metadata ?? {}), fastReconcileSeq: 7, orderExpiresAt: new Date(T0 - MIN).toISOString() };
+  provider.statuses.set('ord-prod', success('TX-LATE'));
+  const summary = await reconcilePendingPayments(db, provider, 'PRODUCTION');
+  assert.equal(summary.counts.confirmed, 1);
+  assert.equal(payment.payment_status, 'paid');
 });

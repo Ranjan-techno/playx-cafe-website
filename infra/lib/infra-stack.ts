@@ -127,6 +127,14 @@ export class InfraStack extends cdk.Stack {
       // PAYMENT_START_ENABLED=false.
       paymentStartProductionFunctionName: resourceName('payment-start-production'),
       productionPaymentConfig: productionPaymentConfigs[props.envConfig.environmentCode],
+      // PhonePe cutover Stage 2B: PRODUCTION fast payment reconciliation (SQS queue + DLQ + alarm +
+      // worker) and the 5-minute PRODUCTION fallback reconciler. Deployable idle: nothing enqueues
+      // until the production payment-start kill switch is deliberately enabled in a later stage.
+      paymentReconcileProductionFastFunctionName: resourceName('payment-reconcile-production-fast'),
+      paymentReconcileProductionFastQueueName: resourceName('payment-reconcile-production-fast'),
+      paymentReconcileProductionDlqName: resourceName('payment-reconcile-production-dlq'),
+      paymentReconcileProductionDlqAlarmName: resourceName('payment-reconcile-production-dlq-messages'),
+      paymentReconcileProductionFunctionName: resourceName('payment-reconcile-production'),
       phonepeSandboxTesters: resolveSandboxTesters(this.node.tryGetContext('phonepeSandboxTesters')),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,

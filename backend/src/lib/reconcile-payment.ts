@@ -13,6 +13,9 @@ import { applyProviderOutcome, type ApplyProviderOutcomeResult } from './sync-pa
 export interface ReconcileResult {
   providerOutcome: 'SUCCESS' | 'FAILED' | 'PENDING';
   applied: ApplyProviderOutcomeResult;
+  /** The order expiry the provider reported on this status call, if any (normalized by the
+   *  adapter). Informational — never used to decide an outcome. */
+  providerExpiresAt?: Date;
 }
 
 export async function reconcilePayment(
@@ -30,5 +33,5 @@ export async function reconcilePayment(
     currency: status.currency,
     failureReason: status.failureReason,
   });
-  return { providerOutcome: status.outcome, applied };
+  return { providerOutcome: status.outcome, applied, ...(status.providerExpiresAt ? { providerExpiresAt: status.providerExpiresAt } : {}) };
 }

@@ -386,3 +386,33 @@ export async function listPaymentsForReconciliation(
   );
   return rows;
 }
+
+/** One payment attempt by primary key, NOT locked — the PRODUCTION fast reconciler's authoritative
+ *  read of the row an SQS message names (the message carries only this id; environment, status,
+ *  order id and amount all come from here). State changes still go through confirmSuccessfulPayment
+ *  and the status-guarded UPDATEs above, which take their own locks. */
+export async function findPaymentById(db: DbClient, paymentId: string): Promise<PaymentRow | null> {
+  const { rows } = await db.query<PaymentRow>(`SELECT * FROM payments WHERE id = $1`, [paymentId]);
+  return rows[0] ?? null;
+}
+
+/** Atomically advances an OPEN attempt's PRODUCTION fast-reconcile chain position
+ *  (metadata.fastReconcileSeq; absent means 0 = nothing scheduled) from `fromSeq` to exactly
+ *  `fromSeq + 1` — forward only, never any other value, so the sequence is monotonic by
+ *  construction. Callers only do this for a sequence whose SQS message has ALREADY been sent (or
+ *  has actually been received), which is what makes "seq > 0" prove a message exists.
+ *  True only for the one caller whose UPDATE matched: concurrent/duplicate callers holding the same
+ *  `fromSeq` serialize on the row lock and all but one see 0 rows (Postgres re-evaluates the WHERE
+ *  after the first commits). A terminal attempt never matches. */
+export async function advanceFastReconcileSeq(db: DbClient, paymentId: string, fromSeq: number): Promise<boolean> {
+  const { rows } = await db.query<{ id: string }>(
+    `UPDATE payments
+     SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('fastReconcileSeq', $2::int + 1)
+     WHERE id = $1
+       AND payment_status IN ('created', 'pending')
+       AND COALESCE((metadata ->> 'fastReconcileSeq')::int, 0) = $2
+     RETURNING id`,
+    [paymentId, fromSeq],
+  );
+  return rows.length > 0;
+}
