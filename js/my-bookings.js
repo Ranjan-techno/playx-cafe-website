@@ -1,5 +1,7 @@
-// My Bookings section (#my-bookings) - GET /bookings/me for the signed-in
-// customer, split client-side into an Upcoming / History toggle. Requires
+// My Bookings section (#my-bookings) - GET /bookings/me (SANDBOX bookings, staging/local)
+// or GET /bookings/production/me (PRODUCTION bookings, playxcafe.com) for the signed-in
+// customer - the route comes from the page's hostname via js/api-routes.js and the backend
+// filters by environment itself - split client-side into an Upcoming / History toggle. Requires
 // js/aws-config.js + js/cognito-auth.js (auth), js/format-utils.js
 // (date/time/price/status display formatting), and js/product-lookup.js
 // (productCode -> experience/simulator) and js/payments.js (pay/retry actions) to be loaded first.
@@ -212,8 +214,10 @@ async function handlePaymentActionClick(event) {
   }
   btn.textContent = originalLabel;
   btn.disabled = false;
-  if (['hold_expired', 'capacity_unavailable', 'not_payable', 'already_paid', 'not_found'].includes(outcome.kind)) {
-    // The backend says this booking can't be paid - stop offering the button and re-sync the card.
+  if (['hold_expired', 'capacity_unavailable', 'not_payable', 'already_paid', 'not_found', 'checkout_window_closed', 'not_permitted'].includes(outcome.kind)) {
+    // The backend says this booking can't be paid (same list as the booking step in js/script.js) -
+    // stop offering the button. Anything else (network, PhonePe unavailable) restores it: a retry
+    // reuses the same backend payment attempt rather than creating a second one.
     renderPaymentAction(container, { note: outcome.message });
     return;
   }
@@ -293,7 +297,10 @@ async function refreshMyBookings() {
   statusEl.textContent = 'Loading your bookings...';
 
   try {
-    const response = await fetch(`${AWS_CONFIG.apiBaseUrl}/bookings/me`, {
+    // Hostname -> environment-specific route (never a query parameter): the backend returns only
+    // that environment's bookings, so a sandbox booking never reaches playxcafe.com's PRODUCTION
+    // payment-status lookups, and vice versa.
+    const response = await fetch(`${AWS_CONFIG.apiBaseUrl}${PlayXApiRoutes.currentRoutes().myBookings}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     if (!response.ok) throw new Error(`Request failed (${response.status})`);
@@ -306,7 +313,7 @@ async function refreshMyBookings() {
     if (tabsEl) tabsEl.hidden = false;
     renderMyBookingsView();
   } catch (err) {
-    console.error('GET /bookings/me failed', err);
+    console.error('GET my bookings failed', err);
     if (tabsEl) tabsEl.hidden = true;
     listEl.hidden = true;
     statusEl.textContent = 'Couldn\'t load your bookings right now - please try again later.';

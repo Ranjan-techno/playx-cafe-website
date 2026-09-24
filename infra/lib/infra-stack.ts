@@ -10,6 +10,7 @@ import { apiConfigs } from './config/api-config';
 import {
   paymentConfigs,
   productionPaymentConfigs,
+  resolveProductionAccessMode,
   resolveProductionTesters,
   resolveSandboxTesters,
 } from './config/payment-config';
@@ -113,6 +114,8 @@ export class InfraStack extends cdk.Stack {
       createBookingFunctionName: resourceName('create-booking'),
       createBookingProductionFunctionName: resourceName('create-booking-production'),
       listMyBookingsFunctionName: resourceName('bookings-me'),
+      // Stage 2E: GET /bookings/production/me (GET /bookings/me lists SANDBOX bookings only).
+      listMyBookingsProductionFunctionName: resourceName('bookings-me-production'),
       availabilityFunctionName: resourceName('availability'),
       authStartFunctionName: resourceName('auth-start'),
       authVerifyFunctionName: resourceName('auth-verify'),
@@ -148,6 +151,11 @@ export class InfraStack extends cdk.Stack {
       paymentWebhookProductionFunctionName: resourceName('payment-webhook-production'),
       phonepeSandboxTesters: resolveSandboxTesters(this.node.tryGetContext('phonepeSandboxTesters')),
       phonepeProductionTesters: resolveProductionTesters(this.node.tryGetContext('phonepeProductionTesters')),
+      // Stage 2E: explicit production access mode — TESTER unless `-c phonepeProductionAccessMode=PUBLIC`
+      // is passed; an unknown value fails the synth. Never inferred from the tester list.
+      phonepeProductionAccessMode: resolveProductionAccessMode(this.node.tryGetContext('phonepeProductionAccessMode')),
+      paymentStartProductionErrorsAlarmName: resourceName('payment-start-production-errors'),
+      paymentWebhookProductionErrorsAlarmName: resourceName('payment-webhook-production-errors'),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,
       databaseSecret,

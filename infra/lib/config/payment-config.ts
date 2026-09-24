@@ -57,11 +57,12 @@ export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
  *
  * PhonePe cutover Stage 2D (controlled production verification transaction): the 'dev' entry —
  * the one the deployed stack reads — turns BOTH production switches on, so POST
- * /bookings/production and POST /payments/production/start reach their handlers. They are still
- * NOT open to the public: the backend's second gate (backend/src/lib/production-access.ts) admits
- * only Cognito subs listed in resolveProductionTesters' list and answers 403 — before any DB,
- * secret, PhonePe or SQS work — to everyone else, including everyone when the list is empty.
- * The unused 'prod' entry stays off.
+ * /bookings/production and POST /payments/production/start reach their handlers. Who may then use
+ * them is the backend's second gate (backend/src/lib/production-access.ts), driven since Stage 2E
+ * by the explicit production access mode (resolveProductionAccessMode below): in TESTER mode — the
+ * default — only Cognito subs listed in resolveProductionTesters' list, everyone else (everyone,
+ * when the list is empty) getting 403 before any DB, secret, PhonePe or SQS work; in PUBLIC mode
+ * any authenticated customer. The unused 'prod' entry stays off.
  */
 export interface ProductionPaymentConfig
   extends Omit<PaymentConfig, 'phonepeEnvironment' | 'paymentStartEnabled' | 'bookingCreateEnabled'> {
@@ -135,4 +136,33 @@ export function resolveProductionTesters(contextValue: unknown, env: NodeJS.Proc
     }
   }
   return [...new Set(entries)].join(',');
+}
+
+/** Stage 2E: who may use the PRODUCTION booking + payment-start runtime (see
+ *  backend/src/lib/production-access.ts). */
+export type ProductionAccessMode = 'TESTER' | 'PUBLIC';
+
+/**
+ * Stage 2E: the explicit production access mode, from `cdk deploy -c phonepeProductionAccessMode=...`
+ * ONLY — deliberately no environment-variable fallback, so an ambient shell variable can never open
+ * production. Rendered as PHONEPE_PRODUCTION_ACCESS_MODE on exactly the production create-booking and
+ * payment-start Lambdas.
+ *
+ *   absent / empty  -> TESTER (the safe default; PHONEPE_PRODUCTION_TESTERS stays mandatory and an
+ *                      empty list still admits nobody)
+ *   'TESTER'        -> TESTER
+ *   'PUBLIC'        -> PUBLIC (any authenticated customer; ownership, server-side amount and the
+ *                      hard-coded PRODUCTION environment still apply)
+ *   anything else   -> synth fails (no guessing: 'public', ' PUBLIC', 'OPEN', ... are errors)
+ *
+ * PUBLIC is never inferred from an empty tester list, and never a default.
+ */
+export function resolveProductionAccessMode(contextValue: unknown): ProductionAccessMode {
+  if (contextValue === undefined || contextValue === null || contextValue === '') {
+    return 'TESTER';
+  }
+  if (contextValue === 'TESTER' || contextValue === 'PUBLIC') {
+    return contextValue;
+  }
+  throw new Error('phonepeProductionAccessMode must be exactly TESTER or PUBLIC');
 }

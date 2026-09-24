@@ -1169,3 +1169,59 @@ test('sandbox status route is unchanged: still reports (without reconciling) a P
   assert.equal(res.body.outcome, 'pending');
   assert.equal(w.provider.statusCalls.length, 0);
 });
+
+// ----------------------------------------------------------------------------
+// Stage 2E: explicit production access mode (PHONEPE_PRODUCTION_ACCESS_MODE)
+// ----------------------------------------------------------------------------
+
+test('PRODUCTION start access mode: missing / unknown / non-exact values behave as TESTER (empty list -> 403 before DB/provider/SQS)', async () => {
+  for (const mode of [undefined, '', 'TESTER', 'public', ' PUBLIC', 'PUBLIC ', 'OPEN']) {
+    const w = prodWorld({ PHONEPE_PRODUCTION_TESTERS: '', PHONEPE_PRODUCTION_ACCESS_MODE: mode });
+    const calls = { getDb: 0, getProvider: 0 };
+    const start = createStartHandler({
+      env: w.env,
+      getDb: async () => { calls.getDb += 1; return createFakePaymentDbClient(w.store); },
+      resetDb: () => {},
+      getProvider: async () => { calls.getProvider += 1; return w.provider; },
+      getReconcileQueue: () => w.queue,
+    });
+    const res = await call(() => start(startEvent({ bookingId: w.bookingId })));
+    assert.equal(res.statusCode, 403, JSON.stringify(mode));
+    assert.equal(calls.getDb + calls.getProvider, 0);
+    assert.equal(w.queue.attempts, 0);
+  }
+});
+
+test('PRODUCTION start access mode: TESTER + unlisted sub -> 403; TESTER + listed sub -> 200', async () => {
+  const unlisted = prodWorld({ PHONEPE_PRODUCTION_TESTERS: OTHER, PHONEPE_PRODUCTION_ACCESS_MODE: 'TESTER' });
+  assert.equal((await call(() => unlisted.start(startEvent({ bookingId: unlisted.bookingId })))).statusCode, 403);
+  assert.equal(unlisted.provider.createCalls.length, 0);
+  const listed = prodWorld({ PHONEPE_PRODUCTION_TESTERS: ME, PHONEPE_PRODUCTION_ACCESS_MODE: 'TESTER' });
+  assert.equal((await call(() => listed.start(startEvent({ bookingId: listed.bookingId })))).statusCode, 200);
+});
+
+test('PRODUCTION start access mode: PUBLIC admits an authenticated owner with no tester list — amount, environment and chain unchanged', async () => {
+  const w = prodWorld({ PHONEPE_PRODUCTION_TESTERS: '', PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC' });
+  const body = { bookingId: w.bookingId, environment: 'SANDBOX', amount: 1 };
+  const res = await call(() => w.start(startEvent(body)));
+  assert.equal(res.statusCode, 200);
+  assert.equal(w.provider.createCalls.length, 1);
+  assert.equal(w.provider.createCalls[0].amountInr, '999.00', 'server-side amount');
+  assert.equal(w.store.payments[0].payment_environment, 'PRODUCTION');
+  assert.deepEqual(w.queue.sent.map((x) => x.message.seq), [1], 'fast reconciliation still scheduled');
+});
+
+test('PRODUCTION start access mode: PUBLIC still enforces ownership, identity and the kill switch', async () => {
+  const w = prodWorld({ PHONEPE_PRODUCTION_TESTERS: '', PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC' });
+  assert.equal((await call(() => w.start(startEvent({ bookingId: w.bookingId }, { sub: OTHER })))).statusCode, 404, 'not your booking');
+  assert.equal(w.provider.createCalls.length, 0);
+  const noSub = await call(() => w.start({ ...startEvent({ bookingId: w.bookingId }), requestContext: { authorizer: { jwt: { claims: {} } } } } as never));
+  assert.equal(noSub.statusCode, 401);
+  const off = prodWorld({ PAYMENT_START_ENABLED: 'false', PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC' });
+  assert.equal((await call(() => off.start(startEvent({ bookingId: off.bookingId })))).statusCode, 503);
+});
+
+test('SANDBOX start: PHONEPE_PRODUCTION_ACCESS_MODE=PUBLIC does not open the sandbox gate', async () => {
+  const w = setup({ PHONEPE_SANDBOX_TESTERS: '', PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC' });
+  assert.equal((await call(() => w.start(startEvent({ bookingId: w.bookingId })))).statusCode, 403);
+});

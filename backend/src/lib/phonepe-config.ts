@@ -3,7 +3,8 @@
 // nowhere else. Handlers never receive them: phonepe-runtime.ts turns this config into a
 // provider object, and only the non-secret `environment` is ever exposed alongside it.
 //
-// Fails closed: any missing/malformed field, or a secret/environment mismatch, throws a
+// Fails closed: any missing/malformed field (including a clientId containing whitespace, or a
+// padded clientVersion/environment/webhookUsername), or a secret/environment mismatch, throws a
 // PhonePeConfigError whose message names only the offending *field* — never a value, and never
 // any fragment of the raw secret text (JSON.parse's own error message quotes the input, so it is
 // deliberately swallowed).
@@ -35,6 +36,19 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/** An identifier that PhonePe matches exactly (clientId): non-empty with NO whitespace anywhere.
+ *  Stage 2E hardening: a production clientId with one trailing space passed the old non-empty
+ *  check, reached PhonePe and failed there as OIM007 "Client Not Found". Never trimmed — a padded
+ *  value is a Secrets Manager mistake to fix at the source, not to guess around. */
+function isWhitespaceFreeIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !/\s/.test(value);
+}
+
+/** Non-empty, not all whitespace, and no leading/trailing whitespace (inner spaces allowed). */
+function isUnpaddedString(value: unknown): value is string {
+  return nonEmptyString(value) && value === value.trim();
+}
+
 /** Validates the parsed secret JSON. Accepts clientVersion as a positive integer, or a string of
  *  digits (the Secrets Manager console's key/value editor stores every value as a string). */
 export function parsePhonePeSecret(secretString: string | undefined): PhonePeConfig {
@@ -56,21 +70,29 @@ export function parsePhonePeSecret(secretString: string | undefined): PhonePeCon
   if (!nonEmptyString(secret.clientId)) {
     throw new PhonePeConfigError('PhonePe secret field "clientId" must be a non-empty string');
   }
+  if (!isWhitespaceFreeIdentifier(secret.clientId)) {
+    throw new PhonePeConfigError('PhonePe secret field "clientId" must not contain whitespace');
+  }
+  // clientSecret is passed to PhonePe byte-for-byte: never trimmed or otherwise altered here, and
+  // only required to be non-empty (its exact character set is PhonePe's to define).
   if (!nonEmptyString(secret.clientSecret)) {
     throw new PhonePeConfigError('PhonePe secret field "clientSecret" must be a non-empty string');
   }
 
+  // A number, or a string of digits exactly as stored (the Secrets Manager console's key/value
+  // editor stores every value as a string). "1 " / " 1" are refused, not trimmed.
   const rawVersion = secret.clientVersion;
   const clientVersion =
     typeof rawVersion === 'number'
       ? rawVersion
-      : typeof rawVersion === 'string' && /^\d{1,9}$/.test(rawVersion.trim())
-        ? Number.parseInt(rawVersion.trim(), 10)
+      : typeof rawVersion === 'string' && /^\d{1,9}$/.test(rawVersion)
+        ? Number.parseInt(rawVersion, 10)
         : Number.NaN;
   if (!Number.isSafeInteger(clientVersion) || clientVersion <= 0) {
     throw new PhonePeConfigError('PhonePe secret field "clientVersion" must be a positive integer');
   }
 
+  // Exact match only: " PRODUCTION", "PRODUCTION\n" or "production" are refused.
   if (secret.environment !== 'SANDBOX' && secret.environment !== 'PRODUCTION') {
     throw new PhonePeConfigError('PhonePe secret field "environment" must be SANDBOX or PRODUCTION');
   }
@@ -82,6 +104,11 @@ export function parsePhonePeSecret(secretString: string | undefined): PhonePeCon
   }
   if (hasUser && (!nonEmptyString(secret.webhookUsername) || !nonEmptyString(secret.webhookPassword))) {
     throw new PhonePeConfigError('PhonePe secret webhook credentials must be non-empty strings');
+  }
+  // The username is an identifier: padding is refused. The password, like clientSecret, is used
+  // exactly as stored (never trimmed) and only has to be non-empty.
+  if (hasUser && !isUnpaddedString(secret.webhookUsername)) {
+    throw new PhonePeConfigError('PhonePe secret field "webhookUsername" must not have leading or trailing whitespace');
   }
 
   return {

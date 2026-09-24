@@ -164,3 +164,97 @@ test('payment-start does not need webhook credentials: a secret without them loa
   const config = await loadPhonePeConfig({ secretId: SANDBOX_SECRET_NAME, source: fakeSource(JSON.stringify(validSecret)) });
   assert.equal(config.webhookUsername, undefined);
 });
+
+// ----------------------------------------------------------------------------
+// Stage 2E: credential whitespace hardening. The production incident: a clientId with ONE trailing
+// space passed validation, reached PhonePe and failed there as OIM007 "Client Not Found".
+// ----------------------------------------------------------------------------
+
+const CLIENT_ID_MARKER = 'M22CLIENTID-marker-7b1e';
+
+test('clientId with leading/trailing/inner whitespace fails closed before any provider call', () => {
+  for (const clientId of [
+    `${CLIENT_ID_MARKER} `, // the production incident
+    ` ${CLIENT_ID_MARKER}`,
+    `${CLIENT_ID_MARKER}\n`,
+    `${CLIENT_ID_MARKER}\t`,
+    ` ${CLIENT_ID_MARKER}`,
+    `M22 CLIENT`,
+    '   ',
+  ]) {
+    assert.throws(
+      () => parsePhonePeSecret(JSON.stringify({ ...validSecret, clientId })),
+      (err: unknown) => err instanceof PhonePeConfigError && /"clientId"/.test((err as Error).message),
+      JSON.stringify(clientId),
+    );
+  }
+  // A clean id is accepted unchanged.
+  assert.equal(parsePhonePeSecret(JSON.stringify({ ...validSecret, clientId: CLIENT_ID_MARKER })).clientId, CLIENT_ID_MARKER);
+});
+
+test('the whitespace error names the field only — never the clientId, clientSecret or any other value', () => {
+  const input = JSON.stringify({ ...validSecret, clientId: `${CLIENT_ID_MARKER} `, webhookUsername: 'hook-user', webhookPassword: SECRET_MARKER });
+  try {
+    parsePhonePeSecret(input);
+    assert.fail('expected a throw');
+  } catch (err) {
+    assert.ok(err instanceof PhonePeConfigError);
+    const text = `${(err as Error).message}\n${(err as Error).stack}`;
+    for (const value of [CLIENT_ID_MARKER, SECRET_MARKER, 'hook-user']) {
+      assert.ok(!text.includes(value), `leaked ${value}`);
+    }
+  }
+});
+
+test('clientVersion as a padded string is refused, not trimmed; exact digits and numbers still work', () => {
+  for (const clientVersion of ['1 ', ' 1', '1\n', '\t1', ' ', '1 2']) {
+    assert.throws(() => parsePhonePeSecret(JSON.stringify({ ...validSecret, clientVersion })), PhonePeConfigError, JSON.stringify(clientVersion));
+  }
+  assert.equal(parsePhonePeSecret(JSON.stringify({ ...validSecret, clientVersion: '2' })).clientVersion, 2);
+  assert.equal(parsePhonePeSecret(JSON.stringify({ ...validSecret, clientVersion: 3 })).clientVersion, 3);
+});
+
+test('environment must match exactly: padded values are refused', () => {
+  for (const environment of ['PRODUCTION ', ' PRODUCTION', 'PRODUCTION\n', 'SANDBOX ', '\tSANDBOX']) {
+    assert.throws(() => parsePhonePeSecret(JSON.stringify({ ...validSecret, environment })), PhonePeConfigError, JSON.stringify(environment));
+  }
+});
+
+test('webhookUsername with leading/trailing whitespace is refused (inner spaces allowed)', () => {
+  for (const webhookUsername of ['user ', ' user', 'user\n', '\tuser']) {
+    assert.throws(
+      () => parsePhonePeSecret(JSON.stringify({ ...validSecret, webhookUsername, webhookPassword: 'p' })),
+      (err: unknown) => err instanceof PhonePeConfigError && /"webhookUsername"/.test((err as Error).message) && !(err as Error).message.includes('user'),
+      JSON.stringify(webhookUsername),
+    );
+  }
+  assert.equal(parsePhonePeSecret(JSON.stringify({ ...validSecret, webhookUsername: 'play x', webhookPassword: 'p' })).webhookUsername, 'play x');
+});
+
+test('clientSecret and webhookPassword are passed through byte-for-byte — never trimmed or altered', () => {
+  for (const value of [` ${SECRET_MARKER}`, `${SECRET_MARKER} `, `a b+/=${SECRET_MARKER}`, `${SECRET_MARKER}é`]) {
+    const config = parsePhonePeSecret(JSON.stringify({ ...validSecret, clientSecret: value, webhookUsername: 'u', webhookPassword: value }));
+    assert.equal(config.clientSecret, value);
+    assert.equal(config.webhookPassword, value);
+  }
+  // ...but an all-whitespace value is still refused as empty.
+  assert.throws(() => parsePhonePeSecret(JSON.stringify({ ...validSecret, clientSecret: '   ' })), PhonePeConfigError);
+  assert.throws(() => parsePhonePeSecret(JSON.stringify({ ...validSecret, webhookUsername: 'u', webhookPassword: ' ' })), PhonePeConfigError);
+});
+
+test('loadPhonePeConfig: a padded clientId fails closed and is never cached', async () => {
+  let reads = 0;
+  const source: SecretStringSource = {
+    async getSecretString() {
+      reads += 1;
+      return JSON.stringify({ ...validSecret, environment: 'PRODUCTION', clientId: `${CLIENT_ID_MARKER} ` });
+    },
+  };
+  for (let i = 0; i < 2; i += 1) {
+    await assert.rejects(
+      () => loadPhonePeConfig({ secretId: 'playx/phonepe/production', source }),
+      (err: unknown) => err instanceof PhonePeConfigError && !(err as Error).message.includes(CLIENT_ID_MARKER),
+    );
+  }
+  assert.equal(reads, 2, 'failure not cached');
+});
