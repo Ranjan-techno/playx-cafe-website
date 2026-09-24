@@ -20,17 +20,18 @@ test('Story 2.1 (+ payments egress): VPC keeps its isolated subnets and adds NAT
   // 2 AZs x (private-isolated [original] + public [NAT host only] + private-egress [payments]).
   template.resourceCountIs('AWS::EC2::Subnet', 6);
 
-  // Exactly ONE NAT Gateway (MVP cost control, payments egress only). Exactly twenty Lambdas: Story 2.3's migration function, Story 2.5's
+  // Exactly ONE NAT Gateway (MVP cost control, payments egress only). Exactly twenty-two Lambdas: Story 2.3's migration function, Story 2.5's
   // health-check function, Story 2.6's products/create-booking/bookings-me functions, guest-
   // first passwordless auth's auth-start/auth-verify functions, its three Cognito CUSTOM_AUTH
   // triggers (DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse), Phase 2's
   // availability function, and Phase 3B's six PLAY X ADMIN functions (admin-dashboard/
-  // admin-bookings/admin-booking-detail/admin-booking-status/admin-payments/admin-simulators) —
-  // not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
+  // admin-bookings/admin-booking-detail/admin-booking-status/admin-payments/admin-simulators),
+  // the PhonePe payment start/status/reconcile functions, and PhonePe cutover Stage 2A's
+  // create-booking-production/payment-start-production functions — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
   // guarded against separately (that flag is explicitly disabled for this VPC — see
   // constructs/network.ts).
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
-  template.resourceCountIs('AWS::Lambda::Function', 20);
+  template.resourceCountIs('AWS::Lambda::Function', 22);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -95,9 +96,10 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   // Nineteen Lambda functions exist in the stack (this one, Story 2.5's health-check function,
   // Story 2.6's products/create-booking/bookings-me functions, guest-first passwordless auth's
   // auth-start/auth-verify functions, its three CUSTOM_AUTH triggers, Phase 2's availability
-  // function, and Phase 3B's six admin functions — see below), but health/auth-start/auth-verify/
-  // the three triggers are the six of the seventeen that do NOT sit in the VPC.
-  template.resourceCountIs('AWS::Lambda::Function', 20);
+  // function, Phase 3B's six admin functions, the three PhonePe payment functions and Stage 2A's
+  // two production functions — see below), but health/auth-start/auth-verify/the three triggers
+  // are the six of the twenty-two that do NOT sit in the VPC.
+  template.resourceCountIs('AWS::Lambda::Function', 22);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -277,13 +279,14 @@ test('Story 2.6: authenticated booking APIs — Cognito JWT authorizer on POST /
     IdentitySource: ['$request.header.Authorization'],
   });
 
-  // Fifteen routes total (incl. PhonePe Phase 2's two payment routes, checked below): GET /health (Story 2.5), GET /products, POST /bookings, and
+  // Seventeen routes total (incl. PhonePe Phase 2's two payment routes and Stage 2A's POST
+  // /bookings/production + POST /payments/production/start, checked below): GET /health (Story 2.5), GET /products, POST /bookings, and
   // GET /bookings/me (this story), POST /auth/start and POST /auth/verify (guest-first
   // passwordless auth, checked separately below), GET /availability (Phase 2, checked separately
   // further below), and Phase 3B's six admin routes (checked separately further below too).
-  // Fifteen integrations, one per route.
-  template.resourceCountIs('AWS::ApiGatewayV2::Route', 15);
-  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 15);
+  // Seventeen integrations, one per route.
+  template.resourceCountIs('AWS::ApiGatewayV2::Route', 17);
+  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 17);
 
   // GET /products is public: no authorizer attached (CloudFormation emits AuthorizationType:
   // 'NONE' explicitly for an unauthenticated route, rather than omitting the property).
@@ -632,7 +635,20 @@ function synth(context?: Record<string, string>): { template: Template; json: Js
   return { template, json: template.toJSON() };
 }
 
-const PAYMENT_FUNCTIONS = ['playx-dev-payment-start', 'playx-dev-payment-status', 'playx-dev-payment-reconcile'];
+const PAYMENT_FUNCTIONS = [
+  'playx-dev-payment-start',
+  'playx-dev-payment-status',
+  'playx-dev-payment-reconcile',
+  'playx-dev-payment-start-production',
+];
+
+/** Which one PhonePe secret each payment Lambda may read. */
+const PHONEPE_SECRET_BY_FUNCTION: Record<string, string> = {
+  'playx-dev-payment-start': 'playx/phonepe/sandbox',
+  'playx-dev-payment-status': 'playx/phonepe/sandbox',
+  'playx-dev-payment-reconcile': 'playx/phonepe/sandbox',
+  'playx-dev-payment-start-production': 'playx/phonepe/production',
+};
 
 function lambdaEntries(json: Json): [string, Json][] {
   return Object.entries<Json>(json.Resources).filter(([, r]) => r.Type === 'AWS::Lambda::Function');
@@ -648,8 +664,9 @@ function statementsFor(json: Json, functionName: string): Json[] {
     .flatMap((r) => [r.Properties.PolicyDocument.Statement].flat());
 }
 
+/** Any statement touching ANY PhonePe secret (sandbox, production, or a playx/phonepe/* pattern). */
 function isPhonePeSecretStatement(statement: Json): boolean {
-  return JSON.stringify(statement.Resource).includes('playx/phonepe/sandbox');
+  return JSON.stringify(statement.Resource).includes('playx/phonepe/');
 }
 
 test('PhonePe Phase 2: existing VPC/subnets/RDS/Cognito/API keep their logical IDs and shape (nothing replaced)', () => {
@@ -723,7 +740,7 @@ test('PhonePe Phase 2: payment Lambdas use private-with-egress subnets and the s
   }
 });
 
-test('PhonePe Phase 2: ONLY the payment Lambdas (start, status, reconcile) can read the PhonePe secret, with GetSecretValue on that one secret', () => {
+test('PhonePe Phase 2: ONLY the payment Lambdas can read a PhonePe secret, each with GetSecretValue on exactly its one secret', () => {
   const { json } = synth();
   for (const [, fn] of lambdaEntries(json)) {
     const name = fn.Properties.FunctionName as string;
@@ -733,10 +750,10 @@ test('PhonePe Phase 2: ONLY the payment Lambdas (start, status, reconcile) can r
       assert.equal(phonepe[0].Effect, 'Allow');
       assert.equal(phonepe[0].Action, 'secretsmanager:GetSecretValue', 'GetSecretValue only');
       const arn = JSON.stringify(phonepe[0].Resource);
-      assert.ok(arn.includes('secret:playx/phonepe/sandbox-??????'), 'scoped to the one secret (name + random suffix)');
+      assert.ok(arn.includes(`secret:${PHONEPE_SECRET_BY_FUNCTION[name]}-??????`), `${name}: scoped to its one secret (name + random suffix)`);
       assert.ok(!arn.includes('"*"') && !arn.includes('secret:*'));
     } else {
-      assert.equal(phonepe.length, 0, `${name} must NOT be able to read the PhonePe secret`);
+      assert.equal(phonepe.length, 0, `${name} must NOT be able to read any PhonePe secret`);
     }
   }
   // No stack-wide wildcard grant on Secrets Manager either.
@@ -802,7 +819,8 @@ test('PhonePe Phase 2: POST /payments/start and GET /payments/{bookingId}/status
     .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
     .map((r) => r.Properties.RouteKey as string);
   assert.ok(routeKeys.every((k) => !/webhook|callback/i.test(k)), 'no webhook/callback route yet');
-  assert.equal(routeKeys.filter((k) => /^\w+ \/payments/.test(k)).length, 2);
+  // + Stage 2A's POST /payments/production/start (checked in its own test below).
+  assert.equal(routeKeys.filter((k) => /^\w+ \/payments/.test(k)).length, 3);
   // CORS unchanged: same origins, same methods/headers.
   template.hasResourceProperties('AWS::ApiGatewayV2::Api', {
     CorsConfiguration: Match.objectLike({
@@ -862,4 +880,184 @@ test('Phase 5A: the reconcile Lambda has only DB-secret read + GetSecretValue on
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
   const routeKeys = Object.values<Json>(json.Resources).filter((r) => r.Type === 'AWS::ApiGatewayV2::Route').map((r) => r.Properties.RouteKey);
   assert.ok(!routeKeys.some((k) => /reconcile/i.test(k)));
+});
+
+// ---------------------------------------------------------------------------------------------
+// PhonePe cutover Stage 2A: isolated PRODUCTION booking + payment-start runtime (start disabled).
+// ---------------------------------------------------------------------------------------------
+
+function lambdaNamed(json: Json, name: string): [string, Json] {
+  const entry = lambdaEntries(json).find(([, r]) => r.Properties.FunctionName === name);
+  assert.ok(entry, `Lambda ${name} exists`);
+  return entry;
+}
+
+function envOf(json: Json, name: string): Json {
+  return lambdaNamed(json, name)[1].Properties.Environment.Variables;
+}
+
+/** Every Secrets Manager resource ARN this Lambda's role may act on, as JSON text. */
+function secretsResourcesFor(json: Json, name: string): string {
+  return JSON.stringify(
+    statementsFor(json, name)
+      .filter((st) => JSON.stringify(st.Action).includes('secretsmanager'))
+      .map((st) => st.Resource),
+  );
+}
+
+/** The Lambda (logical id) an API route's integration invokes. */
+function routeTarget(json: Json, routeKey: string): { route: Json; functionLogicalId: string } {
+  const route = Object.values<Json>(json.Resources).find(
+    (r) => r.Type === 'AWS::ApiGatewayV2::Route' && r.Properties.RouteKey === routeKey,
+  );
+  assert.ok(route, `route ${routeKey} exists`);
+  const integrationId = (route.Properties.Target['Fn::Join'][1] as Json[]).find((part) => part.Ref)?.Ref as string;
+  const integration = json.Resources[integrationId];
+  assert.equal(integration.Type, 'AWS::ApiGatewayV2::Integration');
+  const functionLogicalId = integration.Properties.IntegrationUri['Fn::GetAtt'][0] as string;
+  return { route, functionLogicalId };
+}
+
+test('Stage 2A: sandbox PaymentStartFunction — sandbox secret/environment, start explicitly enabled, no production secret access', () => {
+  const { json } = synth();
+  const env = envOf(json, 'playx-dev-payment-start');
+  assert.equal(env.PHONEPE_SECRET_NAME, 'playx/phonepe/sandbox');
+  assert.equal(env.PHONEPE_ENVIRONMENT, 'SANDBOX');
+  assert.equal(env.PAYMENT_START_ENABLED, 'true', 'explicitly set, never a default');
+  const secrets = secretsResourcesFor(json, 'playx-dev-payment-start');
+  assert.ok(secrets.includes('secret:playx/phonepe/sandbox-??????'));
+  assert.ok(!secrets.includes('playx/phonepe/production'), 'sandbox start cannot read the production secret');
+  // The other sandbox payment Lambdas are equally blind to the production secret.
+  for (const name of ['playx-dev-payment-status', 'playx-dev-payment-reconcile']) {
+    assert.ok(!secretsResourcesFor(json, name).includes('playx/phonepe/production'), name);
+    assert.equal(envOf(json, name).PHONEPE_SECRET_NAME, 'playx/phonepe/sandbox', name);
+  }
+});
+
+test('Stage 2A: PaymentStartProductionFunction — production secret/environment/return URL, start DISABLED, production-only IAM', () => {
+  const { json } = synth();
+  const name = 'playx-dev-payment-start-production';
+  const env = envOf(json, name);
+  assert.equal(env.PHONEPE_SECRET_NAME, 'playx/phonepe/production');
+  assert.equal(env.PHONEPE_ENVIRONMENT, 'PRODUCTION');
+  assert.equal(env.PAYMENT_START_ENABLED, 'false');
+  assert.equal(env.PAYMENT_RETURN_URL, 'https://playxcafe.com/payment-return.html');
+  assert.equal(env.PAYMENT_CHECKOUT_HOLD_MINUTES, '20');
+  assert.ok(!('PHONEPE_SANDBOX_TESTERS' in env), 'no sandbox tester list on the production runtime');
+  assert.ok(!JSON.stringify(env).includes('sandbox'), 'nothing sandbox-named in its configuration');
+
+  // IAM: GetSecretValue on the production PhonePe secret ONLY (+ the usual DB-credentials read).
+  const phonepe = statementsFor(json, name).filter(isPhonePeSecretStatement);
+  assert.equal(phonepe.length, 1);
+  assert.equal(phonepe[0].Effect, 'Allow');
+  assert.equal(phonepe[0].Action, 'secretsmanager:GetSecretValue');
+  const arn = JSON.stringify(phonepe[0].Resource);
+  assert.ok(arn.includes('secret:playx/phonepe/production-??????'));
+  assert.ok(!arn.includes('"*"') && !arn.includes('secret:*') && !arn.includes('playx/phonepe/*'));
+  const secrets = secretsResourcesFor(json, name);
+  assert.ok(!secrets.includes('playx/phonepe/sandbox'), 'no sandbox secret access');
+  const secretsActions = statementsFor(json, name)
+    .filter((st) => JSON.stringify(st.Action).includes('secretsmanager'))
+    .map((st) => [st.Action].flat().sort().join(','))
+    .sort();
+  assert.deepEqual(secretsActions, ['secretsmanager:DescribeSecret,secretsmanager:GetSecretValue', 'secretsmanager:GetSecretValue']);
+  for (const st of statementsFor(json, name).filter((x) => !JSON.stringify(x.Action).includes('secretsmanager'))) {
+    assert.ok(!JSON.stringify(st.Action).match(/s3|dynamodb|sqs|sns|ses|cognito|lambda:Invoke/i), JSON.stringify(st.Action));
+  }
+
+  // Same network/runtime pattern as the sandbox payment-start Lambda.
+  const prod = lambdaNamed(json, name)[1].Properties;
+  const sandbox = lambdaNamed(json, 'playx-dev-payment-start')[1].Properties;
+  assert.deepEqual(prod.VpcConfig, sandbox.VpcConfig, 'same private-with-egress subnets + shared Lambda SG');
+  assert.equal(prod.Timeout, sandbox.Timeout);
+  assert.equal(prod.MemorySize, sandbox.MemorySize);
+  assert.equal(prod.Runtime, 'nodejs22.x');
+  assert.equal(prod.Handler, sandbox.Handler);
+});
+
+test('Stage 2A: CreateBookingProductionFunction — DB access only, no PhonePe secret or configuration', () => {
+  const { json } = synth();
+  const name = 'playx-dev-create-booking-production';
+  const [, fn] = lambdaNamed(json, name);
+  assert.equal(statementsFor(json, name).filter(isPhonePeSecretStatement).length, 0);
+  assert.ok(!secretsResourcesFor(json, name).includes('phonepe'));
+  assert.ok(!JSON.stringify(fn.Properties.Environment).match(/PHONEPE|PAYMENT_/));
+  assert.deepEqual(Object.keys(fn.Properties.Environment.Variables).sort(), ['BOOKING_CREATE_ENABLED', 'DB_SECRET_ARN']);
+  // Same isolated placement as the sandbox create-booking Lambda.
+  assert.deepEqual(fn.Properties.VpcConfig, lambdaNamed(json, 'playx-dev-create-booking')[1].Properties.VpcConfig);
+});
+
+test('Stage 2A: routes — sandbox and production booking/payment-start routes hit their own Lambdas, all JWT-protected', () => {
+  const { json } = synth();
+  const authorizerId = Object.entries<Json>(json.Resources).find(([, r]) => r.Type === 'AWS::ApiGatewayV2::Authorizer')?.[0];
+  const expected: [string, string][] = [
+    ['POST /bookings', 'playx-dev-create-booking'],
+    ['POST /bookings/production', 'playx-dev-create-booking-production'],
+    ['POST /payments/start', 'playx-dev-payment-start'],
+    ['POST /payments/production/start', 'playx-dev-payment-start-production'],
+  ];
+  for (const [routeKey, functionName] of expected) {
+    const { route, functionLogicalId } = routeTarget(json, routeKey);
+    assert.equal(route.Properties.AuthorizationType, 'JWT', `${routeKey} requires a Cognito JWT`);
+    assert.deepEqual(route.Properties.AuthorizerId, { Ref: authorizerId }, `${routeKey}: the one Cognito authorizer`);
+    assert.equal(json.Resources[functionLogicalId].Properties.FunctionName, functionName, `${routeKey} -> ${functionName}`);
+  }
+  // Entry points: sandbox booking stays create-booking.ts; production uses the thin PRODUCTION
+  // wrapper; both payment-start Lambdas run the same payment-start.ts business logic.
+  // (Compared by bundled-code asset hash: same entry + bundling => same asset.)
+  const code = (name: string) => JSON.stringify(lambdaNamed(json, name)[1].Properties.Code.S3Key);
+  assert.notEqual(code('playx-dev-create-booking'), code('playx-dev-create-booking-production'));
+  assert.equal(code('playx-dev-payment-start'), code('playx-dev-payment-start-production'));
+
+  const routeKeys = Object.values<Json>(json.Resources)
+    .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
+    .map((r) => r.Properties as Json);
+  // No webhook/callback and no public production payment route; no production status/reconcile yet.
+  assert.ok(routeKeys.every((r) => !/webhook|callback/i.test(r.RouteKey)));
+  for (const r of routeKeys.filter((x) => /production/.test(x.RouteKey))) {
+    assert.equal(r.AuthorizationType, 'JWT', `${r.RouteKey} is never public`);
+  }
+  assert.deepEqual(
+    routeKeys.map((r) => r.RouteKey as string).filter((k) => /production/.test(k)).sort(),
+    ['POST /bookings/production', 'POST /payments/production/start'],
+  );
+});
+
+test('Stage 2A: shared infrastructure only — no second VPC/RDS/Cognito/NAT/API, no SQS, no new schedule, no new secret', () => {
+  const { template, json } = synth();
+  template.resourceCountIs('AWS::EC2::VPC', 1);
+  template.resourceCountIs('AWS::RDS::DBInstance', 1);
+  template.resourceCountIs('AWS::Cognito::UserPool', 1);
+  template.resourceCountIs('AWS::Cognito::UserPoolClient', 1);
+  template.resourceCountIs('AWS::EC2::NatGateway', 1);
+  template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
+  template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
+  template.resourceCountIs('AWS::SQS::Queue', 0);
+  template.resourceCountIs('AWS::Events::Rule', 1);
+  template.resourceCountIs('AWS::SecretsManager::Secret', 1);
+  // The only EventBridge target is still the sandbox reconcile Lambda.
+  const rule = Object.values<Json>(json.Resources).find((r) => r.Type === 'AWS::Events::Rule')!;
+  const targetId = rule.Properties.Targets[0].Arn['Fn::GetAtt'][0];
+  assert.equal(json.Resources[targetId].Properties.FunctionName, 'playx-dev-payment-reconcile');
+  // No production payment-status / reconcile Lambda.
+  const names = lambdaEntries(json).map(([, r]) => r.Properties.FunctionName as string);
+  assert.deepEqual(names.filter((n) => /production/.test(n)).sort(), [
+    'playx-dev-create-booking-production',
+    'playx-dev-payment-start-production',
+  ]);
+});
+
+test('Stage 2A: booking-creation kill switch — sandbox CreateBookingFunction enabled, production CreateBookingProductionFunction disabled, both explicit', () => {
+  const { json } = synth();
+  assert.equal(envOf(json, 'playx-dev-create-booking').BOOKING_CREATE_ENABLED, 'true');
+  assert.equal(envOf(json, 'playx-dev-create-booking-production').BOOKING_CREATE_ENABLED, 'false');
+  // Payment start stays exactly as configured: sandbox on, production off.
+  assert.equal(envOf(json, 'playx-dev-payment-start').PAYMENT_START_ENABLED, 'true');
+  assert.equal(envOf(json, 'playx-dev-payment-start-production').PAYMENT_START_ENABLED, 'false');
+  // The switch is only on the two create-booking Lambdas.
+  for (const [, fn] of lambdaEntries(json)) {
+    const name = fn.Properties.FunctionName as string;
+    if (name === 'playx-dev-create-booking' || name === 'playx-dev-create-booking-production') continue;
+    assert.ok(!JSON.stringify(fn.Properties.Environment ?? {}).includes('BOOKING_CREATE_ENABLED'), name);
+  }
 });

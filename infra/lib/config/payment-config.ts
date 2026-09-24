@@ -14,6 +14,13 @@ export interface PaymentConfig {
   checkoutHoldMinutes: number;
   /** Customer return page PhonePe redirects to after checkout (UX only, never payment proof). */
   returnUrl: string;
+  /** Server-side payment-start kill switch, rendered as the Lambda's PAYMENT_START_ENABLED
+   *  ('true'/'false'). Always set explicitly — the backend treats anything but "true" as off. */
+  paymentStartEnabled: boolean;
+  /** Server-side booking-creation kill switch for this runtime's create-booking Lambda, rendered
+   *  as BOOKING_CREATE_ENABLED ('true'/'false'). Always set explicitly — the backend treats
+   *  anything but "true" as off. */
+  bookingCreateEnabled: boolean;
 }
 
 export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
@@ -22,6 +29,8 @@ export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
     phonepeEnvironment: 'SANDBOX',
     checkoutHoldMinutes: 20,
     returnUrl: 'https://staging.playxcafe.com/payment-return.html',
+    paymentStartEnabled: true,
+    bookingCreateEnabled: true,
   },
   prod: {
     // TODO: revisit before a prod stack exists (a production PhonePe secret + production return
@@ -30,6 +39,48 @@ export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
     phonepeEnvironment: 'SANDBOX',
     checkoutHoldMinutes: 20,
     returnUrl: 'https://staging.playxcafe.com/payment-return.html',
+    paymentStartEnabled: false,
+    bookingCreateEnabled: false,
+  },
+};
+
+/**
+ * PhonePe cutover Stage 2A: the isolated PRODUCTION PhonePe payment runtime that lives INSIDE the
+ * existing shared stack (same account, HttpApi, VPC, NAT, RDS, Cognito and simulator inventory) —
+ * alongside the sandbox runtime above. This is NOT the config of a separate AWS "prod" stack
+ * (that is paymentConfigs.prod, which no stack reads yet); the 'dev'/'prod' key is only the stack
+ * this runtime is added to.
+ *
+ * The environment is fixed here, at deploy time: no request header/body/Origin/hostname can
+ * choose it. The type pins `phonepeEnvironment` to PRODUCTION and, for Stage 2A, both
+ * `paymentStartEnabled` and `bookingCreateEnabled` to the literal `false` — POST
+ * /payments/production/start and POST /bookings/production both exist but are inert (503, no DB
+ * work, no inventory hold) until a deliberate code change to this type, not just a config flip.
+ */
+export interface ProductionPaymentConfig
+  extends Omit<PaymentConfig, 'phonepeEnvironment' | 'paymentStartEnabled' | 'bookingCreateEnabled'> {
+  phonepeEnvironment: 'PRODUCTION';
+  paymentStartEnabled: false;
+  bookingCreateEnabled: false;
+}
+
+export const productionPaymentConfigs: Record<'dev' | 'prod', ProductionPaymentConfig> = {
+  dev: {
+    phonepeSecretName: 'playx/phonepe/production',
+    phonepeEnvironment: 'PRODUCTION',
+    checkoutHoldMinutes: 20,
+    returnUrl: 'https://playxcafe.com/payment-return.html',
+    paymentStartEnabled: false,
+    bookingCreateEnabled: false,
+  },
+  prod: {
+    // Not read by any stack this phase (see bin/infra.ts).
+    phonepeSecretName: 'playx/phonepe/production',
+    phonepeEnvironment: 'PRODUCTION',
+    checkoutHoldMinutes: 20,
+    returnUrl: 'https://playxcafe.com/payment-return.html',
+    paymentStartEnabled: false,
+    bookingCreateEnabled: false,
   },
 };
 

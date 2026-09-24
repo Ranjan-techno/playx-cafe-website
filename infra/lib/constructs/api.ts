@@ -13,7 +13,7 @@ import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import { ApiConfig } from '../config/api-config';
-import { PaymentConfig } from '../config/payment-config';
+import { PaymentConfig, ProductionPaymentConfig } from '../config/payment-config';
 
 export interface ApiConstructProps {
   apiConfig: ApiConfig;
@@ -25,6 +25,9 @@ export interface ApiConstructProps {
   productsFunctionName: string;
   /** Full resource name for the create-booking Lambda, e.g. 'playx-dev-create-booking'. */
   createBookingFunctionName: string;
+  /** PhonePe cutover Stage 2A: POST /bookings/production's Lambda, e.g.
+   *  'playx-dev-create-booking-production'. */
+  createBookingProductionFunctionName: string;
   /** Full resource name for the list-my-bookings Lambda, e.g. 'playx-dev-bookings-me'. */
   listMyBookingsFunctionName: string;
   /** Full resource name for the Phase 2 availability Lambda, e.g. 'playx-dev-availability'. */
@@ -48,6 +51,11 @@ export interface ApiConstructProps {
   /** Phase 5A: scheduled background reconciliation Lambda, e.g. 'playx-dev-payment-reconcile'. */
   paymentReconcileFunctionName: string;
   paymentConfig: PaymentConfig;
+  /** PhonePe cutover Stage 2A: POST /payments/production/start's Lambda, e.g.
+   *  'playx-dev-payment-start-production'. */
+  paymentStartProductionFunctionName: string;
+  /** The isolated PRODUCTION PhonePe runtime's config (payment start hard-disabled in Stage 2A). */
+  productionPaymentConfig: ProductionPaymentConfig;
   /** Comma-separated Cognito subs/verified emails allowed to start SANDBOX payments. Empty fails
    *  closed (nobody may start one) — see config/payment-config.ts. */
   phonepeSandboxTesters: string;
@@ -98,12 +106,21 @@ export interface ApiConstructProps {
  * /bookings and GET /bookings/me, plus each handler's own backend requireAdmin() check (Cognito
  * "admin" group membership — see constructs/auth.ts's adminGroup and
  * backend/src/lib/admin-auth.ts). No new User Pool, no new authorizer, no new app client.
+ *
+ * PhonePe cutover Stage 2A adds an isolated PRODUCTION booking + payment-start runtime on this same
+ * HttpApi/VPC/RDS/Cognito/inventory: POST /bookings/production (create-booking-production.ts,
+ * booking_environment='PRODUCTION', BOOKING_CREATE_ENABLED=false so it returns 503 before any DB
+ * work) and POST /payments/production/start (the same payment-start.ts
+ * handler, configured with the production PhonePe secret and PAYMENT_START_ENABLED=false, so it
+ * returns 503 before touching the secret, the DB or PhonePe). No production payment-status,
+ * reconciliation, webhook or queue yet.
  */
 export class ApiConstruct extends Construct {
   public readonly httpApi: apigwv2.HttpApi;
   public readonly healthFunction: lambdaNodejs.NodejsFunction;
   public readonly productsFunction: lambdaNodejs.NodejsFunction;
   public readonly createBookingFunction: lambdaNodejs.NodejsFunction;
+  public readonly createBookingProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly listMyBookingsFunction: lambdaNodejs.NodejsFunction;
   public readonly availabilityFunction: lambdaNodejs.NodejsFunction;
   public readonly authStartFunction: lambdaNodejs.NodejsFunction;
@@ -115,6 +132,7 @@ export class ApiConstruct extends Construct {
   public readonly adminSimulatorsFunction: lambdaNodejs.NodejsFunction;
   public readonly adminBookingStatusFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentStartFunction: lambdaNodejs.NodejsFunction;
+  public readonly paymentStartProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentStatusFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentReconcileFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentReconcileRule: events.Rule;
@@ -167,8 +185,30 @@ export class ApiConstruct extends Construct {
       ...dbFunctionDefaults,
       functionName: props.createBookingFunctionName,
       entry: path.join(__dirname, '../../../backend/src/handlers/create-booking.ts'),
+      environment: {
+        ...dbFunctionDefaults.environment,
+        // Explicit, never defaulted: the backend creates bookings only on the exact "true".
+        BOOKING_CREATE_ENABLED: props.paymentConfig.bookingCreateEnabled ? 'true' : 'false',
+      },
     });
     props.databaseSecret.grantRead(this.createBookingFunction);
+
+    // PhonePe cutover Stage 2A: same business logic as CreateBookingFunction (create-booking.ts's
+    // createBookingHandler), with booking_environment fixed to PRODUCTION by its entry file. Same
+    // isolated subnets and DB access; no PhonePe secret or configuration at all.
+    // BOOKING_CREATE_ENABLED is 'false' in Stage 2A (the config type only allows false), so every
+    // request is answered 503 before any DB connection — no PRODUCTION booking can be created or
+    // hold shared simulator inventory before cutover.
+    this.createBookingProductionFunction = new lambdaNodejs.NodejsFunction(this, 'CreateBookingProductionFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.createBookingProductionFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/create-booking-production.ts'),
+      environment: {
+        ...dbFunctionDefaults.environment,
+        BOOKING_CREATE_ENABLED: props.productionPaymentConfig.bookingCreateEnabled ? 'true' : 'false',
+      },
+    });
+    props.databaseSecret.grantRead(this.createBookingProductionFunction);
 
     this.listMyBookingsFunction = new lambdaNodejs.NodejsFunction(this, 'ListMyBookingsFunction', {
       ...dbFunctionDefaults,
@@ -241,19 +281,22 @@ export class ApiConstruct extends Construct {
     // so the DB security group's 5432-from-lambda-sg rule keeps working, and reach RDS over the
     // VPC-local route. Every other Lambda stays exactly where it was.
     //
-    // PhonePe credentials: an EXISTING Secrets Manager secret, referenced by name only (CDK never
-    // creates or reads it). The role gets secretsmanager:GetSecretValue on that one secret — no
-    // wildcard, no DescribeSecret — and ONLY these two functions get it. The "-??????" is the
-    // random 6-character suffix Secrets Manager appends to every secret ARN.
-    const phonepeSecretArn = cdk.Stack.of(this).formatArn({
-      service: 'secretsmanager',
-      resource: 'secret',
-      resourceName: `${props.paymentConfig.phonepeSecretName}-??????`,
-      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
-    });
-    const grantPhonePeSecret = (fn: lambdaNodejs.NodejsFunction): void => {
+    // PhonePe credentials: EXISTING Secrets Manager secrets, referenced by name only (CDK never
+    // creates or reads them). Each payment role gets secretsmanager:GetSecretValue on exactly ONE
+    // secret — the sandbox Lambdas on the sandbox secret, the production Lambda on the production
+    // secret — no wildcard, no DescribeSecret. The "-??????" is the random 6-character suffix
+    // Secrets Manager appends to every secret ARN (so 'playx/phonepe/sandbox-??????' can never
+    // match the production secret, nor vice versa).
+    const phonepeSecretArnFor = (secretName: string): string =>
+      cdk.Stack.of(this).formatArn({
+        service: 'secretsmanager',
+        resource: 'secret',
+        resourceName: `${secretName}-??????`,
+        arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+      });
+    const grantPhonePeSecret = (fn: lambdaNodejs.NodejsFunction, secretName: string = props.paymentConfig.phonepeSecretName): void => {
       fn.addToRolePolicy(
-        new iam.PolicyStatement({ actions: ['secretsmanager:GetSecretValue'], resources: [phonepeSecretArn] }),
+        new iam.PolicyStatement({ actions: ['secretsmanager:GetSecretValue'], resources: [phonepeSecretArnFor(secretName)] }),
       );
     };
     const paymentFunctionDefaults = {
@@ -278,10 +321,35 @@ export class ApiConstruct extends Construct {
         PHONEPE_SANDBOX_TESTERS: props.phonepeSandboxTesters,
         PAYMENT_CHECKOUT_HOLD_MINUTES: String(props.paymentConfig.checkoutHoldMinutes),
         PAYMENT_RETURN_URL: props.paymentConfig.returnUrl,
+        // Explicit, never defaulted: the backend enables payment start only on the exact "true".
+        PAYMENT_START_ENABLED: props.paymentConfig.paymentStartEnabled ? 'true' : 'false',
       },
     });
     props.databaseSecret.grantRead(this.paymentStartFunction);
     grantPhonePeSecret(this.paymentStartFunction);
+
+    // PhonePe cutover Stage 2A: the isolated PRODUCTION payment-start runtime. Same handler code,
+    // subnets, security group and DB access as PaymentStartFunction; its PhonePe environment,
+    // secret and return URL are fixed here at deploy time (productionPaymentConfig), and its IAM
+    // reaches ONLY the production secret. PAYMENT_START_ENABLED is 'false' (the config type only
+    // allows false in this stage), so every request is answered 503 before the handler touches
+    // the DB, the secret or PhonePe. No sandbox tester list: the SANDBOX gate never applies here.
+    const productionPayment = props.productionPaymentConfig;
+    this.paymentStartProductionFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentStartProductionFunction', {
+      ...paymentFunctionDefaults,
+      functionName: props.paymentStartProductionFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/payment-start.ts'),
+      environment: {
+        DB_SECRET_ARN: props.databaseSecret.secretArn,
+        PHONEPE_SECRET_NAME: productionPayment.phonepeSecretName,
+        PHONEPE_ENVIRONMENT: productionPayment.phonepeEnvironment,
+        PAYMENT_CHECKOUT_HOLD_MINUTES: String(productionPayment.checkoutHoldMinutes),
+        PAYMENT_RETURN_URL: productionPayment.returnUrl,
+        PAYMENT_START_ENABLED: productionPayment.paymentStartEnabled ? 'true' : 'false',
+      },
+    });
+    props.databaseSecret.grantRead(this.paymentStartProductionFunction);
+    grantPhonePeSecret(this.paymentStartProductionFunction, productionPayment.phonepeSecretName);
 
     this.paymentStatusFunction = new lambdaNodejs.NodejsFunction(this, 'PaymentStatusFunction', {
       ...paymentFunctionDefaults,
@@ -405,6 +473,17 @@ export class ApiConstruct extends Construct {
       authorizer: cognitoAuthorizer,
     });
 
+    // PhonePe cutover Stage 2A: PRODUCTION bookings. Same Cognito JWT authorizer as POST /bookings.
+    this.httpApi.addRoutes({
+      path: '/bookings/production',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new apigwv2Integrations.HttpLambdaIntegration(
+        'CreateBookingProductionIntegration',
+        this.createBookingProductionFunction,
+      ),
+      authorizer: cognitoAuthorizer,
+    });
+
     this.httpApi.addRoutes({
       path: '/bookings/me',
       methods: [apigwv2.HttpMethod.GET],
@@ -487,6 +566,18 @@ export class ApiConstruct extends Construct {
       path: '/payments/start',
       methods: [apigwv2.HttpMethod.POST],
       integration: new apigwv2Integrations.HttpLambdaIntegration('PaymentStartIntegration', this.paymentStartFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    // PhonePe cutover Stage 2A: PRODUCTION payment start — JWT-protected like the sandbox route,
+    // and hard-disabled server-side (PAYMENT_START_ENABLED=false) in this stage.
+    this.httpApi.addRoutes({
+      path: '/payments/production/start',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new apigwv2Integrations.HttpLambdaIntegration(
+        'PaymentStartProductionIntegration',
+        this.paymentStartProductionFunction,
+      ),
       authorizer: cognitoAuthorizer,
     });
 

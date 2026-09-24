@@ -7,7 +7,7 @@ import { networkConfigs } from './config/network-config';
 import { databaseConfigs } from './config/database-config';
 import { authConfigs } from './config/auth-config';
 import { apiConfigs } from './config/api-config';
-import { paymentConfigs, resolveSandboxTesters } from './config/payment-config';
+import { paymentConfigs, productionPaymentConfigs, resolveSandboxTesters } from './config/payment-config';
 import { NetworkConstruct } from './constructs/network';
 import { DatabaseConstruct } from './constructs/database';
 import { MigrationConstruct } from './constructs/migration';
@@ -106,6 +106,7 @@ export class InfraStack extends cdk.Stack {
       healthFunctionName: resourceName('health'),
       productsFunctionName: resourceName('products'),
       createBookingFunctionName: resourceName('create-booking'),
+      createBookingProductionFunctionName: resourceName('create-booking-production'),
       listMyBookingsFunctionName: resourceName('bookings-me'),
       availabilityFunctionName: resourceName('availability'),
       authStartFunctionName: resourceName('auth-start'),
@@ -120,6 +121,12 @@ export class InfraStack extends cdk.Stack {
       paymentStatusFunctionName: resourceName('payment-status'),
       paymentReconcileFunctionName: resourceName('payment-reconcile'),
       paymentConfig: paymentConfigs[props.envConfig.environmentCode],
+      // PhonePe cutover Stage 2A: the isolated PRODUCTION PhonePe runtime inside this same stack
+      // (POST /bookings/production, POST /payments/production/start). Both routes are hard-disabled
+      // in Stage 2A: booking creation via BOOKING_CREATE_ENABLED=false and payment start via
+      // PAYMENT_START_ENABLED=false.
+      paymentStartProductionFunctionName: resourceName('payment-start-production'),
+      productionPaymentConfig: productionPaymentConfigs[props.envConfig.environmentCode],
       phonepeSandboxTesters: resolveSandboxTesters(this.node.tryGetContext('phonepeSandboxTesters')),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,

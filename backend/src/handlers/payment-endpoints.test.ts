@@ -64,6 +64,7 @@ function setup(envOverrides: NodeJS.ProcessEnv = {}, seed: Parameters<typeof see
   });
   const provider = new TestProvider();
   const env: NodeJS.ProcessEnv = {
+    PAYMENT_START_ENABLED: 'true',
     PHONEPE_ENVIRONMENT: 'SANDBOX',
     PHONEPE_SANDBOX_TESTERS: ME,
     PAYMENT_RETURN_URL: 'https://staging.playxcafe.com/payment-return.html',
@@ -321,6 +322,89 @@ test('start: second start reuses the live attempt (no second provider order)', a
   assert.equal(b.statusCode, 200);
   assert.equal(b.body.redirectUrl, a.body.redirectUrl);
   assert.equal(w.provider.createCalls.length, 1);
+});
+
+// ---------------------------------------------------------------- PAYMENT_START_ENABLED kill switch
+
+/** Production-style deps (as PaymentStartProductionFunction is configured) whose every side-effect
+ *  seam counts calls, so a disabled start can prove it touched nothing. */
+function killSwitchWorld(paymentStartEnabled: string | undefined) {
+  const w = setup(
+    {
+      PAYMENT_START_ENABLED: paymentStartEnabled,
+      PHONEPE_ENVIRONMENT: 'PRODUCTION',
+      PHONEPE_SECRET_NAME: 'playx/phonepe/production',
+      PAYMENT_RETURN_URL: 'https://playxcafe.com/payment-return.html',
+      PHONEPE_SANDBOX_TESTERS: undefined,
+    },
+    { bookingEnvironment: 'PRODUCTION' },
+  );
+  w.provider.environment = 'PRODUCTION';
+  const calls = { getDb: 0, resetDb: 0, getProvider: 0 };
+  const start = createStartHandler({
+    env: w.env,
+    getDb: async () => {
+      calls.getDb += 1;
+      return createFakePaymentDbClient(w.store);
+    },
+    resetDb: () => {
+      calls.resetDb += 1;
+    },
+    getProvider: async () => {
+      calls.getProvider += 1;
+      return w.provider;
+    },
+  });
+  return { ...w, start, calls };
+}
+
+test('kill switch: PAYMENT_START_ENABLED=false -> generic 503 before any DB, secret, provider or payment work', async () => {
+  const w = killSwitchWorld('false');
+  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.error, 'payments_temporarily_unavailable');
+  assert.equal(w.calls.getProvider, 0, 'provider (and so the PhonePe secret/SDK) never loaded');
+  assert.equal(w.calls.getDb, 0, 'no DB connection');
+  assert.equal(w.calls.resetDb, 0);
+  assert.equal(w.provider.createCalls.length, 0, 'startPayment never reached the provider');
+  assert.equal(w.store.payments.length, 0, 'no payment row created');
+  assert.ok(!/SANDBOX|PRODUCTION|environment|phonepe|secret|playxcafe/i.test(res.raw), 'no environment/config detail exposed');
+});
+
+test('kill switch: missing / non-exact values are all disabled (fail closed)', async () => {
+  for (const value of [undefined, '', 'false', 'TRUE', 'True', ' true', 'true ', '1', 'yes', 'enabled']) {
+    const w = killSwitchWorld(value);
+    const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+    assert.equal(res.statusCode, 503, JSON.stringify(value));
+    assert.equal(res.body.error, 'payments_temporarily_unavailable');
+    assert.equal(w.calls.getProvider + w.calls.getDb, 0, JSON.stringify(value));
+    assert.equal(w.store.payments.length, 0);
+  }
+});
+
+test('kill switch: disabled wins over everything else — even unauthenticated or malformed requests learn nothing more', async () => {
+  const w = killSwitchWorld('false');
+  for (const event of [startEvent({ bookingId: w.bookingId }, null), startEvent('{oops'), startEvent({ bookingId: w.bookingId, environment: 'SANDBOX', paymentStartEnabled: 'true' })]) {
+    const res = await call(() => w.start(event));
+    assert.equal(res.statusCode, 503);
+  }
+  assert.equal(w.calls.getProvider + w.calls.getDb, 0);
+});
+
+test('kill switch: PAYMENT_START_ENABLED=true keeps the existing sandbox happy path unchanged', async () => {
+  const w = setup({ PAYMENT_START_ENABLED: 'true' });
+  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+  assert.equal(res.statusCode, 200);
+  assert.equal(w.provider.createCalls.length, 1);
+  assert.equal(w.store.payments[0].payment_environment, 'SANDBOX');
+});
+
+test('kill switch: the handler module never statically imports the PhonePe runtime/SDK', () => {
+  const src = require('node:fs').readFileSync(require.resolve('./payment-start.ts'), 'utf8') as string;
+  // `import type` is erased at compile time; only a value import would load the module eagerly.
+  assert.doesNotMatch(src, /^import (?!type )[^;]*phonepe-runtime/m);
+  assert.doesNotMatch(src, /^import (?!type )[^;]*@phonepe-pg/m);
+  assert.match(src, /require\('\.\.\/lib\/phonepe-runtime'\)/, 'loaded lazily inside getProvider');
 });
 
 // ---------------------------------------------------------------- GET /payments/{id}/status
