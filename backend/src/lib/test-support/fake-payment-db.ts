@@ -62,6 +62,23 @@ export interface FakePaymentRow {
   paid_at: Date | null;
 }
 
+/** Stage 2F: booking_notifications (migration 008). */
+export interface FakeNotificationRow {
+  id: string;
+  booking_id: string;
+  notification_type: string;
+  status: 'pending' | 'sent' | 'failed' | 'suppressed';
+  recipient_email: string | null;
+  attempt_count: number;
+  next_attempt_at: Date;
+  last_attempt_at: Date | null;
+  last_error: string | null;
+  provider_message_id: string | null;
+  sent_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export const DEFAULT_FAKE_SIMULATORS: SimulatorRow[] = [
   { id: 'sim-S1', code: 'S1', simulator_type: 'static' },
   { id: 'sim-S2', code: 'S2', simulator_type: 'static' },
@@ -80,6 +97,13 @@ export interface FakePaymentDbStore {
   payments: FakePaymentRow[];
   bookingLocks: Map<string, Mutex>;
   paymentLocks: Map<string, Mutex>;
+  /** Stage 2F outbox rows. */
+  notifications: FakeNotificationRow[];
+  /** Models "migration 008 not applied yet": every booking_notifications statement fails with
+   *  SQLSTATE 42P01 (undefined_table), like Postgres. */
+  notificationsTableMissing: boolean;
+  /** Test clock for booking_notifications' now() (defaults to the real clock). */
+  now?: () => Date;
 }
 
 let idCounter = 0;
@@ -101,6 +125,8 @@ export function createFakePaymentDbStore(simulators: SimulatorRow[] = DEFAULT_FA
     payments: [],
     bookingLocks: new Map(),
     paymentLocks: new Map(),
+    notifications: [],
+    notificationsTableMissing: false,
   };
 }
 
@@ -244,8 +270,69 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
     holdsSimulatorLock = false;
   }
 
+  // SAVEPOINT name -> journal length at the time it was taken.
+  const savepoints = new Map<string, number>();
+
   async function query<T extends object>(text: string, params: unknown[] = []): Promise<{ rows: T[] }> {
     const sql = text.trim();
+
+    // Savepoints (checked before BEGIN/COMMIT/ROLLBACK: "ROLLBACK TO SAVEPOINT" also starts with ROLLBACK).
+    const savepoint = /^SAVEPOINT (\w+)$/i.exec(sql);
+    if (savepoint) {
+      if (!txActive) throw new Error('FakePaymentDbClient: SAVEPOINT outside a transaction');
+      savepoints.set(savepoint[1], journal.length);
+      return { rows: [] };
+    }
+    const release = /^RELEASE SAVEPOINT (\w+)$/i.exec(sql);
+    if (release) {
+      if (!savepoints.has(release[1])) throw new Error(`FakePaymentDbClient: no savepoint ${release[1]}`);
+      savepoints.delete(release[1]);
+      return { rows: [] };
+    }
+    const rollbackTo = /^ROLLBACK TO SAVEPOINT (\w+)$/i.exec(sql);
+    if (rollbackTo) {
+      const mark = savepoints.get(rollbackTo[1]);
+      if (mark === undefined) throw new Error(`FakePaymentDbClient: no savepoint ${rollbackTo[1]}`);
+      const undone = journal.splice(mark);
+      for (const undo of undone.reverse()) {
+        undo();
+      }
+      return { rows: [] };
+    }
+
+    if (/booking_notifications/i.test(sql)) {
+      return notificationQuery<T>(sql, params);
+    }
+
+    // Stage 2F loadBookingForNotification: booking + product name + primary PAID amount.
+    if (/AS amount_paid_inr/i.test(sql)) {
+      const [bookingId] = params as [string];
+      const b = store.bookings.find((row) => row.id === bookingId);
+      if (!b) {
+        return { rows: [] };
+      }
+      const paid = store.payments
+        .filter((p) => p.booking_id === bookingId && p.payment_status === 'paid' && !p.duplicate_of_payment_id)
+        .sort((x, y) => (x.paid_at?.getTime() ?? 0) - (y.paid_at?.getTime() ?? 0))[0];
+      return {
+        rows: [
+          {
+            id: b.id,
+            booking_number: b.booking_number,
+            status: b.status,
+            cognito_sub: b.cognito_sub,
+            booking_environment: b.booking_environment ?? null,
+            simulator_type: b.simulator_type,
+            racers: b.racers,
+            duration_minutes: Math.round((b.scheduled_end_at.getTime() - b.scheduled_start_at.getTime()) / 60_000),
+            scheduled_start_at: b.scheduled_start_at,
+            scheduled_end_at: b.scheduled_end_at,
+            product_name: b.product_name,
+            amount_paid_inr: paid ? paid.amount_inr : null,
+          },
+        ] as unknown as T[],
+      };
+    }
 
     if (/^BEGIN/i.test(sql)) {
       txActive = true;
@@ -255,6 +342,7 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
     if (/^COMMIT/i.test(sql)) {
       txActive = false;
       journal = [];
+      savepoints.clear();
       releaseLocks();
       return { rows: [] };
     }
@@ -264,6 +352,7 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         undo();
       }
       journal = [];
+      savepoints.clear();
       releaseLocks();
       return { rows: [] };
     }
@@ -710,6 +799,101 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
     }
 
     throw new Error(`FakePaymentDbClient: unhandled query: ${sql}`);
+  }
+
+  /** Stage 2F: the booking_notifications statements issued by lib/booking-notifications.ts. */
+  async function notificationQuery<T extends object>(sql: string, params: unknown[]): Promise<{ rows: T[] }> {
+    if (store.notificationsTableMissing) {
+      const err = new Error('relation "booking_notifications" does not exist') as Error & { code: string };
+      err.code = '42P01';
+      throw err;
+    }
+    const now = store.now ? store.now() : new Date();
+    const plusSeconds = (seconds: number) => new Date(now.getTime() + seconds * 1000);
+
+    // enqueueBookingConfirmedNotification: INSERT ... ON CONFLICT (booking_id, notification_type) DO NOTHING RETURNING id
+    if (/^INSERT INTO booking_notifications/i.test(sql)) {
+      const [bookingId] = params as [string];
+      if (!/ON CONFLICT \(booking_id, notification_type\) DO NOTHING/i.test(sql)) {
+        throw new Error('FakePaymentDbClient: booking_notifications INSERT without ON CONFLICT DO NOTHING');
+      }
+      const type = /'BOOKING_CONFIRMED'/.test(sql) ? 'BOOKING_CONFIRMED' : 'unknown';
+      if (!store.bookings.some((b) => b.id === bookingId)) {
+        const err = new Error('insert violates foreign key constraint') as Error & { code: string };
+        err.code = '23503';
+        throw err;
+      }
+      if (store.notifications.some((n) => n.booking_id === bookingId && n.notification_type === type)) {
+        return { rows: [] };
+      }
+      const row: FakeNotificationRow = {
+        id: nextId('notification'),
+        booking_id: bookingId,
+        notification_type: type,
+        status: 'pending',
+        recipient_email: null,
+        attempt_count: 0,
+        next_attempt_at: now,
+        last_attempt_at: null,
+        last_error: null,
+        provider_message_id: null,
+        sent_at: null,
+        created_at: now,
+        updated_at: now,
+      };
+      inserted(store.notifications, row);
+      return { rows: [{ id: row.id }] as unknown as T[] };
+    }
+
+    // claimDueNotifications: autocommitted claim of due pending rows with a lease. JS is
+    // single-threaded and this has no await, so it is atomic like FOR UPDATE SKIP LOCKED.
+    if (/^UPDATE booking_notifications n\b/i.test(sql) && /FOR UPDATE SKIP LOCKED/i.test(sql)) {
+      const [limit, leaseSeconds] = params as [number, number];
+      const due = store.notifications
+        .filter((n) => n.status === 'pending' && n.notification_type === 'BOOKING_CONFIRMED' && n.next_attempt_at <= now)
+        .sort((a, b) => a.next_attempt_at.getTime() - b.next_attempt_at.getTime() || a.id.localeCompare(b.id))
+        .slice(0, limit);
+      for (const n of due) {
+        touch(n);
+        n.attempt_count += 1;
+        n.last_attempt_at = now;
+        n.next_attempt_at = plusSeconds(leaseSeconds);
+        n.updated_at = now;
+      }
+      return { rows: due.map((n) => ({ id: n.id, booking_id: n.booking_id, attempt_count: n.attempt_count, created_at: n.created_at })) as unknown as T[] };
+    }
+
+    // markSent / markTerminal / markRetry — all guarded by status = 'pending'.
+    if (/^UPDATE booking_notifications\b/i.test(sql)) {
+      const id = params[0] as string;
+      const row = store.notifications.find((n) => n.id === id);
+      if (!row || row.status !== 'pending' || !/WHERE id = \$1 AND status = 'pending'/i.test(sql)) {
+        return { rows: [] };
+      }
+      touch(row);
+      if (/SET status = 'sent'/i.test(sql)) {
+        const [, recipient, messageId] = params as [string, string, string | null];
+        row.status = 'sent';
+        row.sent_at = now;
+        row.recipient_email = recipient;
+        row.provider_message_id = messageId;
+        row.last_error = null;
+      } else if (/SET status = \$2/i.test(sql)) {
+        const [, status, reason] = params as [string, 'failed' | 'suppressed', string];
+        row.status = status;
+        row.last_error = reason;
+      } else if (/next_attempt_at = now\(\) \+ make_interval\(secs => \$3\)/i.test(sql)) {
+        const [, reason, delaySeconds] = params as [string, string, number];
+        row.last_error = reason;
+        row.next_attempt_at = plusSeconds(delaySeconds);
+      } else {
+        throw new Error(`FakePaymentDbClient: unhandled booking_notifications update: ${sql}`);
+      }
+      row.updated_at = now;
+      return { rows: [] };
+    }
+
+    throw new Error(`FakePaymentDbClient: unhandled booking_notifications query: ${sql}`);
   }
 
   return { query, inTransaction: () => txActive, lockLog };

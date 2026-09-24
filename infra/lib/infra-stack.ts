@@ -19,6 +19,8 @@ import { DatabaseConstruct } from './constructs/database';
 import { MigrationConstruct } from './constructs/migration';
 import { AuthConstruct } from './constructs/auth';
 import { ApiConstruct } from './constructs/api';
+import { NotificationsConstruct } from './constructs/notifications';
+import { notificationConfigs, resolveBookingEmailSandboxAllowlist } from './config/notification-config';
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 export interface InfraStackProps extends cdk.StackProps {
@@ -161,6 +163,23 @@ export class InfraStack extends cdk.Stack {
       databaseSecret,
       userPool: auth.userPool,
       webClient: auth.webClient,
+    });
+
+    // Stage 2F: the transactional booking-confirmation email. Payment confirmation writes a durable
+    // outbox row (booking_notifications, migration 008) in its own transaction; this adds the one
+    // scheduled sender Lambda (SES via the existing verified identity + AdminGetUser for the booking
+    // owner's verified email), its 1-minute rule and an Errors alarm. No payment Lambda gains any
+    // permission. SANDBOX confirmations are suppressed unless `-c bookingEmailSandboxAllowlist=...`.
+    new NotificationsConstruct(this, 'Notifications', {
+      notificationConfig: notificationConfigs[props.envConfig.environmentCode],
+      authConfig,
+      sandboxAllowlist: resolveBookingEmailSandboxAllowlist(this.node.tryGetContext('bookingEmailSandboxAllowlist')),
+      functionName: resourceName('booking-confirmation-notify'),
+      errorsAlarmName: resourceName('booking-confirmation-notify-errors'),
+      vpc: network.vpc,
+      lambdaSecurityGroup: database.lambdaSecurityGroup,
+      databaseSecret,
+      userPool: auth.userPool,
     });
 
     // Future resources (payment, automatic machine assignment, ...) will be created here,

@@ -4,6 +4,7 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { InfraStack } from '../lib/infra-stack';
 import { environments } from '../lib/config/environment-config';
 import { resolveProductionAccessMode } from '../lib/config/payment-config';
+import { resolveBookingEmailSandboxAllowlist } from '../lib/config/notification-config';
 
 test('Story 2.1 (+ payments egress): VPC keeps its isolated subnets and adds NAT-backed egress subnets', () => {
   const app = new cdk.App();
@@ -33,8 +34,9 @@ test('Story 2.1 (+ payments egress): VPC keeps its isolated subnets and adds NAT
   // payment-status-production/payment-webhook-production functions, and Stage 2E's bookings-me-production function — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
   // guarded against separately (that flag is explicitly disabled for this VPC — see
   // constructs/network.ts).
+  // + Stage 2F's booking-confirmation-notify sender.
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
-  template.resourceCountIs('AWS::Lambda::Function', 27);
+  template.resourceCountIs('AWS::Lambda::Function', 28);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -103,7 +105,8 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   // two production functions, Stage 2B's two production reconcile functions and Stage 2C's
   // production status + webhook functions — see below), but health/auth-start/auth-verify/the three
   // triggers are the six of the twenty-six that do NOT sit in the VPC.
-  template.resourceCountIs('AWS::Lambda::Function', 27);
+  // + Stage 2F's booking-confirmation-notify sender (VPC-attached).
+  template.resourceCountIs('AWS::Lambda::Function', 28);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -742,7 +745,8 @@ test('PhonePe Phase 2: payment Lambdas use private-with-egress subnets and the s
     const vpc = fn.Properties.VpcConfig;
     if (!vpc) continue;
     const subnets: string[] = vpc.SubnetIds.map((s: Json) => s.Ref);
-    if (PAYMENT_FUNCTIONS.includes(fn.Properties.FunctionName)) {
+    // Stage 2F: the notification sender also needs NAT egress (SES + Cognito) — asserted in its own tests.
+    if (PAYMENT_FUNCTIONS.includes(fn.Properties.FunctionName) || fn.Properties.FunctionName === 'playx-dev-booking-confirmation-notify') {
       assert.equal(subnets.length, 2);
       assert.ok(subnets.every((s) => s.includes('privateegress')), `${fn.Properties.FunctionName} on egress subnets`);
       assert.deepEqual(vpc.SecurityGroupIds, [{ 'Fn::GetAtt': [lambdaSg, 'GroupId'] }], 'shared lambda-sg => RDS reachable');
@@ -866,8 +870,9 @@ test('PhonePe Phase 2: POST /payments/start and GET /payments/{bookingId}/status
 
 test('Phase 5A: payment reconciliation runs on an EventBridge schedule every 5 minutes, targeting only the reconcile Lambda, with no retries', () => {
   const { template, json } = synth();
-  // The sandbox rule + (Stage 2B) the separate PRODUCTION fallback rule.
-  template.resourceCountIs('AWS::Events::Rule', 2);
+  // The sandbox rule + (Stage 2B) the separate PRODUCTION fallback rule + (Stage 2F) the
+  // booking-confirmation email sender's rule.
+  template.resourceCountIs('AWS::Events::Rule', 3);
   const reconcile = lambdaEntries(json).find(([, r]) => r.Properties.FunctionName === 'playx-dev-payment-reconcile')!;
   const [ruleId, rule] = Object.entries<Json>(json.Resources).find(
     ([, r]) => r.Type === 'AWS::Events::Rule' && r.Properties.Targets.some((t: Json) => t.Arn['Fn::GetAtt']?.[0] === reconcile[0]),
@@ -1084,14 +1089,16 @@ test('Stage 2A/2B: shared infrastructure only — no second VPC/RDS/Cognito/NAT/
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
   template.resourceCountIs('AWS::SQS::Queue', 2);
-  template.resourceCountIs('AWS::Events::Rule', 2);
+  // + Stage 2F's notification-sender rule (not a payment schedule).
+  template.resourceCountIs('AWS::Events::Rule', 3);
   template.resourceCountIs('AWS::SecretsManager::Secret', 1);
-  // The two EventBridge targets are exactly the sandbox and production 5-minute reconcilers.
+  // The EventBridge targets are exactly the sandbox and production 5-minute reconcilers, plus
+  // Stage 2F's booking-confirmation email sender.
   const targets = Object.values<Json>(json.Resources)
     .filter((r) => r.Type === 'AWS::Events::Rule')
     .flatMap((r) => r.Properties.Targets.map((t: Json) => json.Resources[t.Arn['Fn::GetAtt'][0]].Properties.FunctionName))
     .sort();
-  assert.deepEqual(targets, ['playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production']);
+  assert.deepEqual(targets, ['playx-dev-booking-confirmation-notify', 'playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production']);
   // + Stage 2C's production payment-status and webhook Lambdas, + Stage 2E's production My Bookings.
   const names = lambdaEntries(json).map(([, r]) => r.Properties.FunctionName as string);
   assert.deepEqual(names.filter((n) => /production/.test(n)).sort(), [
@@ -1300,8 +1307,9 @@ test('Stage 2B: the existing sandbox reconciler and its rule are unchanged', () 
 
 test('Stage 2B: DLQ alarm fires on ApproximateNumberOfMessagesVisible > 0 for the production DLQ', () => {
   const { template, json } = synth();
-  // Stage 2E adds two Lambda-error alarms beside this one (see the Stage 2E tests).
-  template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
+  // Stage 2E adds two Lambda-error alarms beside this one (see the Stage 2E tests), Stage 2F one
+  // more on the notification sender.
+  template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
   const alarm = Object.values<Json>(json.Resources).find(
     (r) => r.Type === 'AWS::CloudWatch::Alarm' && r.Properties.AlarmName === 'playx-dev-payment-reconcile-production-dlq-messages',
   )!.Properties;
@@ -1477,7 +1485,8 @@ test('Stage 2C: production kill switches are independent of the tester list (Sta
 test('Stage 2C: shared infrastructure only — no new queue, rule, secret, authorizer, API or NAT', () => {
   const { template } = synth();
   template.resourceCountIs('AWS::SQS::Queue', 2);
-  template.resourceCountIs('AWS::Events::Rule', 2);
+  // 2 payment reconcile rules + Stage 2F's notification-sender rule.
+  template.resourceCountIs('AWS::Events::Rule', 3);
   template.resourceCountIs('AWS::SecretsManager::Secret', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
@@ -1702,6 +1711,8 @@ test('Stage 2E: minimal production Lambda-error alarms on payment start and the 
   const { json } = synth();
   const alarms = Object.values<Json>(json.Resources).filter((r) => r.Type === 'AWS::CloudWatch::Alarm').map((r) => r.Properties);
   assert.deepEqual(alarms.map((a) => a.AlarmName).sort(), [
+    // Stage 2F (asserted in its own tests).
+    'playx-dev-booking-confirmation-notify-errors',
     'playx-dev-payment-reconcile-production-dlq-messages',
     'playx-dev-payment-start-production-errors',
     'playx-dev-payment-webhook-production-errors',
@@ -1724,4 +1735,97 @@ test('Stage 2E: minimal production Lambda-error alarms on payment start and the 
     assert.equal(alarm.AlarmActions, undefined);
   }
   assert.equal(Object.values<Json>(json.Resources).filter((r) => r.Type === 'AWS::SNS::Topic').length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Stage 2F: transactional booking-confirmation email — one scheduled sender Lambda reading the
+// booking_notifications outbox. Only it gets SES/Cognito access; no payment Lambda changes.
+// ---------------------------------------------------------------------------------------------
+
+const NOTIFY_FUNCTION = 'playx-dev-booking-confirmation-notify';
+const actionsOf = (statement: Json): string[] => [statement.Action].flat();
+
+test('Stage 2F: sender Lambda — egress subnets + shared Lambda SG, 60s timeout, explicit switch ON, existing SES identity, no allowlist by default', () => {
+  const { json } = synth();
+  const [, fn] = lambdaNamed(json, NOTIFY_FUNCTION);
+  assert.equal(fn.Properties.Runtime, 'nodejs22.x');
+  assert.equal(fn.Properties.Timeout, 60, 'well under the 300s claim lease');
+  const subnets: string[] = fn.Properties.VpcConfig.SubnetIds.map((x: Json) => x.Ref);
+  assert.ok(subnets.length === 2 && subnets.every((x) => x.includes('privateegress')));
+  const env = envOf(json, NOTIFY_FUNCTION);
+  assert.equal(env.BOOKING_CONFIRMATION_EMAIL_ENABLED, 'true');
+  assert.equal(env.BOOKING_EMAIL_SANDBOX_ALLOWLIST, '', 'staging emails nobody unless explicitly allowlisted');
+  assert.equal(env.SES_FROM_EMAIL, 'bookings@playxcafe.com');
+  assert.equal(env.SES_REGION, 'ap-south-1');
+  assert.ok(env.USER_POOL_ID && env.DB_SECRET_ARN);
+  assert.ok(!JSON.stringify(env).match(/PHONEPE|SECRET_NAME|QUEUE/), 'no payment configuration');
+});
+
+test('Stage 2F: sender IAM — SES SendEmail pinned to the verified sender, ListUsers + AdminGetUser on this pool only, no PhonePe/SQS', () => {
+  const { json } = synth();
+  const statements = statementsFor(json, NOTIFY_FUNCTION);
+  const ses = statements.filter((st) => actionsOf(st).some((a) => a.startsWith('ses:')));
+  assert.equal(ses.length, 1);
+  assert.deepEqual(actionsOf(ses[0]), ['ses:SendEmail']);
+  assert.deepEqual(ses[0].Condition, { StringEquals: { 'ses:FromAddress': 'bookings@playxcafe.com' } });
+  const cognito = statements.filter((st) => actionsOf(st).some((a) => a.startsWith('cognito-idp:')));
+  assert.equal(cognito.length, 1);
+  assert.deepEqual(actionsOf(cognito[0]), ['cognito-idp:ListUsers', 'cognito-idp:AdminGetUser']);
+  assert.ok(JSON.stringify(cognito[0].Resource).includes('UserPool'), 'scoped to the user pool ARN');
+  assert.ok(!statements.some(isPhonePeSecretStatement));
+  assert.ok(!statements.some((st) => actionsOf(st).some((a) => a.startsWith('sqs:'))));
+});
+
+test('Stage 2F: no payment Lambda gains SES or Cognito permissions (producers only write the outbox row)', () => {
+  const { json } = synth();
+  for (const name of PAYMENT_FUNCTIONS) {
+    const actions = statementsFor(json, name).flatMap(actionsOf);
+    assert.ok(!actions.some((a) => a.startsWith('ses:') || a.startsWith('cognito-idp:')), `${name} must not send email or read Cognito`);
+    assert.equal(envOf(json, name).SES_FROM_EMAIL, undefined);
+  }
+});
+
+test('Stage 2F: rate(1 minute) rule targets only the sender, no retries; Errors alarm with no actions', () => {
+  const { json } = synth();
+  const [fnId] = lambdaNamed(json, NOTIFY_FUNCTION);
+  const rules = Object.values<Json>(json.Resources).filter(
+    (r) => r.Type === 'AWS::Events::Rule' && r.Properties.Targets.some((t: Json) => t.Arn['Fn::GetAtt']?.[0] === fnId),
+  );
+  assert.equal(rules.length, 1);
+  assert.equal(rules[0].Properties.ScheduleExpression, 'rate(1 minute)');
+  assert.equal(rules[0].Properties.Targets.length, 1);
+  assert.equal(rules[0].Properties.Targets[0].RetryPolicy.MaximumRetryAttempts, 0);
+
+  const alarm = Object.values<Json>(json.Resources).find(
+    (r) => r.Type === 'AWS::CloudWatch::Alarm' && r.Properties.AlarmName === 'playx-dev-booking-confirmation-notify-errors',
+  )!.Properties;
+  assert.equal(alarm.MetricName, 'Errors');
+  assert.deepEqual(alarm.Dimensions, [{ Name: 'FunctionName', Value: { Ref: fnId } }]);
+  assert.equal(alarm.Threshold, 0);
+  assert.equal(alarm.ComparisonOperator, 'GreaterThanThreshold');
+  assert.equal(alarm.TreatMissingData, 'notBreaching');
+  assert.equal(alarm.AlarmActions, undefined);
+});
+
+test('Stage 2F: no new queue, secret, API route or NAT', () => {
+  const { template, json } = synth();
+  template.resourceCountIs('AWS::SQS::Queue', 2);
+  template.resourceCountIs('AWS::SecretsManager::Secret', 1);
+  template.resourceCountIs('AWS::EC2::NatGateway', 1);
+  template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
+  const [fnId] = lambdaNamed(json, NOTIFY_FUNCTION);
+  const apiPermission = Object.values<Json>(json.Resources).some(
+    (r) => r.Type === 'AWS::Lambda::Permission' && r.Properties.Principal === 'apigateway.amazonaws.com' && JSON.stringify(r.Properties.FunctionName).includes(fnId),
+  );
+  assert.equal(apiPermission, false, 'the sender has no API route');
+});
+
+test('Stage 2F: bookingEmailSandboxAllowlist — context only, emails only, normalized; anything else fails the synth', () => {
+  assert.equal(resolveBookingEmailSandboxAllowlist(undefined), '');
+  assert.equal(resolveBookingEmailSandboxAllowlist(''), '');
+  assert.equal(resolveBookingEmailSandboxAllowlist(' QA@PlayXCafe.com , qa@playxcafe.com,dev@example.com '), 'qa@playxcafe.com,dev@example.com');
+  assert.throws(() => resolveBookingEmailSandboxAllowlist('not-an-email'), /not an email/);
+  assert.throws(() => resolveBookingEmailSandboxAllowlist(42), /comma-separated/);
+  const { json } = synth({ bookingEmailSandboxAllowlist: 'QA@playxcafe.com' });
+  assert.equal(envOf(json, NOTIFY_FUNCTION).BOOKING_EMAIL_SANDBOX_ALLOWLIST, 'qa@playxcafe.com');
 });

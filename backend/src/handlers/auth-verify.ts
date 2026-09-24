@@ -60,6 +60,39 @@ function parseBody(raw: string | undefined): VerifyBody | null {
   return { email, code, session };
 }
 
+const MARK_VERIFIED_ATTEMPTS = 3;
+const MARK_VERIFIED_RETRY_MS = 150;
+
+/** Sets email_verified=true, retrying briefly. Returns false if every attempt failed. Logs only
+ *  the error class name, never the email. */
+async function markEmailVerified(
+  client: ReturnType<typeof getCognitoClient>,
+  userPoolId: string,
+  email: string,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= MARK_VERIFIED_ATTEMPTS; attempt += 1) {
+    try {
+      await client.send(
+        new AdminUpdateUserAttributesCommand({
+          UserPoolId: userPoolId,
+          Username: email,
+          UserAttributes: [{ Name: 'email_verified', Value: 'true' }],
+        }),
+      );
+      return true;
+    } catch (err) {
+      console.error(
+        'POST /auth/verify failed to mark email verified',
+        JSON.stringify({ attempt, error: err instanceof Error ? err.name : 'unknown_error' }),
+      );
+      if (attempt < MARK_VERIFIED_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, MARK_VERIFIED_RETRY_MS * attempt));
+      }
+    }
+  }
+  return false;
+}
+
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const body = parseBody(event.body);
   if (!body) {
@@ -113,25 +146,19 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return errorResponse(500, 'temporary_error', 'Unable to complete sign-in right now.');
     }
 
-    // Best-effort only: mark the email verified now that its owner has proven receipt of the
-    // OTP, mirroring what Cognito's native EMAIL_OTP first factor used to do automatically as a
-    // side effect (see auth-start.ts's header) — CUSTOM_AUTH has no equivalent built-in behavior,
-    // so this flow does it explicitly instead. Tokens are already issued at this point, so a
-    // failure here (e.g. this Lambda momentarily lacking the permission) must never fail sign-in
-    // itself; it just leaves email_verified for next time.
-    try {
-      await client.send(
-        new AdminUpdateUserAttributesCommand({
-          UserPoolId: userPoolId,
-          Username: body.email,
-          UserAttributes: [{ Name: 'email_verified', Value: 'true' }],
-        }),
-      );
-    } catch (err) {
-      console.error(
-        'POST /auth/verify failed to mark email verified',
-        err instanceof Error ? err.name : 'unknown_error',
-      );
+    // Mark the email verified now that its owner has proven receipt of the OTP, mirroring what
+    // Cognito's native EMAIL_OTP first factor used to do automatically as a side effect (see
+    // auth-start.ts's header) — CUSTOM_AUTH has no equivalent built-in behavior, so this flow does
+    // it explicitly instead. Reached ONLY once Cognito has issued tokens for a correct answer: a
+    // wrong code (re-presented challenge above) or a dead session (NotAuthorizedException below)
+    // never gets here.
+    //
+    // Stage 2F: required, not best-effort. The booking-confirmation email is sent only to a
+    // Cognito email with email_verified=true, so a signed-in customer must never be left
+    // unverified. Retried briefly; if it still fails, the tokens are withheld and the customer
+    // gets the same retryable "temporary_error" as any other sign-in failure.
+    if (!(await markEmailVerified(client, userPoolId, body.email))) {
+      return errorResponse(500, 'temporary_error', 'Unable to complete sign-in right now.');
     }
 
     return jsonResponse(200, {

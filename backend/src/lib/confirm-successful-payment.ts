@@ -34,6 +34,13 @@
 // discarded: the second payment is recorded PAID (duplicate_of_payment_id -> the primary one),
 // flagged refundRequired + manualReview, and the booking/allocations are left exactly as the first
 // payment left them. No refund is ever claimed as done — it is a manual action for support.
+//
+// STAGE 2F — BOOKING-CONFIRMATION EMAIL: the two branches that leave payment=PAID + booking=CONFIRMED
+// for the first time also insert the booking's one 'BOOKING_CONFIRMED' outbox row
+// (booking-notifications.ts), inside this same transaction and under a SAVEPOINT — so the row exists
+// iff the confirmation committed, and an insert failure can never fail the confirmation. The email
+// itself is sent later by the scheduled sender, never from here. alreadyConfirmed replays, duplicate
+// payments and refund_required outcomes enqueue nothing.
 
 import type { DbClient } from './allocate-simulators';
 import {
@@ -47,6 +54,7 @@ import {
   PaymentNotFoundError,
 } from './payment-errors';
 import { secureBookingCapacity } from './booking-capacity';
+import { enqueueBookingConfirmedNotification, type EnqueueResult } from './booking-notifications';
 import { inrToPaise } from './money';
 import {
   TERMINAL_NON_PAID_STATUSES,
@@ -101,6 +109,9 @@ export interface ConfirmSuccessfulPaymentResult {
   /** Set when this payment is a second collected payment for an already-paid booking: the id of
    *  the payment that actually confirmed the booking. `outcome` is then 'refund_required'. */
   duplicateOfPaymentId?: string;
+  /** Stage 2F: set only when this call confirmed the booking — whether its confirmation-email
+   *  outbox row was written ('queued'), already existed, or could not be written ('not_queued'). */
+  confirmationNotification?: EnqueueResult;
 }
 
 /** Exact comparison in integer paise — never floating point. A malformed reported amount is a
@@ -252,10 +263,13 @@ export async function confirmSuccessfulPayment(
 
     if (booking.status === 'confirmed') {
       // Already confirmed (e.g. an admin confirmed it, which itself secured capacity). Record the
-      // payment; do not touch allocations.
+      // payment; do not touch allocations. This payment is what makes it a paid confirmation, so the
+      // customer's confirmation email is queued here too (at most once per booking regardless).
       await markPaid(null);
+      const notification = await enqueueBookingConfirmedNotification(db, booking.id);
       await db.query('COMMIT');
-      return { paymentId: payment.id, bookingId: booking.id, alreadyConfirmed: false, outcome: 'confirmed' };
+      logNotificationQueued(booking.id, notification);
+      return { paymentId: payment.id, bookingId: booking.id, alreadyConfirmed: false, outcome: 'confirmed', confirmationNotification: notification };
     }
 
     // booking.status === 'pending': secure capacity under the simulators lock (payment and booking
@@ -291,17 +305,28 @@ export async function confirmSuccessfulPayment(
       await markPaid(null);
     }
     await confirmBookingStatus(db, booking.id);
+    const notification = await enqueueBookingConfirmedNotification(db, booking.id);
     await db.query('COMMIT');
+    logNotificationQueued(booking.id, notification);
 
     return {
       paymentId: payment.id,
       bookingId: booking.id,
       alreadyConfirmed: false,
       outcome: capacity.kind === 'reallocated' ? 'confirmed_after_reallocation' : 'confirmed',
+      confirmationNotification: notification,
     };
   } catch (err) {
     await db.query('ROLLBACK').catch(() => {});
     throw err;
+  }
+}
+
+/** Logged only after COMMIT, so "queued" always means the row is durable. 'not_queued' was already
+ *  logged (as an error) by the enqueue itself. */
+function logNotificationQueued(bookingId: string, result: EnqueueResult): void {
+  if (result === 'queued') {
+    console.log('booking confirmation notification queued', JSON.stringify({ bookingId }));
   }
 }
 

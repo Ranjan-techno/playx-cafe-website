@@ -115,6 +115,18 @@ phone number is currently discarded (see the `NOTE` comment in `js/cognito-auth.
 required or auto-verified, and the field is free-text, not guaranteed valid E.164). Extending the User Pool
 schema with a custom attribute (or storing it in RDS alongside the booking) is a separate change.
 
+Booking-confirmation email (Stage 2F): `backend/src/lib/confirm-successful-payment.ts` — the single path every
+verified PhonePe success goes through — inserts one `BOOKING_CONFIRMED` row into `booking_notifications`
+(`database/migrations/008_booking_notifications.sql`, UNIQUE per booking) inside its own transaction, under a
+SAVEPOINT so it can never fail a confirmation. The scheduled sender (`backend/src/handlers/booking-confirmation-notify.ts`,
+`infra/lib/constructs/notifications.ts`, every minute) is the only Lambda with SES/Cognito access: it emails the
+booking owner's verified Cognito email (`ListUsers` by `bookings.cognito_sub`, then `AdminGetUser` by the returned
+canonical Username — never the form's `customer_email`),
+retries with backoff, and suppresses SANDBOX bookings unless `-c bookingEmailSandboxAllowlist=...` lists the
+recipient. Migration 008 does not backfill, so bookings confirmed before it are never emailed, and it is applied
+*before* the Stage 2F code is deployed (migration-only deploy first). Kill switch:
+`notificationConfigs.dev.confirmationEmailEnabled`.
+
 CORS: `infra/lib/config/api-config.ts`'s dev config allows only `https://ranjan-techno.github.io` (the GitHub
 Pages origin this site deploys to) to call the API. Testing this integration from `python3 -m http.server`
 locally will hit CORS errors calling the deployed API unless that config is temporarily extended (and

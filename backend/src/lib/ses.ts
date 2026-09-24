@@ -1,4 +1,6 @@
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { buildBookingConfirmationEmail } from './booking-confirmation-email';
+import type { BookingConfirmationDetails } from './booking-notifications';
 
 // Guest-first passwordless auth: shared SES client for auth-create-challenge.ts, cached at
 // module scope so warm Lambda invocations reuse it — same caching rationale as lib/cognito.ts's
@@ -48,4 +50,39 @@ export async function sendOtpEmail(toEmail: string, code: string): Promise<void>
       },
     }),
   );
+}
+
+/**
+ * Stage 2F: sends the booking-confirmation email (booking-notifications.ts's sender) through the
+ * same verified SES identity, client and SES_* configuration as the OTP above — no second sender,
+ * domain or provider. Text + HTML parts. Resolves to SES's MessageId. Never logs the recipient or
+ * the body; the caller logs only ids and outcome codes.
+ */
+export async function sendBookingConfirmationEmail(
+  toEmail: string,
+  details: BookingConfirmationDetails,
+): Promise<string | undefined> {
+  const fromEmail = process.env.SES_FROM_EMAIL;
+  const fromName = process.env.SES_FROM_NAME ?? 'Play X Cafe';
+  if (!fromEmail) {
+    throw new Error('SES_FROM_EMAIL env var not configured');
+  }
+  const replyTo = process.env.SES_REPLY_TO_EMAIL;
+  const content = buildBookingConfirmationEmail(details);
+
+  const response = await getSesClient().send(
+    new SendEmailCommand({
+      Source: `${fromName} <${fromEmail}>`,
+      Destination: { ToAddresses: [toEmail] },
+      ...(replyTo ? { ReplyToAddresses: [replyTo] } : {}),
+      Message: {
+        Subject: { Data: content.subject, Charset: 'UTF-8' },
+        Body: {
+          Text: { Data: content.text, Charset: 'UTF-8' },
+          Html: { Data: content.html, Charset: 'UTF-8' },
+        },
+      },
+    }),
+  );
+  return response?.MessageId;
 }
