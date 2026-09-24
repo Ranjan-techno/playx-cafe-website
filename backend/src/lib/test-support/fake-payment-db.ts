@@ -274,7 +274,7 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
       const row = store.bookings.find((b) => b.id === id && b.cognito_sub === sub);
       return {
         rows: (row
-          ? [{ id: row.id, booking_number: row.booking_number, status: row.status, product_name: row.product_name }]
+          ? [{ id: row.id, booking_number: row.booking_number, status: row.status, product_name: row.product_name, booking_environment: row.booking_environment ?? null }]
           : []) as unknown as T[],
       };
     }
@@ -306,6 +306,28 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
       return { rows: (row ? [{ ...row }] : []) as unknown as T[] };
     }
 
+    // findPaymentById: SELECT * FROM payments WHERE id = $1 (no lock)
+    if (/^SELECT \* FROM payments WHERE id = \$1$/i.test(sql)) {
+      const [id] = params as [string];
+      const row = store.payments.find((p) => p.id === id);
+      return { rows: (row ? [{ ...row, metadata: row.metadata ? { ...row.metadata } : row.metadata }] : []) as unknown as T[] };
+    }
+
+    // advanceFastReconcileSeq: forward-only compare-and-set of metadata.fastReconcileSeq
+    // (fromSeq -> fromSeq + 1) on an open attempt.
+    if (/^UPDATE payments\b/i.test(sql) && /'fastReconcileSeq'/.test(sql)) {
+      const [paymentId, expectedSeq] = params as [string, number];
+      const nextSeq = expectedSeq + 1;
+      const row = store.payments.find((p) => p.id === paymentId);
+      const current = Number((row?.metadata as { fastReconcileSeq?: unknown } | null)?.fastReconcileSeq ?? 0);
+      if (row && (row.payment_status === 'created' || row.payment_status === 'pending') && current === expectedSeq) {
+        touch(row);
+        row.metadata = { ...(row.metadata ?? {}), fastReconcileSeq: nextSeq };
+        return { rows: [{ id: row.id }] as unknown as T[] };
+      }
+      return { rows: [] };
+    }
+
     // lockPaymentById: SELECT * FROM payments WHERE id = $1 FOR UPDATE
     if (/FROM payments\b/i.test(sql) && /WHERE id = \$1 FOR UPDATE/i.test(sql)) {
       const [id] = params as [string];
@@ -327,6 +349,14 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         heldLockReleases.push(await getOrCreateLock(store.paymentLocks, row.id).acquire());
       }
       return { rows: (row ? [{ ...row }] : []) as unknown as T[] };
+    }
+
+    // findPaymentByProviderOrderId: SELECT * FROM payments WHERE provider = $1 AND
+    // provider_order_id = $2 (no lock).
+    if (/^SELECT \* FROM payments WHERE provider = \$1 AND provider_order_id = \$2$/i.test(sql)) {
+      const [provider, providerOrderId] = params as [PaymentProvider, string];
+      const row = store.payments.find((p) => p.provider === provider && p.provider_order_id === providerOrderId);
+      return { rows: (row ? [{ ...row, metadata: row.metadata ? { ...row.metadata } : row.metadata }] : []) as unknown as T[] };
     }
 
     // sync-payment-status.ts's paymentIdFor: SELECT id FROM payments WHERE provider = $1 AND

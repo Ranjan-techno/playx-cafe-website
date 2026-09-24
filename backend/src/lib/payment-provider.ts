@@ -41,6 +41,10 @@ export interface CreatePaymentResult {
   redirectUrl?: string;
   /** The provider's own id for the order it just created. */
   providerOrderRef?: string;
+  /** When the provider says this order expires (PhonePe's expireAt), normalized by the adapter to a
+   *  valid Date — never a browser-supplied value. Absent when the provider didn't report a usable
+   *  one; callers then fall back to the expiry they asked for (metadata.orderExpiresAt). */
+  providerExpiresAt?: Date;
   /** The provider's raw create-order response, kept only for audit/debugging (payments.metadata)
    *  — never read back for a business decision. */
   raw?: unknown;
@@ -57,6 +61,8 @@ export interface ProviderStatusResult {
   currency?: string;
   /** Only meaningful when outcome is 'FAILED'. */
   failureReason?: string;
+  /** The order's expiry as the provider reports it (normalized, see CreatePaymentResult). */
+  providerExpiresAt?: Date;
   raw?: unknown;
 }
 

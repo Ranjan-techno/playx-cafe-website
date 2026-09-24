@@ -1,6 +1,9 @@
 // Customer payment client - POST /payments/start and GET /payments/{bookingId}/status
-// (backend/src/handlers/payment-start.ts, payment-status.ts), shared by index.html
-// (the post-booking payment step and My Bookings) and payment-return.html.
+// (backend/src/handlers/payment-start.ts, payment-status.ts), or their PRODUCTION twins
+// POST /payments/production/start and GET /payments/production/{bookingId}/status on
+// playxcafe.com - the route set is chosen from the page's hostname by js/api-routes.js, never by
+// anything in the request/URL. Shared by index.html (the post-booking payment step and My
+// Bookings) and payment-return.html.
 //
 // Trust model, kept deliberately narrow:
 //   - The backend is the only authority on amount, booking state and payment state. Nothing here
@@ -24,19 +27,14 @@
   // unaffected - that comes from the server-controlled redirect.
   const CHECKOUT_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
-  // Sandbox PhonePe payment UI gate. Central on purpose: at production cutover, add the
-  // production hostnames here (or empty the list and flip `allowAll`) - nothing else changes.
-  // Currently ONLY staging and local development show Pay buttons; playxcafe.com and
-  // www.playxcafe.com do not.
-  const PAYMENT_UI_CONFIG = {
-    enabledHostnames: ['staging.playxcafe.com', 'localhost', '127.0.0.1'],
-    allowAll: false
-  };
+  // Hostname -> environment routing (js/api-routes.js): the global in the browser, required in tests.
+  const ApiRoutes = root.PlayXApiRoutes || (typeof require === 'function' ? require('./api-routes.js') : null);
 
+  // PhonePe payment UI gate: staging/local development (SANDBOX routes) and playxcafe.com /
+  // www.playxcafe.com (PRODUCTION routes, which the backend limits to the production tester
+  // allowlist). The host list lives in js/api-routes.js next to the routing it implies.
   function isPaymentUiEnabled(hostname) {
-    if (PAYMENT_UI_CONFIG.allowAll) return true;
-    if (typeof hostname !== 'string') return false;
-    return PAYMENT_UI_CONFIG.enabledHostnames.includes(hostname.toLowerCase());
+    return ApiRoutes.isPaymentUiHostname(hostname);
   }
 
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -133,8 +131,9 @@
 
   // Which booking is the return page about? The backend puts `?bookingId=` on PhonePe's return
   // URL (payment-start.ts) and we also stash the id before redirecting. Either is only an
-  // IDENTIFIER: whatever it names, GET /payments/{id}/status enforces ownership and reports the
-  // authoritative state, and no other URL parameter (success=true, code=..., etc.) is ever read.
+  // IDENTIFIER: whatever it names, GET /payments/{id}/status (or its PRODUCTION twin) enforces
+  // ownership and reports the authoritative state, and no other URL parameter (success=true,
+  // code=..., environment=..., etc.) is ever read.
   function resolveBookingId(search, storage, now = Date.now()) {
     let fromUrl = null;
     try {
@@ -149,9 +148,11 @@
 
   // ---- Client --------------------------------------------------------------------------------
   // Everything environment-specific is injected so the same code runs in the browser and in tests.
+  //   routes      -> PlayXApiRoutes.ROUTES.SANDBOX | .PRODUCTION (defaults to SANDBOX; the
+  //                  browser client passes the hostname's set - see getBrowserClient)
   //   getToken()  -> Promise<string|null>  (CognitoAuth.getAccessToken)
   //   redirect(u) -> full-page navigation  (window.location.href = u)
-  function createPaymentClient({ apiBaseUrl, getToken, fetchImpl, storage, redirect }) {
+  function createPaymentClient({ apiBaseUrl, routes = ApiRoutes.ROUTES.SANDBOX, getToken, fetchImpl, storage, redirect }) {
     // Double-click / double-tap protection: one start request in flight at a time, per client,
     // across every button that shares it.
     let startInFlight = false;
@@ -189,7 +190,7 @@
       startInFlight = true;
       let redirected = false;
       try {
-        const { body, error } = await authorizedFetch('/payments/start', {
+        const { body, error } = await authorizedFetch(routes.startPayment, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bookingId })
@@ -213,7 +214,7 @@
 
     async function getPaymentStatus(bookingId) {
       if (!isUuid(bookingId)) return failure('not_found');
-      const { body, error } = await authorizedFetch(`/payments/${encodeURIComponent(bookingId)}/status`, {
+      const { body, error } = await authorizedFetch(routes.paymentStatus(bookingId), {
         method: 'GET'
       });
       if (error) return error;
@@ -313,12 +314,14 @@
   }
 
   // One shared client per page, wired to the real globals, so the booking step and My Bookings
-  // share a single double-click guard. Browser-only (needs AWS_CONFIG/CognitoAuth/window).
+  // share a single double-click guard. Browser-only (needs AWS_CONFIG/CognitoAuth/window). Its
+  // routes come from this page's hostname only (PlayXApiRoutes.currentRoutes()).
   let browserClient = null;
   function getBrowserClient() {
     if (!browserClient) {
       browserClient = createPaymentClient({
         apiBaseUrl: AWS_CONFIG.apiBaseUrl,
+        routes: ApiRoutes.currentRoutes(),
         getToken: () => (CognitoAuth.isConfigured ? CognitoAuth.getAccessToken() : Promise.resolve(null)),
         fetchImpl: (...args) => window.fetch(...args),
         storage: window.sessionStorage,
@@ -336,7 +339,6 @@
   const api = {
     CHECKOUT_STORAGE_KEY,
     CHECKOUT_MAX_AGE_MS,
-    PAYMENT_UI_CONFIG,
     isPaymentUiEnabled,
     describeStatusFailure,
     describeStartInProgress,

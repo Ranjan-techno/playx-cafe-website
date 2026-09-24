@@ -8,8 +8,9 @@
 // any fragment of the raw secret text (JSON.parse's own error message quotes the input, so it is
 // deliberately swallowed).
 //
-// Webhook username/password are OPTIONAL in the model: callback credentials have not been
-// configured yet, and payment-start/order-status must not require them.
+// Webhook username/password are OPTIONAL in the model (set together or not at all): payment-start/
+// order-status/reconciliation must not require them. Only the PRODUCTION webhook Lambda (Stage 2C,
+// phonepe-runtime.ts's getPhonePeWebhookRuntime) needs them, and it fails closed without them.
 
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 

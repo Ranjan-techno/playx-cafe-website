@@ -14,6 +14,13 @@ export interface PaymentConfig {
   checkoutHoldMinutes: number;
   /** Customer return page PhonePe redirects to after checkout (UX only, never payment proof). */
   returnUrl: string;
+  /** Server-side payment-start kill switch, rendered as the Lambda's PAYMENT_START_ENABLED
+   *  ('true'/'false'). Always set explicitly — the backend treats anything but "true" as off. */
+  paymentStartEnabled: boolean;
+  /** Server-side booking-creation kill switch for this runtime's create-booking Lambda, rendered
+   *  as BOOKING_CREATE_ENABLED ('true'/'false'). Always set explicitly — the backend treats
+   *  anything but "true" as off. */
+  bookingCreateEnabled: boolean;
 }
 
 export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
@@ -22,6 +29,8 @@ export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
     phonepeEnvironment: 'SANDBOX',
     checkoutHoldMinutes: 20,
     returnUrl: 'https://staging.playxcafe.com/payment-return.html',
+    paymentStartEnabled: true,
+    bookingCreateEnabled: true,
   },
   prod: {
     // TODO: revisit before a prod stack exists (a production PhonePe secret + production return
@@ -30,6 +39,55 @@ export const paymentConfigs: Record<'dev' | 'prod', PaymentConfig> = {
     phonepeEnvironment: 'SANDBOX',
     checkoutHoldMinutes: 20,
     returnUrl: 'https://staging.playxcafe.com/payment-return.html',
+    paymentStartEnabled: false,
+    bookingCreateEnabled: false,
+  },
+};
+
+/**
+ * PhonePe cutover Stage 2A: the isolated PRODUCTION PhonePe payment runtime that lives INSIDE the
+ * existing shared stack (same account, HttpApi, VPC, NAT, RDS, Cognito and simulator inventory) —
+ * alongside the sandbox runtime above. This is NOT the config of a separate AWS "prod" stack
+ * (that is paymentConfigs.prod, which no stack reads yet); the 'dev'/'prod' key is only the stack
+ * this runtime is added to.
+ *
+ * The environment is fixed here, at deploy time: no request header/body/Origin/hostname can
+ * choose it. The type pins `phonepeEnvironment` to PRODUCTION. In Stages 2A-2C both
+ * `paymentStartEnabled` and `bookingCreateEnabled` were pinned to the literal `false`.
+ *
+ * PhonePe cutover Stage 2D (controlled production verification transaction): the 'dev' entry —
+ * the one the deployed stack reads — turns BOTH production switches on, so POST
+ * /bookings/production and POST /payments/production/start reach their handlers. They are still
+ * NOT open to the public: the backend's second gate (backend/src/lib/production-access.ts) admits
+ * only Cognito subs listed in resolveProductionTesters' list and answers 403 — before any DB,
+ * secret, PhonePe or SQS work — to everyone else, including everyone when the list is empty.
+ * The unused 'prod' entry stays off.
+ */
+export interface ProductionPaymentConfig
+  extends Omit<PaymentConfig, 'phonepeEnvironment' | 'paymentStartEnabled' | 'bookingCreateEnabled'> {
+  phonepeEnvironment: 'PRODUCTION';
+  paymentStartEnabled: boolean;
+  bookingCreateEnabled: boolean;
+}
+
+export const productionPaymentConfigs: Record<'dev' | 'prod', ProductionPaymentConfig> = {
+  dev: {
+    phonepeSecretName: 'playx/phonepe/production',
+    phonepeEnvironment: 'PRODUCTION',
+    checkoutHoldMinutes: 20,
+    returnUrl: 'https://playxcafe.com/payment-return.html',
+    // Stage 2D: ON for the controlled production transaction — tester-allowlisted subs only.
+    paymentStartEnabled: true,
+    bookingCreateEnabled: true,
+  },
+  prod: {
+    // Not read by any stack this phase (see bin/infra.ts).
+    phonepeSecretName: 'playx/phonepe/production',
+    phonepeEnvironment: 'PRODUCTION',
+    checkoutHoldMinutes: 20,
+    returnUrl: 'https://playxcafe.com/payment-return.html',
+    paymentStartEnabled: false,
+    bookingCreateEnabled: false,
   },
 };
 
@@ -47,4 +105,34 @@ export function resolveSandboxTesters(contextValue: unknown, env: NodeJS.Process
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
     .join(',');
+}
+
+/** A Cognito User Pool `sub`: a lowercase UUID. */
+const COGNITO_SUB_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * PhonePe cutover Stage 2C: who may create a PRODUCTION booking and start a PRODUCTION payment once
+ * the production kill switches are later turned on — comma-separated Cognito SUBJECTS ONLY, supplied
+ * at deploy time via `cdk deploy -c phonepeProductionTesters=<sub>[,<sub>]` or the
+ * PHONEPE_PRODUCTION_TESTERS environment variable, never committed. Rendered as the
+ * PHONEPE_PRODUCTION_TESTERS Lambda variable on exactly the production create-booking and
+ * payment-start Lambdas (backend/src/lib/production-access.ts enforces it).
+ *
+ * Empty/absent is valid and FAILS CLOSED (nobody). Unlike the sandbox list, an email (or anything
+ * else that is not a Cognito sub) is refused at synth time rather than silently never matching:
+ * the backend trusts only the verified JWT `sub`. Not a secret (plain Lambda configuration).
+ */
+export function resolveProductionTesters(contextValue: unknown, env: NodeJS.ProcessEnv = process.env): string {
+  const raw =
+    typeof contextValue === 'string' && contextValue.trim() !== '' ? contextValue : (env.PHONEPE_PRODUCTION_TESTERS ?? '');
+  const entries = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  for (const entry of entries) {
+    if (!COGNITO_SUB_RE.test(entry)) {
+      throw new Error('phonepeProductionTesters must list Cognito subs (lowercase UUIDs) only');
+    }
+  }
+  return [...new Set(entries)].join(',');
 }

@@ -24,7 +24,9 @@
 
 <!-- ============ PAYMENT RETURN ============ -->
 <!-- Nothing on this page is decided by the URL: js/payment-return.js asks the backend
-     (GET /payments/{bookingId}/status) what actually happened and renders only that. -->
+     (GET /payments/{bookingId}/status, or GET /payments/production/{bookingId}/status on
+     playxcafe.com - chosen by hostname in js/api-routes.js) what actually happened and renders
+     only that. -->
 <main class="auth-page">
   <div class="auth-card payment-return-card" id="paymentReturnCard">
     <div class="payment-return-icon" id="paymentReturnIcon" aria-hidden="true"></div>
@@ -46,6 +48,7 @@
 <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
 <script src="js/aws-config.js"></script>
 <script src="js/cognito-auth.js"></script>
+<script src="js/api-routes.js"></script>
 <script src="js/payments.js"></script>
 <script src="js/payment-return.js"></script>
 </body>
