@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyStructuredResultV2 } from 'aws-lambda';
 import type { DbClient } from '../lib/allocate-simulators';
 import { getDb, resetDb } from '../lib/db';
+import { storedEnvironmentMatches, type AppEnvironment } from '../lib/environment';
 import { errorResponse, jsonResponse } from '../lib/http';
 import { PaymentDomainError, PaymentProviderError, PaymentProviderOrderNotFoundError } from '../lib/payment-errors';
 import { UUID_RE, mapPaymentError, readIdentity } from '../lib/payment-http';
@@ -26,6 +27,12 @@ import { reconcilePayment } from '../lib/reconcile-payment';
 // that can mark a payment PAID or confirm a booking — then reports what the DATABASE says after
 // that. A transient provider failure never fails the poll: the caller just sees the last known
 // state and polls again.
+//
+// ENVIRONMENT: an open attempt is reconciled only when its typed payments.payment_environment
+// belongs to the provider's configured environment (a transitional NULL counts as SANDBOX only,
+// see lib/environment.ts). This sandbox Lambda therefore never asks its sandbox PhonePe client
+// about an explicitly PRODUCTION payment: the provider is not called and the last known DB state
+// is reported instead.
 
 export type PaymentOutcome =
   | 'not_started'
@@ -39,7 +46,7 @@ export type PaymentOutcome =
 export interface PaymentStatusDeps {
   getDb: () => Promise<DbClient>;
   resetDb: () => void;
-  getProvider: () => Promise<PaymentProviderAdapter>;
+  getProvider: () => Promise<PaymentProviderAdapter & { environment: AppEnvironment }>;
 }
 
 const defaultDeps: PaymentStatusDeps = { getDb, resetDb, getProvider: () => getPhonePePaymentProvider() };
@@ -84,7 +91,11 @@ export function createHandler(deps: PaymentStatusDeps = defaultDeps) {
       if (open && !payments.some((p) => p.payment_status === 'paid')) {
         try {
           const provider = await deps.getProvider();
-          await reconcilePayment(db, provider, open.provider_order_id);
+          if (storedEnvironmentMatches(open.payment_environment, provider.environment)) {
+            await reconcilePayment(db, provider, open.provider_order_id);
+          } else {
+            console.error('GET /payments/status reconcile refused: payment environment does not match the provider');
+          }
         } catch (err) {
           // Provider/credential trouble or a domain-level refusal: keep the last known state.
           if (

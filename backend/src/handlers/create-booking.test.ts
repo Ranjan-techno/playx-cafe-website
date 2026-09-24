@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBody } from './create-booking';
+import { BOOKING_ENVIRONMENT, insertPendingBooking, parseBody, type PendingBookingInsert } from './create-booking';
 
 // POST /bookings request-body validation. This is the only AWS/DB-free logic in the handler (see
 // parseBody's export comment in create-booking.ts) — everything downstream of it (product lookup,
@@ -127,4 +127,81 @@ test('rejects a missing body entirely', () => {
 
 test('rejects malformed JSON', () => {
   assert.equal(parseBody('{not json'), null);
+});
+
+// ----------------------------------------------------------------------------
+// bookings.booking_environment (typed column, migration 006)
+// ----------------------------------------------------------------------------
+
+const INSERT_VALUES: PendingBookingInsert = {
+  productId: 'prod-1',
+  cognitoSub: 'sub-1',
+  customerName: 'Priya Sharma',
+  customerPhone: '+919876543210',
+  customerEmail: 'priya@example.com',
+  racers: 1,
+  durationMinutes: 30,
+  simulatorType: 'static',
+  priceInr: '999.00',
+  scheduledStartAt: new Date('2026-09-26T12:30:00Z'),
+  scheduledEndAt: new Date('2026-09-26T13:00:00Z'),
+  notes: null,
+};
+
+function recordingDb() {
+  const calls: { text: string; params: unknown[] }[] = [];
+  return {
+    calls,
+    async query(text: string, params: unknown[] = []) {
+      calls.push({ text, params });
+      return { rows: [{ id: 'b-1', booking_number: 1001 }] };
+    },
+  };
+}
+
+test('booking environment: the deployed POST /bookings writes the server-side SANDBOX constant', () => {
+  assert.equal(BOOKING_ENVIRONMENT, 'SANDBOX');
+});
+
+test('booking environment: the INSERT explicitly lists booking_environment and binds the backend value', async () => {
+  const db = recordingDb();
+  const row = await insertPendingBooking(db as never, INSERT_VALUES, BOOKING_ENVIRONMENT);
+  assert.deepEqual(row, { id: 'b-1', booking_number: 1001 });
+  assert.equal(db.calls.length, 1);
+  const { text, params } = db.calls[0];
+  assert.match(text, /scheduled_start_at, scheduled_end_at, notes, booking_environment\)/);
+  assert.match(text, /\$10, \$11, \$12, \$13\)/);
+  assert.equal(params.length, 13);
+  assert.equal(params[12], 'SANDBOX');
+  assert.match(text, /'pending'/, 'status stays a literal');
+});
+
+test('booking environment: a missing/unknown environment throws before any SQL', async () => {
+  const db = recordingDb();
+  for (const env of [undefined, null, '', 'sandbox', 'LIVE']) {
+    await assert.rejects(() => insertPendingBooking(db as never, INSERT_VALUES, env as never), /bookingEnvironment must be SANDBOX or PRODUCTION/);
+  }
+  assert.equal(db.calls.length, 0);
+});
+
+test('booking environment: the request body cannot choose it (parseBody never reads or returns it)', () => {
+  for (const extra of [
+    { booking_environment: 'PRODUCTION' },
+    { bookingEnvironment: 'PRODUCTION' },
+    { environment: 'PRODUCTION' },
+    { paymentEnvironment: 'PRODUCTION' },
+  ]) {
+    const result = parseBody(rawBody(extra));
+    assert.ok(result, 'extra keys are ignored, not rejected');
+    assert.deepEqual(Object.keys(result).sort(), ['customerEmail', 'customerName', 'customerPhone', 'bookingDate', 'notes', 'productCode', 'startTime'].sort());
+    assert.ok(!JSON.stringify(result).includes('PRODUCTION'));
+  }
+});
+
+test('booking environment: the handler passes BOOKING_ENVIRONMENT, not anything derived from the request', () => {
+  const src = require('node:fs').readFileSync(require.resolve('./create-booking.ts'), 'utf8') as string;
+  const handlerSrc = src.slice(src.indexOf('export const handler'));
+  assert.match(handlerSrc, /insertPendingBooking\([\s\S]*?BOOKING_ENVIRONMENT,\s*\)/);
+  assert.doesNotMatch(src, /body\.(booking_?[eE]nvironment|environment)/);
+  assert.doesNotMatch(src, /event\.headers|domainName|requestContext\.http/, 'no Origin/Host-based decision');
 });

@@ -21,6 +21,7 @@ import {
 } from './booking-status';
 import { istPartsToUtcDate, toIstDateTimeParts } from './opening-hours';
 import { secureBookingCapacity } from './booking-capacity';
+import { effectiveEnvironmentSql, effectiveStoredEnvironment } from './environment';
 import { lockBookingForPayment, type PaymentStatus } from './payment-repository';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -226,21 +227,28 @@ export function describePaymentReviewReason(code: string | null | undefined): st
 
 export type PaymentEnvironmentLabel = 'SANDBOX' | 'PRODUCTION';
 
-/** Whitelist: only the two known values ever reach the admin response. */
+/** Maps a typed payments.payment_environment / bookings.booking_environment column value for the
+ *  admin response. Whitelist: only the two known values ever reach it; a transitional NULL is
+ *  SANDBOX (see environment.ts), anything else null. */
 export function toPaymentEnvironment(value: string | null | undefined): PaymentEnvironmentLabel | null {
-  return value === 'SANDBOX' || value === 'PRODUCTION' ? value : null;
+  return effectiveStoredEnvironment(value);
 }
+
+/** Business-logic filter for real money: only payments whose typed payment_environment is
+ *  PRODUCTION. A transitional NULL counts as SANDBOX (never PRODUCTION); metadata.paymentEnvironment
+ *  is never consulted. */
+const LIVE_PAYMENT_SQL = `${effectiveEnvironmentSql('payment_environment')} = 'PRODUCTION'`;
 
 export interface CollectedPaymentRow {
   payment_status: string;
   amount_inr: string;
   /** payments.metadata.refundRequired = true (typed extract, never the raw blob). */
   refund_required: boolean | null;
-  /** payments.metadata.paymentEnvironment; absent/null on older rows. */
+  /** Typed payments.payment_environment (never metadata); NULL only on transitional rows. */
   payment_environment?: string | null;
 }
 
-/** Revenue = genuine (non-SANDBOX) PAID payments that Play X Cafe actually keeps. SANDBOX rows are
+/** Revenue = genuine PRODUCTION PAID payments that Play X Cafe actually keeps. SANDBOX rows are
  *  test transactions: excluded from BOTH revenue and refund exposure. A paid payment flagged refundRequired
  *  (duplicate collection, or paid after the reservation was lost) is customer money awaiting a
  *  manual refund, so it is reported separately and never as revenue. Refunded rows are neither.
@@ -254,7 +262,8 @@ export function summarizeCollectedPayments(rows: CollectedPaymentRow[]): {
   let refundCount = 0;
   for (const row of rows) {
     if (row.payment_status !== 'paid') continue;
-    if (row.payment_environment === 'SANDBOX') continue;
+    // Typed column only; SANDBOX, transitional NULL (= SANDBOX) and anything unknown are not money.
+    if (effectiveStoredEnvironment(row.payment_environment) !== 'PRODUCTION') continue;
     const paise = inrToPaise(row.amount_inr);
     if (row.refund_required === true) {
       refundPaise += paise;
@@ -339,7 +348,7 @@ export async function getDashboardSummary(db: DbClient, istDate: string): Promis
     `SELECT payment_status, COUNT(*) AS count
      FROM payments
      WHERE created_at >= $1 AND created_at < $2
-       AND COALESCE(metadata ->> 'paymentEnvironment', '') <> 'SANDBOX'
+       AND ${LIVE_PAYMENT_SQL}
      GROUP BY payment_status`,
     [start, end],
   );
@@ -349,10 +358,10 @@ export async function getDashboardSummary(db: DbClient, istDate: string): Promis
   const { rows: collectedRows } = await db.query<CollectedPaymentRow>(
     `SELECT payment_status, amount_inr,
             (metadata ->> 'refundRequired') = 'true' AS refund_required,
-            metadata ->> 'paymentEnvironment' AS payment_environment
+            payment_environment
      FROM payments
      WHERE payment_status = 'paid' AND paid_at >= $1 AND paid_at < $2
-       AND COALESCE(metadata ->> 'paymentEnvironment', '') <> 'SANDBOX'`,
+       AND ${LIVE_PAYMENT_SQL}`,
     [start, end],
   );
   const collected = summarizeCollectedPayments(collectedRows);
@@ -437,6 +446,8 @@ interface AdminBookingListRow {
   simulator_codes: string[] | null;
   latest_payment_status: string | null;
   latest_payment_provider: string | null;
+  /** Typed bookings.booking_environment; NULL only on transitional rows. */
+  booking_environment?: string | null;
 }
 
 export interface AdminBookingListItem {
@@ -461,6 +472,8 @@ export interface AdminBookingListItem {
   createdAt: string;
   allocatedSimulators: string[];
   payment: { status: string; provider: string } | null;
+  /** From the typed bookings.booking_environment column (transitional NULL -> SANDBOX). */
+  bookingEnvironment: PaymentEnvironmentLabel | null;
 }
 
 export function mapAdminBookingListRow(row: AdminBookingListRow): AdminBookingListItem {
@@ -483,6 +496,7 @@ export function mapAdminBookingListRow(row: AdminBookingListRow): AdminBookingLi
     payment: row.latest_payment_status
       ? { status: row.latest_payment_status, provider: row.latest_payment_provider ?? 'unknown' }
       : null,
+    bookingEnvironment: toPaymentEnvironment(row.booking_environment),
   };
 }
 
@@ -541,7 +555,8 @@ export async function listAdminBookings(db: DbClient, query: AdminBookingsQuery)
        b.scheduled_start_at, b.scheduled_end_at, b.duration_minutes, b.price_inr, b.status, b.created_at,
        alloc.codes AS simulator_codes,
        pay.payment_status AS latest_payment_status,
-       pay.provider AS latest_payment_provider
+       pay.provider AS latest_payment_provider,
+       b.booking_environment
      FROM bookings b
      JOIN products p ON p.id = b.product_id
      LEFT JOIN LATERAL (
@@ -591,6 +606,8 @@ interface AdminBookingDetailRow {
   notes: string | null;
   created_at: Date;
   updated_at: Date;
+  /** Typed bookings.booking_environment; NULL only on transitional rows. */
+  booking_environment?: string | null;
 }
 
 interface AdminAllocationDetailRow {
@@ -659,6 +676,8 @@ export interface AdminBookingDetail {
     duplicateOfPaymentId: string | null;
   }[];
   currentPaymentStatus: string | null;
+  /** From the typed bookings.booking_environment column (transitional NULL -> SANDBOX). */
+  bookingEnvironment: PaymentEnvironmentLabel | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -721,6 +740,7 @@ export function buildAdminBookingDetail(
       duplicateOfPaymentId: p.duplicate_of_payment_id ?? null,
     })),
     currentPaymentStatus,
+    bookingEnvironment: toPaymentEnvironment(booking.booking_environment),
     createdAt: booking.created_at.toISOString(),
     updatedAt: booking.updated_at.toISOString(),
   };
@@ -734,7 +754,8 @@ export async function getAdminBookingDetail(db: DbClient, bookingId: string): Pr
   const { rows } = await db.query<AdminBookingDetailRow>(
     `SELECT b.id, b.booking_number, b.customer_name, b.customer_phone, b.customer_email,
             p.product_code, p.name AS product_name, b.racers, b.duration_minutes, b.simulator_type,
-            b.price_inr, b.status, b.scheduled_start_at, b.scheduled_end_at, b.notes, b.created_at, b.updated_at
+            b.price_inr, b.status, b.scheduled_start_at, b.scheduled_end_at, b.notes, b.created_at, b.updated_at,
+            b.booking_environment
      FROM bookings b
      JOIN products p ON p.id = b.product_id
      WHERE b.id = $1`,
@@ -759,7 +780,7 @@ export async function getAdminBookingDetail(db: DbClient, bookingId: string): Pr
     `SELECT id, provider, provider_order_id, provider_transaction_id, amount_inr, currency,
             payment_status, failure_reason, created_at, paid_at,
             (metadata ->> 'refundRequired') = 'true' AS refund_required,
-            metadata ->> 'paymentEnvironment' AS payment_environment,
+            payment_environment,
             metadata ->> 'reason' AS review_reason,
             duplicate_of_payment_id
      FROM payments
@@ -836,7 +857,8 @@ interface AdminPaymentListRow {
   failure_reason: string | null;
   created_at: Date;
   paid_at: Date | null;
-  /** Typed extracts from payments.metadata (never the raw blob) — see the list query. */
+  /** Typed extracts from payments.metadata (never the raw blob) — see the list query —
+   *  plus the typed payment_environment column. */
   refund_required?: boolean | null;
   payment_environment?: string | null;
   review_reason?: string | null;
@@ -862,7 +884,8 @@ export interface AdminPaymentListItem {
   /** True when money was collected that support must refund manually (late payment with no
    *  capacity, or a second payment on an already-paid booking). Never means a refund happened. */
   refundRequired: boolean;
-  /** 'SANDBOX' marks a PhonePe test transaction (never real money); null for unmarked rows. */
+  /** From the typed payments.payment_environment column: 'SANDBOX' marks a PhonePe test
+   *  transaction (never real money; a transitional NULL is SANDBOX), 'PRODUCTION' real money. */
   paymentEnvironment: PaymentEnvironmentLabel | null;
   /** Human-readable reason it needs manual attention (whitelisted wording, null unless refundRequired). */
   reviewReason: string | null;
@@ -932,7 +955,7 @@ export async function listAdminPayments(db: DbClient, query: AdminPaymentsQuery)
     `SELECT p.id, p.booking_id, b.booking_number, p.provider, p.provider_order_id, p.provider_transaction_id,
             p.amount_inr, p.currency, p.payment_status, p.failure_reason, p.created_at, p.paid_at,
             (p.metadata ->> 'refundRequired') = 'true' AS refund_required,
-            p.metadata ->> 'paymentEnvironment' AS payment_environment,
+            p.payment_environment,
             p.metadata ->> 'reason' AS review_reason,
             p.duplicate_of_payment_id
      FROM payments p

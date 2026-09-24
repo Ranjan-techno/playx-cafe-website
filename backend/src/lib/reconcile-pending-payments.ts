@@ -8,10 +8,17 @@
 // same reason: confirmSuccessfulPayment locks payment+booking and treats an already-paid attempt as
 // a no-op, and terminal attempts are never selected.
 //
+// ENVIRONMENT: a run is for exactly one environment, passed explicitly by the caller (the existing
+// scheduled Lambda passes SANDBOX). Only that environment's attempts are selected (SANDBOX also
+// covers transitional NULL rows; PRODUCTION never does), and the provider must be configured for
+// the same environment — otherwise the run refuses to start rather than asking one environment's
+// PhonePe account about the other's orders.
+//
 // Output is safe to log: ids, statuses and error class names only — never provider payloads,
 // checkout URLs, tokens or credentials.
 
 import type { DbClient } from './allocate-simulators';
+import { assertAppEnvironment, storedEnvironmentMatches, type AppEnvironment } from './environment';
 import { PaymentDomainError } from './payment-errors';
 import type { PaymentProviderAdapter } from './payment-provider';
 import { listPaymentsForReconciliation, mergePaymentMetadata } from './payment-repository';
@@ -58,11 +65,19 @@ export interface ReconcileRunOptions {
 
 export async function reconcilePendingPayments(
   db: DbClient,
-  provider: PaymentProviderAdapter,
+  provider: PaymentProviderAdapter & { environment: AppEnvironment },
+  environment: AppEnvironment,
   options: ReconcileRunOptions = {},
 ): Promise<ReconcileRunSummary> {
+  assertAppEnvironment(environment, 'environment');
+  if (provider.environment !== environment) {
+    throw new Error(`Payment provider is configured for ${String(provider.environment)}, not ${environment}`);
+  }
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
-  const candidates = await listPaymentsForReconciliation(db, batchSize);
+  // The SQL already filters by environment; re-checking each row keeps the invariant local.
+  const candidates = (await listPaymentsForReconciliation(db, environment, batchSize)).filter((c) =>
+    storedEnvironmentMatches(c.payment_environment, environment),
+  );
 
   const summary: ReconcileRunSummary = {
     scanned: candidates.length,

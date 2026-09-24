@@ -28,6 +28,7 @@ async function seedPaidPendingBooking(
   const booking = seedBooking(store, { priceInr: overrides.priceInr ?? '999.00', holdAllocations: overrides.holdAllocations ?? 1 });
   const db = createFakePaymentDbClient(store);
   const payment = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
     bookingId: booking.id,
     provider: 'mock',
     providerOrderId: overrides.providerOrderId ?? `order-${booking.id}`,
@@ -107,13 +108,13 @@ test('duplicate provider transaction is protected: a different payment attempt c
   const booking = seedBooking(store, { priceInr: '500.00' });
   const db = createFakePaymentDbClient(store);
 
-  const paymentA = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-a', amountInr: '500.00' });
+  const paymentA = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-a', amountInr: '500.00' });
   await confirmSuccessfulPayment(db, { provider: 'mock', providerOrderId: paymentA.provider_order_id, amountInr: 500.0, providerTransactionId: 'shared-txn' });
 
   // A second, unrelated booking + payment attempt somehow reports the exact same provider
   // transaction id (e.g. a provider bug, or a spoofed callback).
   const bookingB = seedBooking(store, { priceInr: '500.00' });
-  const paymentB = await createPaymentAttempt(db, { bookingId: bookingB.id, provider: 'mock', providerOrderId: 'order-b', amountInr: '500.00' });
+  const paymentB = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: bookingB.id, provider: 'mock', providerOrderId: 'order-b', amountInr: '500.00' });
 
   await assert.rejects(
     () => confirmSuccessfulPayment(db, { provider: 'mock', providerOrderId: paymentB.provider_order_id, amountInr: 500.0, providerTransactionId: 'shared-txn' }),
@@ -130,13 +131,13 @@ test('one successful payment per booking: a second collected payment is recorded
   const booking = seedBooking(store, { priceInr: '750.00', holdAllocations: 1 });
   const db = createFakePaymentDbClient(store);
 
-  const paymentA = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-a', amountInr: '750.00' });
+  const paymentA = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-a', amountInr: '750.00' });
   await confirmSuccessfulPayment(db, { provider: 'mock', providerOrderId: paymentA.provider_order_id, amountInr: 750.0 });
   const allocationsAfterFirst = JSON.stringify(store.allocations);
 
   // A second attempt against the same (already-confirmed) booking — e.g. the customer double-paid,
   // or a stale client retried checkout after the first attempt had already gone through.
-  const paymentB = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-b', amountInr: '750.00' });
+  const paymentB = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-b', amountInr: '750.00' });
   const result = await confirmSuccessfulPayment(db, { provider: 'mock', providerOrderId: paymentB.provider_order_id, amountInr: 750.0 });
 
   assert.equal(result.outcome, 'refund_required');
@@ -228,12 +229,12 @@ test('failed attempt followed by successful attempt: booking is confirmed only b
   const booking = seedBooking(store, { priceInr: '1099.00', holdAllocations: 1 });
   const db = createFakePaymentDbClient(store);
 
-  const attemptA = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'attempt-a', amountInr: '1099.00' });
+  const attemptA = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'attempt-a', amountInr: '1099.00' });
   // Attempt A's provider callback reported failure — simulated directly (markPaymentFailed's own
   // behavior is covered by payment-repository.test.ts and sync-payment-status.test.ts).
   store.payments.find((p) => p.id === attemptA.id)!.payment_status = 'failed';
 
-  const attemptB = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'attempt-b', amountInr: '1099.00' });
+  const attemptB = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'attempt-b', amountInr: '1099.00' });
   const result = await confirmSuccessfulPayment(db, { provider: 'mock', providerOrderId: attemptB.provider_order_id, amountInr: 1099.0 });
 
   assert.equal(result.paymentId, attemptB.id);
@@ -256,7 +257,7 @@ test('booking already cancelled: the payment is recorded PAID and flagged for ma
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00', status: 'cancelled', holdAllocations: 0 });
   const db = createFakePaymentDbClient(store);
-  const payment = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-cancelled', amountInr: '399.00' });
+  const payment = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-cancelled', amountInr: '399.00' });
 
   const result = await confirmSuccessfulPayment(db, { provider: 'mock', providerOrderId: payment.provider_order_id, amountInr: 399.0 });
 

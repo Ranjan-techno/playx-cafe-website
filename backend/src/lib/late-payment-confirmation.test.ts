@@ -40,6 +40,7 @@ async function pendingWithPayment(store: FakePaymentDbStore, opts: { simulatorId
   });
   const db = createFakePaymentDbClient(store);
   const payment = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
     bookingId: booking.id,
     provider: 'phonepe',
     providerOrderId: `order-${booking.id}`,
@@ -136,7 +137,7 @@ test('a Duo (2 static) booking needs BOTH rigs: with one taken it cannot be real
     holdExpiresAt: new Date(T0 + 15 * MIN), start: SLOT_START, end: SLOT_END,
   });
   const db = createFakePaymentDbClient(store);
-  await createPaymentAttempt(db, { bookingId: booking.id, provider: 'phonepe', providerOrderId: 'duo', amountInr: '1800.00' });
+  await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'phonepe', providerOrderId: 'duo', amountInr: '1800.00' });
   clockAt(T0 + 16 * MIN);
   takenBy(store, 'sim-S2');
 
@@ -193,7 +194,7 @@ test('T0 / T+15 / T+16 / T+17: A holds at T0; A\'s hold lapses at T+15; B and C 
   const a = await bookViaAllocator(store); // real allocateSimulators -> S1 on hold until T+15
   assert.deepEqual(rows(store, a.booking.id).map((r) => r.simulator_id), ['sim-S1']);
   const db = createFakePaymentDbClient(store);
-  await createPaymentAttempt(db, { bookingId: a.booking.id, provider: 'phonepe', providerOrderId: 'order-A', amountInr: '999.00' });
+  await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: a.booking.id, provider: 'phonepe', providerOrderId: 'order-A', amountInr: '999.00' });
 
   clockAt(T0 + 15 * MIN); // exactly at expiry the hold no longer blocks (hold_expires_at > now() is false)
   assert.deepEqual(findDoubleBookings(store, new Date(T0 + 15 * MIN)), []);
@@ -223,7 +224,7 @@ test('same timeline but only B booked in between: A is moved to the free rig S2 
   const store = createFakePaymentDbStore();
   const a = await bookViaAllocator(store);
   const db = createFakePaymentDbClient(store);
-  await createPaymentAttempt(db, { bookingId: a.booking.id, provider: 'phonepe', providerOrderId: 'order-A', amountInr: '999.00' });
+  await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: a.booking.id, provider: 'phonepe', providerOrderId: 'order-A', amountInr: '999.00' });
   clockAt(T0 + 16 * MIN);
   await bookViaAllocator(store, '500.00'); // B takes S1
 

@@ -9,6 +9,7 @@
 // implement for tests. Defined once there rather than a second time here.
 
 import type { DbClient } from './allocate-simulators';
+import { assertAppEnvironment, environmentMatchSql, type AppEnvironment } from './environment';
 
 export type PaymentProvider = 'phonepe' | 'mock';
 export type PaymentStatus = 'created' | 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';
@@ -29,6 +30,10 @@ export interface PaymentRow {
   payment_status: PaymentStatus;
   failure_reason: string | null;
   metadata: Record<string, unknown> | null;
+  /** Typed SANDBOX/PRODUCTION marker (migration 006) — the source of truth; metadata.paymentEnvironment
+   *  is only a mirror. NULL only on a transitional row written before this code was deployed (see
+   *  environment.ts). */
+  payment_environment: AppEnvironment | null;
   /** Set only on a 'paid' row that duplicates an earlier paid payment for the same booking (see
    *  005_duplicate_payment_recording.sql). NULL/undefined for every primary payment. */
   duplicate_of_payment_id?: string | null;
@@ -47,6 +52,8 @@ export interface BookingForPaymentRow {
   racers: number;
   scheduled_start_at: Date;
   scheduled_end_at: Date;
+  /** Typed environment (migration 006); NULL only on a transitional row — see environment.ts. */
+  booking_environment: AppEnvironment | null;
 }
 
 export interface AllocationLockRow {
@@ -65,19 +72,28 @@ export interface CreatePaymentAttemptInput {
   providerOrderId: string;
   amountInr: string;
   currency?: string;
+  /** Required, from the validated backend PhonePe config — never from client input. Written to the
+   *  typed payments.payment_environment column and mirrored into metadata.paymentEnvironment. */
+  paymentEnvironment: AppEnvironment;
   metadata?: Record<string, unknown> | null;
 }
 
 /** Inserts a new 'created' payment attempt row. Never sets payment_status to anything but the
  *  column default ('created') — a caller advances it later via markPaymentPending/
  *  confirmSuccessfulPayment/markPaymentFailed/markPaymentExpired, each a deliberate, auditable
- *  transition rather than this function guessing an initial state. */
+ *  transition rather than this function guessing an initial state.
+ *
+ *  payment_environment is always written explicitly (the column has no DEFAULT); a missing or
+ *  unknown environment throws before any SQL runs. metadata.paymentEnvironment is overwritten with
+ *  the same value so the compatibility mirror can never disagree with the typed column. */
 export async function createPaymentAttempt(db: DbClient, input: CreatePaymentAttemptInput): Promise<PaymentRow> {
+  const paymentEnvironment = assertAppEnvironment(input.paymentEnvironment, 'paymentEnvironment');
+  const metadata = { ...(input.metadata ?? {}), paymentEnvironment };
   const { rows } = await db.query<PaymentRow>(
-    `INSERT INTO payments (booking_id, provider, provider_order_id, amount_inr, currency, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO payments (booking_id, provider, provider_order_id, amount_inr, currency, metadata, payment_environment)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [input.bookingId, input.provider, input.providerOrderId, input.amountInr, input.currency ?? 'INR', input.metadata ?? null],
+    [input.bookingId, input.provider, input.providerOrderId, input.amountInr, input.currency ?? 'INR', metadata, paymentEnvironment],
   );
   return rows[0];
 }
@@ -89,7 +105,7 @@ export async function createPaymentAttempt(db: DbClient, input: CreatePaymentAtt
  *  payment row exists). */
 export async function lockBookingForPayment(db: DbClient, bookingId: string): Promise<BookingForPaymentRow | null> {
   const { rows } = await db.query<BookingForPaymentRow>(
-    `SELECT id, status, price_inr, simulator_type, racers, scheduled_start_at, scheduled_end_at
+    `SELECT id, status, price_inr, simulator_type, racers, scheduled_start_at, scheduled_end_at, booking_environment
      FROM bookings WHERE id = $1 FOR UPDATE`,
     [bookingId],
   );
@@ -335,6 +351,7 @@ export interface ReconcilableAttempt {
   provider: PaymentProvider;
   provider_order_id: string;
   payment_status: PaymentStatus;
+  payment_environment: AppEnvironment | null;
 }
 
 /** Background-reconciliation candidates: open ('created'/'pending') PhonePe attempts that have a
@@ -344,20 +361,28 @@ export interface ReconcilableAttempt {
  *  is a separate policy. Terminal rows
  *  (paid/failed/expired/refunded) are never selected. Least-recently-checked first (falling back
  *  to created_at), so a bounded batch rotates through all open attempts instead of re-checking the
- *  same oldest rows. Read-only, no lock: confirmSuccessfulPayment locks per payment. */
+ *  same oldest rows. Read-only, no lock: confirmSuccessfulPayment locks per payment.
+ *
+ *  `environment` is required and filters on the typed payment_environment column, so one
+ *  environment's reconciler can never pick up (and query its provider about) the other's rows:
+ *  SANDBOX also selects transitional NULL rows; PRODUCTION selects PRODUCTION only, never NULL
+ *  (see environment.ts's environmentMatchSql). */
 export async function listPaymentsForReconciliation(
   db: DbClient,
+  environment: AppEnvironment,
   limit: number,
 ): Promise<ReconcilableAttempt[]> {
+  assertAppEnvironment(environment, 'environment');
   const { rows } = await db.query<ReconcilableAttempt>(
-    `SELECT id, booking_id, provider, provider_order_id, payment_status
+    `SELECT id, booking_id, provider, provider_order_id, payment_status, payment_environment
      FROM payments
      WHERE provider = 'phonepe'
        AND payment_status IN ('created', 'pending')
+       AND ${environmentMatchSql('payment_environment', '$1', environment)}
        AND metadata #>> '{checkout,redirectUrl}' IS NOT NULL
      ORDER BY COALESCE((metadata ->> 'reconcileCheckedAt')::timestamptz, created_at), id
-     LIMIT $1`,
-    [limit],
+     LIMIT $2`,
+    [environment, limit],
   );
   return rows;
 }

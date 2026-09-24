@@ -20,7 +20,7 @@ async function setup(holdMinutes = 15) {
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '999.00', simulatorIds: ['sim-S1'], holdExpiresAt: new Date(T0 + holdMinutes * MIN), ...SLOT });
   const db = createFakePaymentDbClient(store);
-  const payment = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'phonepe', providerOrderId: 'ord-1', amountInr: '999.00' });
+  const payment = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'phonepe', providerOrderId: 'ord-1', amountInr: '999.00' });
   return { store, booking, db, payment, provider: new ScriptedProvider(db) };
 }
 

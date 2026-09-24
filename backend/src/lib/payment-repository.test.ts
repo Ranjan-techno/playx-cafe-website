@@ -5,6 +5,7 @@ import {
   confirmBookingStatus,
   createPaymentAttempt,
   findOtherPaidPaymentForBooking,
+  listPaymentsForReconciliation,
   lockBookingForPayment,
   lockPaymentByProviderOrderId,
   markPaymentExpired,
@@ -12,7 +13,8 @@ import {
   markPaymentPaid,
   markPaymentPending,
 } from './payment-repository';
-import { createFakePaymentDbClient, createFakePaymentDbStore, seedBooking } from './test-support/fake-payment-db';
+import type { DbClient } from './allocate-simulators';
+import { createFakePaymentDbClient, createFakePaymentDbStore, seedBooking, type FakePaymentDbStore } from './test-support/fake-payment-db';
 
 // "payment record creation/domain model" — direct unit coverage of the repository layer itself,
 // independent of the higher-level start-payment.ts/confirm-successful-payment.ts flows
@@ -23,7 +25,7 @@ test('createPaymentAttempt inserts a row defaulting to "created" with no paid_at
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
 
-  const row = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-1', amountInr: '399.00' });
+  const row = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-1', amountInr: '399.00' });
 
   assert.equal(row.payment_status, 'created');
   assert.equal(row.currency, 'INR');
@@ -41,7 +43,7 @@ test('lockPaymentByProviderOrderId finds a payment by its (provider, provider_or
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
-  await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-2', amountInr: '399.00' });
+  await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-2', amountInr: '399.00' });
 
   const found = await lockPaymentByProviderOrderId(db, 'mock', 'order-2');
   assert.ok(found);
@@ -54,7 +56,7 @@ test('markPaymentPaid sets status, paid_at, and provider_transaction_id together
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
-  const payment = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-3', amountInr: '399.00' });
+  const payment = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-3', amountInr: '399.00' });
 
   await markPaymentPaid(db, payment.id, 'txn-99');
 
@@ -68,7 +70,7 @@ test('markPaymentPaid without a transaction id leaves an existing one untouched 
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
-  const payment = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'order-4', amountInr: '399.00' });
+  const payment = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'order-4', amountInr: '399.00' });
   await markPaymentPaid(db, payment.id, 'first-txn');
 
   await markPaymentPaid(db, payment.id, null);
@@ -116,8 +118,8 @@ test('findOtherPaidPaymentForBooking excludes the payment itself and non-paid ro
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
-  const paymentA = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'a', amountInr: '399.00' });
-  const paymentB = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'b', amountInr: '399.00' });
+  const paymentA = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'a', amountInr: '399.00' });
+  const paymentB = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'b', amountInr: '399.00' });
 
   assert.equal(await findOtherPaidPaymentForBooking(db, booking.id, paymentA.id), null, 'no paid payment exists yet');
 
@@ -132,7 +134,7 @@ test('markPaymentFailed/markPaymentExpired never override an already-paid paymen
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
-  const payment = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'c', amountInr: '399.00' });
+  const payment = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'c', amountInr: '399.00' });
   await markPaymentPaid(db, payment.id, null);
 
   await markPaymentFailed(db, payment.id, 'late failure report');
@@ -146,7 +148,7 @@ test('markPaymentPending only ever moves a "created" attempt to "pending"', asyn
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
-  const payment = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'd', amountInr: '399.00' });
+  const payment = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'd', amountInr: '399.00' });
 
   await markPaymentPending(db, payment.id);
   assert.equal(store.payments.find((p) => p.id === payment.id)!.payment_status, 'pending');
@@ -160,9 +162,9 @@ test('findOtherPaidPaymentForBooking: the duplicate_of_payment_id column, not th
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, { priceInr: '399.00' });
   const db = createFakePaymentDbClient(store);
-  const primary = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'p', amountInr: '399.00' });
-  const dup = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'd', amountInr: '399.00' });
-  const probe = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: 'x', amountInr: '399.00' });
+  const primary = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'p', amountInr: '399.00' });
+  const dup = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'd', amountInr: '399.00' });
+  const probe = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: 'x', amountInr: '399.00' });
   await markPaymentPaid(db, primary.id, null);
   await markPaymentPaid(db, dup.id, null, null, primary.id);
 
@@ -174,4 +176,144 @@ test('findOtherPaidPaymentForBooking: the duplicate_of_payment_id column, not th
   row.metadata = { ...(row.metadata ?? {}), duplicateOfPaymentId: primary.id };
   const found = await findOtherPaidPaymentForBooking(db, booking.id, probe.id);
   assert.ok(found, 'a paid row with a NULL column is a primary candidate regardless of metadata');
+});
+
+// ----------------------------------------------------------------------------
+// payment_environment (typed column, migration 006)
+// ----------------------------------------------------------------------------
+
+/** Wraps a DbClient, recording every statement. */
+function recording(db: DbClient): DbClient & { log: { text: string; params: unknown[] }[] } {
+  const log: { text: string; params: unknown[] }[] = [];
+  return {
+    log,
+    query: async (text: string, params: unknown[] = []) => {
+      log.push({ text, params });
+      return db.query(text, params);
+    },
+  } as DbClient & { log: { text: string; params: unknown[] }[] };
+}
+
+test('createPaymentAttempt writes payment_environment explicitly and mirrors it into metadata', async () => {
+  const store = createFakePaymentDbStore();
+  const booking = seedBooking(store, { priceInr: '399.00' });
+  const db = recording(createFakePaymentDbClient(store));
+
+  const row = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
+    bookingId: booking.id,
+    provider: 'phonepe',
+    providerOrderId: 'env-1',
+    amountInr: '399.00',
+    metadata: { environment: 'SANDBOX', holdExtended: true },
+  });
+
+  assert.equal(row.payment_environment, 'SANDBOX');
+  assert.deepEqual(row.metadata, { environment: 'SANDBOX', holdExtended: true, paymentEnvironment: 'SANDBOX' });
+  const insert = db.log.find((q) => /^\s*INSERT INTO payments/i.test(q.text))!;
+  assert.match(insert.text, /payment_environment\)/);
+  assert.equal(insert.params[6], 'SANDBOX');
+});
+
+test('createPaymentAttempt: stale metadata can never disagree with the typed column', async () => {
+  const store = createFakePaymentDbStore();
+  const booking = seedBooking(store, { priceInr: '399.00' });
+  const db = createFakePaymentDbClient(store);
+  const row = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
+    bookingId: booking.id,
+    provider: 'phonepe',
+    providerOrderId: 'env-2',
+    amountInr: '399.00',
+    metadata: { paymentEnvironment: 'PRODUCTION' },
+  });
+  assert.equal(row.payment_environment, 'SANDBOX');
+  assert.equal(row.metadata?.paymentEnvironment, 'SANDBOX');
+});
+
+test('createPaymentAttempt: a missing or unknown environment throws before any SQL (no silent row)', async () => {
+  const store = createFakePaymentDbStore();
+  const booking = seedBooking(store, { priceInr: '399.00' });
+  const db = recording(createFakePaymentDbClient(store));
+  for (const paymentEnvironment of [undefined, null, '', 'sandbox', 'LIVE']) {
+    await assert.rejects(
+      () =>
+        createPaymentAttempt(db, {
+          bookingId: booking.id,
+          provider: 'phonepe',
+          providerOrderId: `bad-${String(paymentEnvironment)}`,
+          amountInr: '399.00',
+          paymentEnvironment,
+        } as never),
+      /paymentEnvironment must be SANDBOX or PRODUCTION/,
+    );
+  }
+  assert.equal(db.log.length, 0);
+  assert.equal(store.payments.length, 0);
+});
+
+test('lockBookingForPayment returns the typed booking_environment', async () => {
+  const store = createFakePaymentDbStore();
+  const db = createFakePaymentDbClient(store);
+  const sandbox = seedBooking(store, { priceInr: '1.00' });
+  const legacy = seedBooking(store, { priceInr: '1.00', bookingEnvironment: null });
+  assert.equal((await lockBookingForPayment(db, sandbox.id))?.booking_environment, 'SANDBOX');
+  await db.query('COMMIT');
+  assert.equal((await lockBookingForPayment(db, legacy.id))?.booking_environment, null);
+  await db.query('COMMIT');
+});
+
+/** Three open PhonePe attempts with a live checkout: SANDBOX, transitional NULL, PRODUCTION. */
+async function seedEnvironmentAttempts(): Promise<{ store: FakePaymentDbStore; db: DbClient }> {
+  const store = createFakePaymentDbStore();
+  const db = createFakePaymentDbClient(store);
+  for (const env of ['SANDBOX', 'NULL', 'PRODUCTION'] as const) {
+    const booking = seedBooking(store, { priceInr: '1.00' });
+    const row = await createPaymentAttempt(db, {
+      paymentEnvironment: env === 'PRODUCTION' ? 'PRODUCTION' : 'SANDBOX',
+      bookingId: booking.id,
+      provider: 'phonepe',
+      providerOrderId: `ord-${env}`,
+      amountInr: '1.00',
+      metadata: { checkout: { redirectUrl: 'https://pay.test/x' } },
+    });
+    if (env === 'NULL') {
+      store.payments.find((p) => p.id === row.id)!.payment_environment = null;
+    }
+  }
+  return { store, db };
+}
+
+test('listPaymentsForReconciliation(SANDBOX) selects SANDBOX and transitional NULL, never PRODUCTION', async () => {
+  const { db } = await seedEnvironmentAttempts();
+  const rows = await listPaymentsForReconciliation(db, 'SANDBOX', 25);
+  assert.deepEqual(rows.map((r) => r.provider_order_id).sort(), ['ord-NULL', 'ord-SANDBOX']);
+});
+
+test('listPaymentsForReconciliation(PRODUCTION) selects only PRODUCTION, never NULL', async () => {
+  const { db } = await seedEnvironmentAttempts();
+  const rows = await listPaymentsForReconciliation(db, 'PRODUCTION', 25);
+  assert.deepEqual(rows.map((r) => r.provider_order_id), ['ord-PRODUCTION']);
+});
+
+test('listPaymentsForReconciliation SQL: SANDBOX adds the NULL branch, PRODUCTION does not; environment is bound, not interpolated', async () => {
+  const seen: { text: string; params: unknown[] }[] = [];
+  const db: DbClient = { query: async (text: string, params: unknown[] = []) => { seen.push({ text, params }); return { rows: [] }; } } as DbClient;
+  await listPaymentsForReconciliation(db, 'SANDBOX', 5);
+  await listPaymentsForReconciliation(db, 'PRODUCTION', 5);
+  assert.match(seen[0].text, /\(payment_environment = \$1 OR payment_environment IS NULL\)/);
+  assert.deepEqual(seen[0].params, ['SANDBOX', 5]);
+  assert.match(seen[1].text, /AND payment_environment = \$1\s/);
+  assert.doesNotMatch(seen[1].text, /IS NULL/);
+  assert.deepEqual(seen[1].params, ['PRODUCTION', 5]);
+  for (const q of seen) assert.doesNotMatch(q.text, /'(SANDBOX|PRODUCTION)'/);
+});
+
+test('listPaymentsForReconciliation: environment is required (missing/unknown throws, no query)', async () => {
+  let queried = false;
+  const db: DbClient = { query: async () => { queried = true; return { rows: [] }; } } as DbClient;
+  for (const env of [undefined, null, 'sandbox', 25]) {
+    await assert.rejects(() => listPaymentsForReconciliation(db, env as never, 25), /environment must be SANDBOX or PRODUCTION/);
+  }
+  assert.equal(queried, false);
 });

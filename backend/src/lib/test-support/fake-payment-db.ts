@@ -29,6 +29,8 @@ export interface FakeBookingRow {
   cognito_sub?: string;
   booking_number?: number;
   product_name?: string;
+  /** bookings.booking_environment; undefined/null model a transitional NULL row. */
+  booking_environment?: 'SANDBOX' | 'PRODUCTION' | null;
 }
 
 export interface FakeAllocationRow {
@@ -53,6 +55,8 @@ export interface FakePaymentRow {
   failure_reason: string | null;
   metadata: Record<string, unknown> | null;
   duplicate_of_payment_id?: string | null;
+  /** payments.payment_environment; undefined/null model a transitional NULL row. */
+  payment_environment?: 'SANDBOX' | 'PRODUCTION' | null;
   created_at: Date;
   updated_at: Date;
   paid_at: Date | null;
@@ -123,6 +127,8 @@ export function seedBooking(
     cognitoSub?: string;
     bookingNumber?: number;
     productName?: string;
+    /** Default 'SANDBOX' (what create-booking.ts writes); pass null for a transitional NULL row. */
+    bookingEnvironment?: 'SANDBOX' | 'PRODUCTION' | null;
   },
 ): FakeBookingRow {
   const start = input.start ?? new Date(Date.now() + 24 * 60 * 60_000);
@@ -137,6 +143,7 @@ export function seedBooking(
     cognito_sub: input.cognitoSub,
     booking_number: input.bookingNumber ?? 1001,
     product_name: input.productName ?? 'Solo Static 30 min',
+    booking_environment: input.bookingEnvironment === undefined ? 'SANDBOX' : input.bookingEnvironment,
   };
   store.bookings.push(booking);
 
@@ -345,9 +352,17 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
     }
 
     // listPaymentsForReconciliation: open phonepe attempts with a live checkout, recent, least
-    // recently checked first. $1 = limit. No age cut-off.
-    if (/FROM payments\b/i.test(sql) && /payment_status IN \('created', 'pending'\)/i.test(sql) && /LIMIT \$1/i.test(sql)) {
-      const [limit] = params as [number];
+    // recently checked first. $1 = environment, $2 = limit. No age cut-off. The environment
+    // predicate is taken from the SQL text itself, so the real query's NULL handling is what is
+    // exercised: `payment_environment = $1` always, `OR payment_environment IS NULL` only if present.
+    if (/FROM payments\b/i.test(sql) && /payment_status IN \('created', 'pending'\)/i.test(sql) && /LIMIT \$2/i.test(sql)) {
+      const [environment, limit] = params as [string, number];
+      if (!/payment_environment = \$1/i.test(sql)) {
+        throw new Error('FakePaymentDbClient: reconciliation query without an environment predicate');
+      }
+      const nullMatches = /OR payment_environment IS NULL/i.test(sql);
+      const envMatches = (p: FakePaymentRow): boolean =>
+        p.payment_environment === environment || (nullMatches && (p.payment_environment ?? null) === null);
       const checkedAt = (p: FakePaymentRow): number => {
         const c = p.metadata?.reconcileCheckedAt;
         return typeof c === 'string' ? Date.parse(c) : p.created_at.getTime();
@@ -356,12 +371,15 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         .filter(
           (p) =>
             p.provider === 'phonepe' &&
+            envMatches(p) &&
             (p.payment_status === 'created' || p.payment_status === 'pending') &&
             typeof (p.metadata?.checkout as { redirectUrl?: unknown } | undefined)?.redirectUrl === 'string',
         )
         .sort((a, b) => checkedAt(a) - checkedAt(b) || a.id.localeCompare(b.id))
         .slice(0, limit)
-        .map(({ id, booking_id, provider, provider_order_id, payment_status }) => ({ id, booking_id, provider, provider_order_id, payment_status }));
+        .map(({ id, booking_id, provider, provider_order_id, payment_status, payment_environment }) => ({
+          id, booking_id, provider, provider_order_id, payment_status, payment_environment: payment_environment ?? null,
+        }));
       return { rows: rows as unknown as T[] };
     }
 
@@ -473,14 +491,20 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
 
     // createPaymentAttempt: INSERT INTO payments (...) VALUES (...) RETURNING *
     if (/^INSERT INTO payments/i.test(sql)) {
-      const [bookingId, provider, providerOrderId, amountInr, currency, metadata] = params as [
+      const [bookingId, provider, providerOrderId, amountInr, currency, metadata, paymentEnvironment] = params as [
         string,
         PaymentProvider,
         string,
         string,
         string,
         Record<string, unknown> | null,
+        'SANDBOX' | 'PRODUCTION' | undefined,
       ];
+      // Mirrors the real column: CHECK (IN ('SANDBOX','PRODUCTION')), no DEFAULT — the insert must
+      // list the column and bind a value.
+      if (!/payment_environment/i.test(sql) || (paymentEnvironment !== 'SANDBOX' && paymentEnvironment !== 'PRODUCTION')) {
+        throw new Error('FakePaymentDbClient: payments INSERT without an explicit payment_environment');
+      }
       if (store.payments.some((p) => p.provider === provider && p.provider_order_id === providerOrderId)) {
         throw pgUniqueViolation('idx_payments_provider_order_id_unique');
       }
@@ -496,6 +520,7 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         payment_status: 'created',
         failure_reason: null,
         metadata: metadata ?? null,
+        payment_environment: paymentEnvironment,
         created_at: now,
         updated_at: now,
         paid_at: null,

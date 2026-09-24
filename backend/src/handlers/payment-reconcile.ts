@@ -1,6 +1,7 @@
 import type { Context } from 'aws-lambda';
 import type { DbClient } from '../lib/allocate-simulators';
 import { getDb, resetDb } from '../lib/db';
+import type { AppEnvironment } from '../lib/environment';
 import type { PaymentProviderAdapter } from '../lib/payment-provider';
 import { getPhonePePaymentProvider } from '../lib/phonepe-runtime';
 import {
@@ -13,15 +14,22 @@ import {
 // payment attempts. Not an HTTP route — there is no API surface and no caller identity. See
 // lib/reconcile-pending-payments.ts for selection/batching and why repeated runs are safe.
 //
+// This is the SANDBOX reconciler: it passes SANDBOX explicitly, so it only ever selects SANDBOX (and
+// transitional NULL) attempts, and refuses to run if its PhonePe secret is not a SANDBOX one.
+//
 // Logs only ids, statuses and error class names. Never provider payloads, checkout URLs, tokens or
 // credentials.
 
 export interface PaymentReconcileDeps {
   getDb: () => Promise<DbClient>;
   resetDb: () => void;
-  getProvider: () => Promise<PaymentProviderAdapter>;
+  getProvider: () => Promise<PaymentProviderAdapter & { environment: AppEnvironment }>;
   env: Record<string, string | undefined>;
 }
+
+/** The environment this scheduled Lambda reconciles — a backend constant, never configuration
+ *  a caller can influence. */
+export const RECONCILER_ENVIRONMENT: AppEnvironment = 'SANDBOX';
 
 const defaultDeps: PaymentReconcileDeps = {
   getDb,
@@ -43,7 +51,7 @@ export function createHandler(deps: PaymentReconcileDeps = defaultDeps) {
     try {
       const db = await deps.getDb();
       const provider = await deps.getProvider();
-      const summary = await reconcilePendingPayments(db, provider, {
+      const summary = await reconcilePendingPayments(db, provider, RECONCILER_ENVIRONMENT, {
         batchSize: boundedInt(deps.env.RECONCILE_BATCH_SIZE, DEFAULT_BATCH_SIZE, 1, 100),
         hasTimeLeft: context ? () => context.getRemainingTimeInMillis() > SAFETY_MARGIN_MS : undefined,
       });

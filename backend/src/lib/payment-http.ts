@@ -14,6 +14,7 @@ import {
   BookingNotPayableError,
   CheckoutWindowClosedError,
   HoldExpiredError,
+  PaymentEnvironmentMismatchError,
   PaymentProviderError,
   PaymentProviderOrderNotFoundError,
   PaymentStartInProgressError,
@@ -81,7 +82,9 @@ export function mapPaymentError(err: unknown): APIGatewayProxyStructuredResultV2
   if (err instanceof BookingAlreadyPaidError) {
     return errorResponse(409, 'booking_already_paid', 'This booking has already been paid');
   }
-  if (err instanceof BookingNotPayableError) {
+  if (err instanceof BookingNotPayableError || err instanceof PaymentEnvironmentMismatchError) {
+    // Environment mismatch answers exactly like any other unpayable booking — nothing about
+    // environments is revealed to the caller.
     return errorResponse(409, 'booking_not_payable', 'This booking cannot be paid for');
   }
   if (err instanceof HoldExpiredError) {

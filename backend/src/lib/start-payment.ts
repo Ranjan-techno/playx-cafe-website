@@ -13,6 +13,11 @@
 // Handler responsibilities (not here): authenticate the JWT, check booking ownership, and — for
 // SANDBOX — assertPaymentStartAllowed() (sandbox-access.ts).
 //
+// ENVIRONMENT: `input.environment` is the provider's validated config environment. TX1 refuses
+// (PaymentEnvironmentMismatchError) a booking — or an existing open attempt — whose typed
+// environment column does not belong to it; a transitional NULL counts as SANDBOX only (see
+// environment.ts). The new attempt's payment_environment is written from the same value.
+//
 // LOCK ORDER matches confirm-successful-payment.ts / booking-capacity.ts:
 //   payment -> booking -> simulators -> allocations. TX1 has no payment lock to take (it only
 //   reads payments, unlocked, after the booking lock), which is what keeps it deadlock-free
@@ -37,12 +42,14 @@
 
 import { randomUUID } from 'node:crypto';
 import { findAvailableSimulators, insertAllocations, lockSimulatorInventory, type DbClient } from './allocate-simulators';
+import { assertAppEnvironment, storedEnvironmentMatches, type AppEnvironment } from './environment';
 import {
   BookingAlreadyPaidError,
   BookingNotFoundError,
   BookingNotPayableError,
   CheckoutWindowClosedError,
   HoldExpiredError,
+  PaymentEnvironmentMismatchError,
   PaymentProviderError,
   PaymentProviderOrderNotFoundError,
   PaymentStartInProgressError,
@@ -72,8 +79,9 @@ const MAX_RECOVERY_ROUNDS = 2;
 
 export interface StartPaymentInput {
   bookingId: string;
-  /** 'SANDBOX' | 'PRODUCTION' — recorded in payments.metadata.paymentEnvironment (and .environment). */
-  environment: string;
+  /** From the validated PhonePe config (never the request). Must match the booking's
+   *  booking_environment; written to payments.payment_environment (mirrored in metadata). */
+  environment: AppEnvironment;
   /** Configurable hold/order lifetime once checkout starts (payment-settings.ts). */
   checkoutHoldMinutes: number;
   returnUrl?: string;
@@ -115,6 +123,7 @@ export async function startPayment(
   provider: PaymentProviderAdapter,
   input: StartPaymentInput,
 ): Promise<StartPaymentResult> {
+  assertAppEnvironment(input.environment, 'environment');
   const generateProviderOrderId = input.generateProviderOrderId ?? randomUUID;
 
   for (let round = 0; round < MAX_RECOVERY_ROUNDS; round += 1) {
@@ -182,6 +191,9 @@ async function reservePaymentAttempt(
     if (!booking) {
       throw new BookingNotFoundError(input.bookingId);
     }
+    if (!storedEnvironmentMatches(booking.booking_environment, input.environment)) {
+      throw new PaymentEnvironmentMismatchError(booking.id, input.environment, booking.booking_environment);
+    }
     if (booking.status !== 'pending') {
       throw new BookingNotPayableError(booking.id, booking.status);
     }
@@ -202,6 +214,10 @@ async function reservePaymentAttempt(
     // ---- an open attempt already exists -> never create a second live order ----------------
     const open = payments.find((p) => p.payment_status === 'created' || p.payment_status === 'pending');
     if (open) {
+      // Never reuse, or ask this provider about, an attempt that belongs to the other environment.
+      if (!storedEnvironmentMatches(open.payment_environment, input.environment)) {
+        throw new PaymentEnvironmentMismatchError(booking.id, input.environment, open.payment_environment);
+      }
       const { redirectUrl, orderExpiresAt } = checkoutOf(open);
       if (redirectUrl && orderExpiresAt && orderExpiresAt > now && open.provider === provider.provider) {
         await db.query('COMMIT');
@@ -287,11 +303,12 @@ async function reservePaymentAttempt(
       providerOrderId: generateProviderOrderId(),
       amountInr: booking.price_inr, // exact NUMERIC string from bookings
       currency: 'INR',
+      // Typed payments.payment_environment — from the validated PhonePe config via the handler,
+      // never from the request. createPaymentAttempt also mirrors it into
+      // metadata.paymentEnvironment (compatibility/display only).
+      paymentEnvironment: input.environment,
       metadata: {
         environment: input.environment,
-        // Stable marker read by admin revenue/refund-exposure totals (SANDBOX is never real money).
-        // From the validated PhonePe config via the handler — never from the request.
-        paymentEnvironment: input.environment,
         holdExtended: extendedNow || undefined,
         holdReestablished: holdReestablished || undefined,
         holdExpiresAt: holdExpiresAt.toISOString(),

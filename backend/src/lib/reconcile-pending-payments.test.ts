@@ -11,7 +11,8 @@ import {
   type FakePaymentDbStore,
 } from './test-support/fake-payment-db';
 import { ScriptedProvider } from './test-support/scripted-provider';
-import { createHandler } from '../handlers/payment-reconcile';
+import { createHandler, RECONCILER_ENVIRONMENT } from '../handlers/payment-reconcile';
+import type { DbClient } from './allocate-simulators';
 
 const T0 = Date.UTC(2026, 8, 25, 6, 0, 0);
 const MIN = 60_000;
@@ -34,6 +35,7 @@ async function openAttempt(store: FakePaymentDbStore, orderId: string, opts: { s
   });
   const db = createFakePaymentDbClient(store);
   const payment = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
     bookingId: booking.id,
     provider: 'phonepe',
     providerOrderId: orderId,
@@ -57,7 +59,7 @@ test('pending -> still pending: nothing changes but the rotation marker', async 
   const { booking, payment } = await openAttempt(store, 'ord-1');
   provider.statuses.set('ord-1', { outcome: 'PENDING' });
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { still_pending: 1 });
   const stored = store.payments.find((p) => p.id === payment.id)!;
@@ -71,7 +73,7 @@ test('pending -> paid: payment PAID, booking CONFIRMED, allocation CONFIRMED', a
   const { booking, payment } = await openAttempt(store, 'ord-1');
   provider.statuses.set('ord-1', success('TX1'));
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { confirmed: 1 });
   assert.equal(store.payments.find((p) => p.id === payment.id)!.payment_status, 'paid');
@@ -84,7 +86,7 @@ test('pending -> failed: only the payment fails; the booking keeps its hold', as
   const { booking, payment } = await openAttempt(store, 'ord-1');
   provider.statuses.set('ord-1', { outcome: 'FAILED', failureReason: 'PAYMENT_ERROR' });
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { failed: 1 });
   assert.equal(store.payments.find((p) => p.id === payment.id)!.payment_status, 'failed');
@@ -100,13 +102,13 @@ test('selection: terminal, mock-provider and no-live-checkout attempts are skipp
     if (status === 'paid' || status === 'refunded') row.paid_at = new Date();
   }
   const noCheckout = seedBooking(store, { priceInr: '999.00', ...SLOT });
-  await createPaymentAttempt(db, { bookingId: noCheckout.id, provider: 'phonepe', providerOrderId: 'ord-nocheckout', amountInr: '999.00' });
+  await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: noCheckout.id, provider: 'phonepe', providerOrderId: 'ord-nocheckout', amountInr: '999.00' });
   const mockBooking = seedBooking(store, { priceInr: '999.00', ...SLOT });
-  await createPaymentAttempt(db, { bookingId: mockBooking.id, provider: 'mock', providerOrderId: 'ord-mock', amountInr: '999.00', metadata: { checkout: { redirectUrl: 'x' } } });
+  await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: mockBooking.id, provider: 'mock', providerOrderId: 'ord-mock', amountInr: '999.00', metadata: { checkout: { redirectUrl: 'x' } } });
   await openAttempt(store, 'ord-open');
   provider.statuses.set('ord-open', { outcome: 'PENDING' });
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(provider.statusCalls, ['ord-open'], 'only the open PhonePe attempt with a live checkout is queried');
   assert.equal(summary.scanned, 1);
@@ -117,8 +119,8 @@ test('terminal payment is never queried again once a run has settled it', async 
   await openAttempt(store, 'ord-1');
   provider.statuses.set('ord-1', success('TX1'));
 
-  await reconcilePendingPayments(db, provider);
-  const second = await reconcilePendingPayments(db, provider);
+  await reconcilePendingPayments(db, provider, 'SANDBOX');
+  const second = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.equal(provider.statusCalls.length, 1, 'PhonePe was asked exactly once');
   assert.equal(second.scanned, 0);
@@ -128,16 +130,16 @@ test('idempotent repeated runs: still-pending stays pending; repeated success ne
   const { store, db, provider } = setup();
   const { booking } = await openAttempt(store, 'ord-1');
   provider.statuses.set('ord-1', { outcome: 'PENDING' });
-  await reconcilePendingPayments(db, provider);
-  await reconcilePendingPayments(db, provider);
+  await reconcilePendingPayments(db, provider, 'SANDBOX');
+  await reconcilePendingPayments(db, provider, 'SANDBOX');
   assert.equal(store.payments.length, 1, 'no new payment/PhonePe order is ever created');
   assert.equal(provider.createCalls.length, 0);
 
   provider.statuses.set('ord-1', success('TX1'));
-  await reconcilePendingPayments(db, provider);
+  await reconcilePendingPayments(db, provider, 'SANDBOX');
   const snapshot = JSON.stringify([store.payments, store.bookings, store.allocations]);
   // Force the settled attempt back into view to prove even a stray re-run is a no-op.
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
   assert.equal(summary.scanned, 0);
   assert.equal(JSON.stringify([store.payments, store.bookings, store.allocations]), snapshot);
   assert.equal(store.allocations.filter((a) => a.booking_id === booking.id).length, 1);
@@ -153,7 +155,7 @@ test('one failing item does not abort the batch; only class names/codes are repo
   provider.statuses.set('ord-b', new PaymentProviderError('PhonePe order status failed (HTTP 503) secret-token-123', false, 503));
   provider.statuses.set('ord-c', success('TXC'));
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { confirmed: 2, error: 1 });
   assert.equal(summary.hadUnexpectedError, false);
@@ -172,7 +174,7 @@ test('an unexpected (non-domain) error stops the batch: no further provider call
   provider.statuses.set('ord-b', success('TXB'));
   provider.statuses.set('ord-c', success('TXC'));
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { error: 1 });
   assert.equal(summary.hadUnexpectedError, true);
@@ -208,7 +210,7 @@ test('error rotation: expected provider and domain errors are rotated to the bac
   provider.statuses.set('ord-b', { outcome: 'SUCCESS', amountInr: '1.00', currency: 'INR', providerTransactionId: 'TXB' }); // amount mismatch -> domain error
   provider.statuses.set('ord-c', { outcome: 'PENDING' });
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.equal(summary.hadUnexpectedError, false);
   assert.equal(summary.counts.error, 2);
@@ -231,7 +233,7 @@ test('no starvation: >25 candidates, persistent errors in the first batch cannot
     provider.statuses.set(orderId, new PaymentProviderError('provider down', false, 503)); // persistent failure
   }
   clockAt(T0 + 5 * MIN);
-  const first = await reconcilePendingPayments(db, provider); // default batch = 25
+  const first = await reconcilePendingPayments(db, provider, 'SANDBOX'); // default batch = 25
   assert.equal(first.processed, 25);
   assert.equal(first.counts.error, 25);
   const failing = [...provider.statusCalls];
@@ -241,7 +243,7 @@ test('no starvation: >25 candidates, persistent errors in the first batch cannot
 
   provider.statusCalls.length = 0;
   clockAt(T0 + 10 * MIN);
-  const second = await reconcilePendingPayments(db, provider);
+  const second = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(new Set(provider.statusCalls.slice(0, 5)), new Set(neverReached), 'run 2 reaches the five candidates run 1 never got to, first');
   assert.equal(second.counts.still_pending, 5);
@@ -254,7 +256,7 @@ test('no age cut-off: an open attempt older than 6h, 24h and 7 days is still rec
     store.payments.find((p) => p.id === payment.id)!.created_at = new Date(T0 - ageMinutes * MIN);
     provider.statuses.set('ord-old', success('TX-OLD'));
 
-    const summary = await reconcilePendingPayments(db, provider);
+    const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
     assert.equal(summary.scanned, 1, `selected at age ${ageMinutes} min`);
     assert.deepEqual(provider.statusCalls, ['ord-old']);
@@ -272,10 +274,10 @@ test('old open attempts still rotate: an attempt older than 24h that stays pendi
   provider.statuses.set('ord-new', { outcome: 'PENDING' });
 
   clockAt(T0 + MIN);
-  await reconcilePendingPayments(db, provider, { batchSize: 1 });
+  await reconcilePendingPayments(db, provider, 'SANDBOX', { batchSize: 1 });
   assert.deepEqual(provider.statusCalls, ['ord-old'], 'oldest-checked first');
   clockAt(T0 + 5 * MIN);
-  await reconcilePendingPayments(db, provider, { batchSize: 1 });
+  await reconcilePendingPayments(db, provider, 'SANDBOX', { batchSize: 1 });
   assert.deepEqual(provider.statusCalls, ['ord-old', 'ord-new'], 'then the other one — no permanent head-of-line');
 });
 
@@ -285,11 +287,11 @@ test('batch is bounded and rotates: least-recently-checked attempts go first', a
   await openAttempt(store, 'ord-b', { simulatorId: 'sim-S2' });
   await openAttempt(store, 'ord-c', { simulatorId: 'sim-M1' });
 
-  const first = await reconcilePendingPayments(db, provider, { batchSize: 2 });
+  const first = await reconcilePendingPayments(db, provider, 'SANDBOX', { batchSize: 2 });
   assert.equal(first.processed, 2);
   clockAt(T0 + 5 * MIN);
   await mergePaymentMetadata(db, a.payment.id, { reconcileCheckedAt: new Date().toISOString() }); // (already set by run 1; explicit for clarity)
-  const second = await reconcilePendingPayments(db, provider, { batchSize: 2 });
+  const second = await reconcilePendingPayments(db, provider, 'SANDBOX', { batchSize: 2 });
 
   assert.ok(second.items.some((i) => i.paymentId !== first.items[0].paymentId && i.paymentId !== first.items[1].paymentId), 'the attempt skipped in run 1 is reached in run 2');
 });
@@ -299,7 +301,7 @@ test('stops starting new items when out of time and reports the deferred count',
   await openAttempt(store, 'ord-a', { simulatorId: 'sim-S1' });
   await openAttempt(store, 'ord-b', { simulatorId: 'sim-S2' });
   let calls = 0;
-  const summary = await reconcilePendingPayments(db, provider, { hasTimeLeft: () => calls++ < 1 });
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX', { hasTimeLeft: () => calls++ < 1 });
   assert.equal(summary.processed, 1);
   assert.equal(summary.deferred, 1);
 });
@@ -310,7 +312,7 @@ test('late payment after expired hold, capacity available: re-allocated and conf
   clockAt(T0 + 17 * MIN);
   provider.statuses.set('ord-1', success('TX1'));
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { confirmed_after_reallocation: 1 });
   assert.equal(store.bookings.find((b) => b.id === booking.id)!.status, 'confirmed');
@@ -326,7 +328,7 @@ test('late payment after expired hold, capacity unavailable: PAID + refundRequir
   }
   provider.statuses.set('ord-1', success('TX1'));
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { paid_refund_required: 1 });
   const stored = store.payments.find((p) => p.id === payment.id)!;
@@ -340,12 +342,13 @@ test('second successful payment after the booking is already paid: truth preserv
   const { store, db, provider } = setup();
   const { booking, payment: first } = await openAttempt(store, 'ord-1');
   provider.statuses.set('ord-1', success('TX1'));
-  await reconcilePendingPayments(db, provider);
+  await reconcilePendingPayments(db, provider, 'SANDBOX');
   assert.equal(store.bookings.find((b) => b.id === booking.id)!.status, 'confirmed');
   const allocationsBefore = JSON.stringify(store.allocations);
 
   // A historical second order for the same booking is still open at PhonePe and now reports success.
   const second = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
     bookingId: booking.id,
     provider: 'phonepe',
     providerOrderId: 'ord-2',
@@ -354,7 +357,7 @@ test('second successful payment after the booking is already paid: truth preserv
   });
   provider.statuses.set('ord-2', success('TX2'));
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { duplicate_paid_refund_required: 1 });
   const storedSecond = store.payments.find((p) => p.id === second.id)!;
@@ -373,7 +376,7 @@ test('second successful payment after the booking is already paid: truth preserv
   assert.equal(JSON.stringify(store.allocations), allocationsBefore, 'no double allocation');
 
   // Repeated run: settled, never re-queried.
-  const again = await reconcilePendingPayments(db, provider);
+  const again = await reconcilePendingPayments(db, provider, 'SANDBOX');
   assert.equal(again.scanned, 0);
   assert.equal(provider.statusCalls.filter((o) => o === 'ord-2').length, 1);
 });
@@ -382,8 +385,9 @@ test('second successful payment after the booking is already paid: truth preserv
 async function paidBookingWithSecondOrder(store: FakePaymentDbStore, db: ReturnType<typeof createFakePaymentDbClient>, provider: ScriptedProvider, secondOrder: string) {
   const { booking, payment: first } = await openAttempt(store, 'ord-1');
   provider.statuses.set('ord-1', success('TX1'));
-  await reconcilePendingPayments(db, provider);
+  await reconcilePendingPayments(db, provider, 'SANDBOX');
   const second = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
     bookingId: booking.id,
     provider: 'phonepe',
     providerOrderId: secondOrder,
@@ -401,7 +405,7 @@ test('primary REFUNDED, later success: still recorded as a duplicate (manual ref
   const allocationsBefore = JSON.stringify(store.allocations);
   provider.statuses.set('ord-2', success('TX2'));
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { duplicate_paid_refund_required: 1 });
   const stored = store.payments.find((p) => p.id === second.id)!;
@@ -418,11 +422,12 @@ test('duplicate REFUNDED does not become a primary: a further success is a dupli
   const { store, db, provider } = setup();
   const { booking, first, second } = await paidBookingWithSecondOrder(store, db, provider, 'ord-2');
   provider.statuses.set('ord-2', success('TX2'));
-  await reconcilePendingPayments(db, provider);
+  await reconcilePendingPayments(db, provider, 'SANDBOX');
   store.payments.find((p) => p.id === second.id)!.payment_status = 'refunded'; // the duplicate gets refunded
   store.payments.find((p) => p.id === first.id)!.payment_status = 'refunded'; // and so is the primary: only duplicates remain paid/refunded
 
   const third = await createPaymentAttempt(db, {
+    paymentEnvironment: 'SANDBOX',
     bookingId: booking.id,
     provider: 'phonepe',
     providerOrderId: 'ord-3',
@@ -432,7 +437,7 @@ test('duplicate REFUNDED does not become a primary: a further success is a dupli
   provider.statuses.set('ord-3', success('TX3'));
   const allocationsBefore = JSON.stringify(store.allocations);
 
-  const summary = await reconcilePendingPayments(db, provider);
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
 
   assert.deepEqual(summary.counts, { duplicate_paid_refund_required: 1 });
   assert.equal(store.payments.find((p) => p.id === third.id)!.duplicate_of_payment_id, first.id, 'points at the primary, never at a duplicate');
@@ -464,4 +469,83 @@ test('handler: runs a batch with env-bounded settings, returns the safe summary,
   } finally {
     err.mock.restore();
   }
+});
+
+// ---------------------------------------------------------------- environment
+
+/** An open attempt whose typed payment_environment is `env` ('NULL' = transitional NULL row). */
+async function openAttemptIn(store: FakePaymentDbStore, orderId: string, env: 'SANDBOX' | 'PRODUCTION' | 'NULL', simulatorId: string) {
+  const { payment } = await openAttempt(store, orderId, { simulatorId });
+  store.payments.find((p) => p.id === payment.id)!.payment_environment = env === 'NULL' ? null : env;
+}
+
+test('environment: a SANDBOX run reconciles SANDBOX and transitional NULL attempts, never PRODUCTION', async () => {
+  const { store, db, provider } = setup();
+  await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
+  await openAttemptIn(store, 'ord-null', 'NULL', 'sim-S2');
+  await openAttemptIn(store, 'ord-prod', 'PRODUCTION', 'sim-M1');
+
+  const summary = await reconcilePendingPayments(db, provider, 'SANDBOX');
+
+  assert.deepEqual([...provider.statusCalls].sort(), ['ord-null', 'ord-sb']);
+  assert.equal(summary.scanned, 2);
+  assert.equal(store.payments.find((p) => p.provider_order_id === 'ord-prod')!.metadata?.reconcileCheckedAt, undefined, 'PRODUCTION row untouched');
+});
+
+test('environment: a (hypothetical) PRODUCTION run selects only PRODUCTION, never NULL', async () => {
+  const { store, db, provider } = setup();
+  provider.environment = 'PRODUCTION';
+  await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
+  await openAttemptIn(store, 'ord-null', 'NULL', 'sim-S2');
+  await openAttemptIn(store, 'ord-prod', 'PRODUCTION', 'sim-M1');
+
+  await reconcilePendingPayments(db, provider, 'PRODUCTION');
+
+  assert.deepEqual(provider.statusCalls, ['ord-prod']);
+});
+
+test('environment: the run refuses to start when the provider is configured for another environment', async () => {
+  const { store, db, provider } = setup();
+  await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
+  provider.environment = 'PRODUCTION';
+  await assert.rejects(() => reconcilePendingPayments(db, provider, 'SANDBOX'), /configured for PRODUCTION, not SANDBOX/);
+  assert.equal(provider.statusCalls.length, 0);
+});
+
+test('environment: the scheduled 5-minute handler explicitly reconciles SANDBOX', async () => {
+  assert.equal(RECONCILER_ENVIRONMENT, 'SANDBOX');
+  const { store, db, provider } = setup();
+  await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
+  await openAttemptIn(store, 'ord-prod', 'PRODUCTION', 'sim-M1');
+  const selects: unknown[][] = [];
+  const spy: DbClient = {
+    query: async (text: string, params: unknown[] = []) => {
+      if (/payment_status IN \('created', 'pending'\)/.test(text) && /LIMIT \$2/.test(text)) selects.push(params);
+      return db.query(text, params);
+    },
+  } as DbClient;
+  const handler = createHandler({ getDb: async () => spy, resetDb: () => {}, getProvider: async () => provider, env: {} });
+  const log = mock.method(console, 'log', () => {});
+  try {
+    await handler({});
+  } finally {
+    log.mock.restore();
+  }
+  assert.equal(selects.length, 1);
+  assert.equal(selects[0][0], 'SANDBOX');
+  assert.deepEqual(provider.statusCalls, ['ord-sb']);
+});
+
+test('environment: the scheduled handler fails closed if its PhonePe secret is not SANDBOX', async () => {
+  const { store, db, provider } = setup();
+  await openAttemptIn(store, 'ord-sb', 'SANDBOX', 'sim-S1');
+  provider.environment = 'PRODUCTION';
+  const handler = createHandler({ getDb: async () => db, resetDb: () => {}, getProvider: async () => provider, env: {} });
+  const err = mock.method(console, 'error', () => {});
+  try {
+    await assert.rejects(() => handler({}));
+  } finally {
+    err.mock.restore();
+  }
+  assert.equal(provider.statusCalls.length, 0);
 });

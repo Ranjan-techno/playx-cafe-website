@@ -6,6 +6,7 @@ import {
   BookingNotPayableError,
   CheckoutWindowClosedError,
   HoldExpiredError,
+  PaymentEnvironmentMismatchError,
   PaymentProviderError,
   PaymentProviderOrderNotFoundError,
   PaymentStartInProgressError,
@@ -46,10 +47,11 @@ function baseInput(bookingId: string, overrides: Partial<StartPaymentInput> = {}
 }
 
 /** A pending booking whose 15-minute booking hold was taken at T0. Session is tomorrow. */
-function setup(overrides: { start?: Date; holdMinutes?: number } = {}) {
+function setup(overrides: { start?: Date; holdMinutes?: number; bookingEnvironment?: 'SANDBOX' | 'PRODUCTION' | null } = {}) {
   clockAt(T0);
   const store = createFakePaymentDbStore();
   const booking = seedBooking(store, {
+    bookingEnvironment: overrides.bookingEnvironment,
     priceInr: '999.00',
     holdExpiresAt: new Date(T0 + (overrides.holdMinutes ?? 15) * MIN),
     start: overrides.start ?? new Date(T0 + 24 * 60 * MIN),
@@ -338,4 +340,54 @@ test('failures inside TX1 roll back completely: no payment row, hold untouched',
   assert.equal(store.payments.length, 0);
   assert.deepEqual(holds(store, booking.id)[0].hold_expires_at, new Date(T0 + 15 * MIN), 'extension rolled back with it');
   assert.equal(provider.createCalls.length, 0);
+});
+
+// ---------------------------------------------------------------- booking/payment environment
+
+test('environment: a SANDBOX booking gets a SANDBOX attempt (typed column + metadata mirror)', async () => {
+  const { store, booking, db, provider } = setup();
+  await startPayment(db, provider, baseInput(booking.id));
+  assert.equal(store.payments[0].payment_environment, 'SANDBOX');
+  assert.equal(store.payments[0].metadata?.paymentEnvironment, 'SANDBOX');
+  assert.equal(store.payments[0].metadata?.environment, 'SANDBOX');
+});
+
+test('environment: a transitional NULL booking is accepted as legacy SANDBOX', async () => {
+  const { store, booking, db, provider } = setup({ bookingEnvironment: null });
+  await startPayment(db, provider, baseInput(booking.id));
+  assert.equal(store.payments[0].payment_environment, 'SANDBOX');
+});
+
+test('environment: a PRODUCTION booking is rejected by a SANDBOX start — nothing written, hold untouched, no provider call', async () => {
+  const { store, booking, db, provider } = setup({ bookingEnvironment: 'PRODUCTION' });
+  await assert.rejects(() => startPayment(db, provider, baseInput(booking.id)), PaymentEnvironmentMismatchError);
+  assert.equal(store.payments.length, 0);
+  assert.deepEqual(holds(store, booking.id)[0].hold_expires_at, new Date(T0 + 15 * MIN));
+  assert.equal(provider.createCalls.length + provider.statusCalls.length, 0);
+  assert.equal(db.inTransaction(), false);
+});
+
+test('environment: a NULL booking never matches a PRODUCTION start', async () => {
+  const { store, booking, db, provider } = setup({ bookingEnvironment: null });
+  await assert.rejects(() => startPayment(db, provider, baseInput(booking.id, { environment: 'PRODUCTION' })), PaymentEnvironmentMismatchError);
+  assert.equal(store.payments.length, 0);
+});
+
+test('environment: an open PRODUCTION attempt on a sandbox booking is never reused nor queried with the sandbox provider', async () => {
+  const { store, booking, db, provider } = setup();
+  await startPayment(db, provider, baseInput(booking.id));
+  store.payments[0].payment_environment = 'PRODUCTION';
+  await assert.rejects(() => startPayment(db, provider, baseInput(booking.id)), PaymentEnvironmentMismatchError);
+  assert.equal(provider.createCalls.length, 1);
+  assert.equal(provider.statusCalls.length, 0);
+  assert.equal(store.payments.length, 1);
+});
+
+test('environment: a missing/unknown environment input is refused before any DB work', async () => {
+  const { store, booking, db, provider } = setup();
+  for (const environment of [undefined, '', 'sandbox', 'LIVE']) {
+    await assert.rejects(() => startPayment(db, provider, baseInput(booking.id, { environment: environment as never })), /environment must be SANDBOX or PRODUCTION/);
+  }
+  assert.equal(store.payments.length, 0);
+  assert.deepEqual(db.lockLog, []);
 });

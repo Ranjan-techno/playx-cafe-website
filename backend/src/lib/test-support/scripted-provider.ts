@@ -14,6 +14,8 @@ import type {
 
 export class ScriptedProvider implements PaymentProviderAdapter {
   readonly provider = 'phonepe' as const;
+  /** The configured PhonePe environment, like PhonePePaymentProvider.environment. */
+  environment: 'SANDBOX' | 'PRODUCTION' = 'SANDBOX';
 
   createCalls: CreatePaymentRequest[] = [];
   statusCalls: string[] = [];

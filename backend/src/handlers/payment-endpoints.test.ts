@@ -196,12 +196,57 @@ test('SANDBOX: a normal, unlisted production customer cannot start a sandbox pay
   assert.equal(w.store.payments.length, 0);
 });
 
-test('start: a PRODUCTION PhonePe config stores paymentEnvironment=PRODUCTION automatically (request cannot influence it)', async () => {
-  const w = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION' });
-  w.provider.environment = 'PRODUCTION';
-  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId, paymentEnvironment: 'SANDBOX', environment: 'SANDBOX' })));
+test('start: SANDBOX config writes typed payment_environment=SANDBOX and mirrors metadata; request cannot choose it', async () => {
+  const w = setup();
+  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId, paymentEnvironment: 'PRODUCTION', payment_environment: 'PRODUCTION', environment: 'PRODUCTION' })));
   assert.equal(res.statusCode, 200);
-  assert.equal(w.store.payments[0].metadata?.paymentEnvironment, 'PRODUCTION');
+  assert.equal(w.store.payments[0].payment_environment, 'SANDBOX');
+  assert.equal(w.store.payments[0].metadata?.paymentEnvironment, 'SANDBOX');
+});
+
+test('start: a transitional NULL booking is accepted as legacy SANDBOX', async () => {
+  const w = setup({}, { bookingEnvironment: null });
+  const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+  assert.equal(res.statusCode, 200);
+  assert.equal(w.store.payments[0].payment_environment, 'SANDBOX');
+});
+
+test('start: a PRODUCTION booking is refused by the sandbox payment path (409, no provider call, nothing written)', async () => {
+  const w = setup({}, { bookingEnvironment: 'PRODUCTION' });
+  const err = mock.method(console, 'error', () => {});
+  try {
+    const res = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.body.error, 'booking_not_payable');
+    assert.ok(!/SANDBOX|PRODUCTION|environment/i.test(res.raw), 'no environment detail leaked');
+  } finally {
+    err.mock.restore();
+  }
+  assert.equal(w.provider.createCalls.length, 0);
+  assert.equal(w.store.payments.length, 0);
+});
+
+test('start: environment comes from the provider config — a PRODUCTION config needs a PRODUCTION booking; NULL never matches PRODUCTION', async () => {
+  const ok = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION' }, { bookingEnvironment: 'PRODUCTION' });
+  ok.provider.environment = 'PRODUCTION';
+  const res = await call(() => ok.start(startEvent({ bookingId: ok.bookingId, paymentEnvironment: 'SANDBOX', environment: 'SANDBOX' })));
+  assert.equal(res.statusCode, 200);
+  assert.equal(ok.store.payments[0].payment_environment, 'PRODUCTION');
+  assert.equal(ok.store.payments[0].metadata?.paymentEnvironment, 'PRODUCTION');
+
+  const err = mock.method(console, 'error', () => {});
+  try {
+    for (const bookingEnvironment of ['SANDBOX', null] as const) {
+      const w = setup({ PHONEPE_ENVIRONMENT: 'PRODUCTION' }, { bookingEnvironment });
+      w.provider.environment = 'PRODUCTION';
+      const denied = await call(() => w.start(startEvent({ bookingId: w.bookingId })));
+      assert.equal(denied.statusCode, 409, String(bookingEnvironment));
+      assert.equal(w.store.payments.length, 0);
+      assert.equal(w.provider.createCalls.length, 0);
+    }
+  } finally {
+    err.mock.restore();
+  }
 });
 
 test('SANDBOX gate is re-checked against the environment the secret actually declares', async () => {
@@ -436,4 +481,37 @@ test('status: a duplicate paid row (column) never becomes the current payment; p
   assert.equal(res.body.paymentStatus, 'paid');
   assert.equal(res.body.outcome, 'confirmed', 'duplicate row is not reported as the current payment');
   assert.equal(w.store.allocations.filter((a) => a.allocation_status === 'confirmed').length, w.store.allocations.length, 'no double allocation');
+});
+
+// ---------------------------------------------------------------- status: environment protection
+
+test('status: sandbox provider refuses to reconcile an explicitly PRODUCTION payment (no provider call, no state change)', async () => {
+  const w = setup();
+  const payment = await started(w);
+  w.store.payments[0].payment_environment = 'PRODUCTION';
+  w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: 'TX-PROD' });
+  const err = mock.method(console, 'error', () => {});
+  let res;
+  try {
+    res = await call(() => w.status(statusEvent(w.bookingId)));
+  } finally {
+    err.mock.restore();
+  }
+  assert.equal(res.statusCode, 200);
+  assert.equal(w.provider.statusCalls.length, 0, 'sandbox PhonePe is never asked about a PRODUCTION order');
+  assert.equal(w.store.payments[0].payment_status, 'pending');
+  assert.equal(w.store.bookings[0].status, 'pending');
+  assert.equal(res.body.outcome, 'pending');
+});
+
+test('status: SANDBOX and transitional NULL payments are still reconciled by the sandbox provider', async () => {
+  for (const env of ['SANDBOX', null] as const) {
+    const w = setup();
+    const payment = await started(w);
+    w.store.payments[0].payment_environment = env;
+    w.provider.statuses.set(payment.provider_order_id, { outcome: 'SUCCESS', amountInr: '999.00', currency: 'INR', providerTransactionId: `TX-${env}` });
+    const res = await call(() => w.status(statusEvent(w.bookingId)));
+    assert.equal(res.body.outcome, 'confirmed', String(env));
+    assert.equal(w.provider.statusCalls.length, 1);
+  }
 });

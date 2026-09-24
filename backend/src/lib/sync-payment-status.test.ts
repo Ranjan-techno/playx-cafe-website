@@ -11,7 +11,7 @@ import { createFakePaymentDbClient, createFakePaymentDbStore, seedBooking } from
 async function seedAttempt(store: ReturnType<typeof createFakePaymentDbStore>) {
   const booking = seedBooking(store, { priceInr: '599.00', holdAllocations: 1 });
   const db = createFakePaymentDbClient(store);
-  const payment = await createPaymentAttempt(db, { bookingId: booking.id, provider: 'mock', providerOrderId: `order-${booking.id}`, amountInr: '599.00' });
+  const payment = await createPaymentAttempt(db, { paymentEnvironment: 'SANDBOX', bookingId: booking.id, provider: 'mock', providerOrderId: `order-${booking.id}`, amountInr: '599.00' });
   return { booking, payment, db };
 }
 

@@ -154,3 +154,13 @@ export class CheckoutWindowClosedError extends PaymentDomainError {
     super(`Booking "${bookingId}" no longer has enough time left to complete a payment`);
   }
 }
+
+/** The booking (or an existing attempt on it) belongs to a different SANDBOX/PRODUCTION environment
+ *  than the payment provider this Lambda is configured for. A sandbox backend must never take (or
+ *  reconcile) a payment for a production booking, and vice versa. */
+export class PaymentEnvironmentMismatchError extends PaymentDomainError {
+  readonly code = 'payment_environment_mismatch';
+  constructor(bookingId: string, expected: string, actual: string | null) {
+    super(`Booking "${bookingId}" belongs to environment "${actual ?? 'NULL'}", not "${expected}"`);
+  }
+}

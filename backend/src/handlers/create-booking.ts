@@ -1,7 +1,8 @@
 import type { APIGatewayProxyHandlerV2WithJWTAuthorizer } from 'aws-lambda';
-import { allocateSimulators } from '../lib/allocate-simulators';
+import { allocateSimulators, type DbClient } from '../lib/allocate-simulators';
 import { getDb, resetDb } from '../lib/db';
 import { normalizeEmail } from '../lib/email';
+import { assertAppEnvironment, type AppEnvironment } from '../lib/environment';
 import { errorResponse, jsonResponse } from '../lib/http';
 import { istPartsToUtcDate, parseTimeToMinutes, validateBookingSchedule } from '../lib/opening-hours';
 import { normalizeIndianPhone } from '../lib/phone';
@@ -43,6 +44,12 @@ const NOTES_MAX_LENGTH = 500;
 // database/migrations/002_simulator_inventory.sql's header) — stops blocking it if nothing has
 // moved it out of 'hold' by then.
 const HOLD_MINUTES = 15;
+
+// bookings.booking_environment (migration 006) is always written explicitly (the column has no
+// DEFAULT). This deployed POST /bookings is the SANDBOX (PhonePe test-era) backend, so the value is
+// this server-side constant — parseBody never reads an environment from the request, and nothing
+// about Origin/hostname is consulted.
+export const BOOKING_ENVIRONMENT: AppEnvironment = 'SANDBOX';
 
 export interface CreateBookingBody {
   productCode: string;
@@ -132,6 +139,65 @@ export function parseBody(raw: string | undefined): CreateBookingBody | null {
   };
 }
 
+export interface PendingBookingInsert {
+  productId: string;
+  cognitoSub: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string;
+  racers: number;
+  durationMinutes: number;
+  simulatorType: 'static' | 'motion' | null;
+  priceInr: string;
+  scheduledStartAt: Date;
+  scheduledEndAt: Date;
+  notes: string | null;
+}
+
+/** The booking INSERT itself (status always the literal 'pending'). `bookingEnvironment` is a
+ *  required backend argument — the handler passes BOOKING_ENVIRONMENT, never request data — and an
+ *  unknown value throws before any SQL runs.
+ *
+ *  booking_number is never listed here and never accepted from the request body (see
+ *  parseBody/CreateBookingBody above) — it comes entirely from the column's own DEFAULT
+ *  nextval('booking_number_seq'), added in database/migrations/004_short_booking_number.sql.
+ *  The database is the sole authoritative generator; the frontend only ever displays whatever
+ *  comes back. */
+export async function insertPendingBooking(
+  db: DbClient,
+  values: PendingBookingInsert,
+  bookingEnvironment: AppEnvironment,
+): Promise<{ id: string; booking_number: number }> {
+  const environment = assertAppEnvironment(bookingEnvironment, 'bookingEnvironment');
+  const { rows } = await db.query<{ id: string; booking_number: number }>(
+    `INSERT INTO bookings
+       (product_id, cognito_sub, customer_name, customer_phone, customer_email,
+        racers, duration_minutes, simulator_type, price_inr, status,
+        scheduled_start_at, scheduled_end_at, notes, booking_environment)
+     VALUES
+       ($1, $2, $3, $4, $5,
+        $6, $7, $8, $9, 'pending',
+        $10, $11, $12, $13)
+     RETURNING id, booking_number`,
+    [
+      values.productId,
+      values.cognitoSub,
+      values.customerName,
+      values.customerPhone,
+      values.customerEmail,
+      values.racers,
+      values.durationMinutes,
+      values.simulatorType,
+      values.priceInr,
+      values.scheduledStartAt,
+      values.scheduledEndAt,
+      values.notes,
+      environment,
+    ],
+  );
+  return rows[0];
+}
+
 interface ProductRow {
   id: string;
   product_type: 'session' | 'race_pass';
@@ -204,38 +270,28 @@ export const handler: APIGatewayProxyHandlerV2WithJWTAuthorizer = async (event) 
 
     await db.query('BEGIN');
 
-    // booking_number is never listed here and never accepted from the request body (see
-    // parseBody/CreateBookingBody above) — it comes entirely from the column's own DEFAULT
-    // nextval('booking_number_seq'), added in database/migrations/004_short_booking_number.sql.
-    // The database is the sole authoritative generator; the frontend only ever displays whatever
-    // comes back below.
-    const { rows: inserted } = await db.query<{ id: string; booking_number: number }>(
-      `INSERT INTO bookings
-         (product_id, cognito_sub, customer_name, customer_phone, customer_email,
-          racers, duration_minutes, simulator_type, price_inr, status,
-          scheduled_start_at, scheduled_end_at, notes)
-       VALUES
-         ($1, $2, $3, $4, $5,
-          $6, $7, $8, $9, 'pending',
-          $10, $11, $12)
-       RETURNING id, booking_number`,
-      [
-        product.id,
-        sub,
-        body.customerName,
-        body.customerPhone,
-        body.customerEmail,
-        product.racers,
-        product.duration_minutes,
-        product.simulator_type,
-        product.price_inr,
+    // booking_number comes from the database (see insertPendingBooking); booking_environment is the
+    // server-side BOOKING_ENVIRONMENT constant, never request data.
+    const inserted = await insertPendingBooking(
+      db,
+      {
+        productId: product.id,
+        cognitoSub: sub,
+        customerName: body.customerName,
+        customerPhone: body.customerPhone,
+        customerEmail: body.customerEmail,
+        racers: product.racers,
+        durationMinutes: product.duration_minutes,
+        simulatorType: product.simulator_type,
+        priceInr: product.price_inr,
         scheduledStartAt,
         scheduledEndAt,
-        body.notes,
-      ],
+        notes: body.notes,
+      },
+      BOOKING_ENVIRONMENT,
     );
-    const bookingId = inserted[0].id;
-    const bookingNumber = inserted[0].booking_number;
+    const bookingId = inserted.id;
+    const bookingNumber = inserted.booking_number;
 
     // Locks the simulator inventory and allocates the required rig(s), or returns null if the
     // requested window can't be covered — see allocate-simulators.ts for the transaction/locking
