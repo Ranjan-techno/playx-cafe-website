@@ -21,6 +21,7 @@ import schema003 from '../../../../database/migrations/003_payment_foundation.sq
 import schema004 from '../../../../database/migrations/004_short_booking_number.sql';
 import schema005 from '../../../../database/migrations/005_duplicate_payment_recording.sql';
 import schema006 from '../../../../database/migrations/006_payment_environment_expansion.sql';
+import schema007 from '../../../../database/migrations/007_enforce_payment_environment.sql';
 
 interface Migration {
   filename: string;
@@ -47,6 +48,10 @@ const MIGRATIONS: Migration[] = [
   // payments.payment_environment, backfilled, plus an environment-aware reconciliation index —
   // see the file's own header for the EXPAND -> CODE -> ENFORCE rollout.
   { filename: '006_payment_environment_expansion.sql', sql: schema006 },
+  // Payment environment ENFORCE step: backfills remaining NULLs to SANDBOX, sets both columns
+  // NOT NULL (still no DEFAULT) and drops 005's environment-blind reconciliation index — see the
+  // file's own header. Apply only after the Stage 1B code is deployed and verified.
+  { filename: '007_enforce_payment_environment.sql', sql: schema007 },
 ];
 
 interface DbSecret {
