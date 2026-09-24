@@ -262,3 +262,52 @@ test('createPayment/getPaymentStatus expose the normalized provider expiry (eith
   const none = await providerWith({ getOrderStatus: async () => orderStatus({ state: 'PENDING', expireAt: 0 }) }).getPaymentStatus('o');
   assert.equal(none.providerExpiresAt, undefined);
 });
+
+// ----------------------------------------------------------------------------
+// Stage 2E: the production OIM007 incident — a wrong clientId makes the SDK's OAuth call fail with
+// HTTP 404 / OIM007, surfacing as the same ResourceNotFound class an unknown order does.
+// ----------------------------------------------------------------------------
+
+function oim007(): ResourceNotFound {
+  return new ResourceNotFound('Not Found', 404, {
+    status: 404,
+    data: { code: 'OIM007', message: 'Client Not Found', context: { clientId: 'CLIENT-ID-marker-31f' } },
+  } as never);
+}
+
+test('getPaymentStatus: an OAuth 404 (OIM007) is a provider error, NEVER "order not found"', async () => {
+  await assert.rejects(
+    () => providerWith({ getOrderStatus: async () => { throw oim007(); } }).getPaymentStatus('o'),
+    (err: unknown) =>
+      err instanceof PaymentProviderError &&
+      !(err instanceof PaymentProviderOrderNotFoundError) &&
+      err.httpStatusCode === 404 &&
+      err.providerCode === 'OIM007' &&
+      err.message === 'PhonePe order status failed (HTTP 404) [OIM007]',
+  );
+  // A genuine order-level 404 (no OIM code) keeps its existing meaning.
+  const orderMissing = new ResourceNotFound('Not Found', 404, { status: 404, data: { code: 'NOT_FOUND', message: 'x' } } as never);
+  await assert.rejects(
+    () => providerWith({ getOrderStatus: async () => { throw orderMissing; } }).getPaymentStatus('o'),
+    PaymentProviderOrderNotFoundError,
+  );
+});
+
+test('createPayment: an OAuth 404 (OIM007) is a definite, sanitized rejection — no clientId or provider message in it', async () => {
+  await assert.rejects(
+    () =>
+      providerWith({ pay: async () => { throw oim007(); } }).createPayment({
+        providerOrderId: 'm-1',
+        amountInr: '399.00',
+        currency: 'INR',
+        description: 'Solo Racing Xperience',
+      }),
+    (err: unknown) =>
+      err instanceof PaymentProviderError &&
+      err.definiteRejection === true &&
+      err.providerCode === 'OIM007' &&
+      err.httpStatusCode === 404 &&
+      !JSON.stringify({ ...err, message: err.message }).includes('CLIENT-ID-marker-31f') &&
+      !err.message.includes('Client Not Found'),
+  );
+});

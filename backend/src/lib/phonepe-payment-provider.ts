@@ -17,6 +17,7 @@ import {
   type OrderStatusResponse,
   type StandardCheckoutPayResponse,
 } from '@phonepe-pg/pg-sdk-node';
+import { safeProviderCode } from './log-redaction';
 import { inrToPaise, paiseToInr } from './money';
 import { PaymentProviderError, PaymentProviderOrderNotFoundError } from './payment-errors';
 import type {
@@ -93,11 +94,13 @@ function expiryOf(response: unknown): Date | undefined {
   return normalizeProviderExpiry(r?.expireAt ?? r?.expire_at);
 }
 
-/** Reduces an SDK exception to status/code only — SDK errors carry the raw response `data`. */
+/** Reduces an SDK exception to status/code only — SDK errors carry the raw response `data`, and
+ *  their `message` can be PhonePe's own response text, so neither is ever copied. The provider code
+ *  is kept only when it is a short plain token (e.g. "OIM007"). */
 function toProviderError(operation: string, err: unknown): PaymentProviderError {
   const e = err as { httpStatusCode?: number; code?: string } | null;
   const status = typeof e?.httpStatusCode === 'number' ? e.httpStatusCode : undefined;
-  const providerCode = typeof e?.code === 'string' ? e.code : undefined;
+  const providerCode = safeProviderCode(e?.code);
   const definite = err instanceof ClientError;
   return new PaymentProviderError(
     `PhonePe ${operation} failed${status !== undefined ? ` (HTTP ${status})` : ''}${providerCode ? ` [${providerCode}]` : ''}`,
@@ -105,6 +108,15 @@ function toProviderError(operation: string, err: unknown): PaymentProviderError 
     status,
     providerCode,
   );
+}
+
+/** PhonePe's OAuth (identity manager) errors carry OIM-prefixed codes — e.g. OIM007 "Client Not
+ *  Found", returned as HTTP 404 when the clientId is wrong. The SDK fetches its token inside pay()/
+ *  getOrderStatus(), so such a 404 surfaces as the SAME ResourceNotFound class an unknown order
+ *  does. It says nothing about the order, so it must never be read as "order not found". */
+export function isPhonePeAuthError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && /^OIM/i.test(code);
 }
 
 export class PhonePePaymentProvider implements PaymentProviderAdapter {
@@ -157,7 +169,9 @@ export class PhonePePaymentProvider implements PaymentProviderAdapter {
     try {
       response = await this.client.getOrderStatus(providerOrderId, false);
     } catch (err) {
-      if (err instanceof ResourceNotFound) {
+      // A credential/OAuth failure (Stage 2E: OIM007 during the production incident) is a provider
+      // error — retried later — never proof that the order does not exist.
+      if (err instanceof ResourceNotFound && !isPhonePeAuthError(err)) {
         throw new PaymentProviderOrderNotFoundError();
       }
       throw toProviderError('order status', err);

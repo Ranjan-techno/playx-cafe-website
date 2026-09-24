@@ -3,9 +3,16 @@
 // `environment`) and never see the credentials themselves.
 
 import { Env, StandardCheckoutClient } from '@phonepe-pg/pg-sdk-node';
+import { installConsoleRedaction } from './log-redaction';
 import type { BoundCallbackValidator } from './phonepe-callback';
 import { loadPhonePeConfig, type PhonePeEnvironment } from './phonepe-config';
 import { PhonePePaymentProvider } from './phonepe-payment-provider';
+
+// Stage 2E: the SDK logs its own raw exceptions (e.g. TokenService's console.warn on an OAuth
+// failure, whose `data` echoes PhonePe's response context such as the clientId). Every Lambda that
+// can reach the SDK loads this module first, so its console is guarded before any SDK call: object
+// arguments are reduced to class/HTTP status/provider code (see log-redaction.ts).
+installConsoleRedaction();
 
 let provider: PhonePePaymentProvider | null = null;
 

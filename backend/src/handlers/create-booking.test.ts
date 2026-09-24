@@ -385,10 +385,11 @@ function killSwitchBookingWorld(
   bookingCreateEnabled: string | undefined,
   environment: 'SANDBOX' | 'PRODUCTION' = 'PRODUCTION',
   productionTesters?: string,
+  productionAccessMode?: string,
 ) {
   mock.timers.enable({ apis: ['Date'], now: NOW });
   const store = createFakeDbStore([{ id: 's1', code: 'S1', simulator_type: 'static' }]);
-  const calls = { getDb: 0, resetDb: 0, queries: [] as string[] };
+  const calls = { getDb: 0, resetDb: 0, queries: [] as string[], bookingEnvironments: [] as unknown[] };
   const handler = createBookingHandler(environment, {
     getDb: async () => {
       calls.getDb += 1;
@@ -396,6 +397,7 @@ function killSwitchBookingWorld(
       return {
         async query<T extends object>(text: string, params: unknown[] = []) {
           calls.queries.push(text);
+          if (/INSERT INTO bookings/i.test(text)) calls.bookingEnvironments.push(params[12]);
           if (/FROM products/i.test(text)) {
             const rows = [
               { id: 'prod-solo-static', product_type: 'session', simulator_type: 'static', racers: 1, duration_minutes: 30, price_inr: '999.00', is_active: true },
@@ -409,7 +411,11 @@ function killSwitchBookingWorld(
     resetDb: () => {
       calls.resetDb += 1;
     },
-    env: { BOOKING_CREATE_ENABLED: bookingCreateEnabled, PHONEPE_PRODUCTION_TESTERS: productionTesters },
+    env: {
+      BOOKING_CREATE_ENABLED: bookingCreateEnabled,
+      PHONEPE_PRODUCTION_TESTERS: productionTesters,
+      PHONEPE_PRODUCTION_ACCESS_MODE: productionAccessMode,
+    },
   });
   return { store, calls, handler };
 }
@@ -524,6 +530,72 @@ test('production tester gate: SANDBOX booking is unchanged — no tester list ne
     const w = killSwitchBookingWorld('true', 'SANDBOX', testers);
     const res = await w.handler(bookingEvent(HANDLER_BODY, 'sub-anyone'));
     assert.equal(res.statusCode, 201, JSON.stringify(testers));
+    mock.timers.reset();
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Stage 2E: explicit production access mode (PHONEPE_PRODUCTION_ACCESS_MODE)
+// ----------------------------------------------------------------------------
+
+test('production access mode: missing / unknown / non-exact values behave as TESTER (empty list -> 403 for everyone)', async () => {
+  for (const mode of [undefined, '', 'TESTER', 'public', 'Public', ' PUBLIC', 'PUBLIC ', 'OPEN', 'true']) {
+    const w = killSwitchBookingWorld('true', 'PRODUCTION', '', mode);
+    const res = await w.handler(bookingEvent(HANDLER_BODY, 'sub-anyone'));
+    assert.equal(res.statusCode, 403, JSON.stringify(mode));
+    assert.equal(w.calls.getDb, 0, 'no DB before the gate');
+    assert.equal(w.store.allocations.length, 0);
+    mock.timers.reset();
+  }
+});
+
+test('production access mode: TESTER keeps the allowlist mandatory (listed -> 201, unlisted -> 403 before the DB)', async () => {
+  const listed = killSwitchBookingWorld('true', 'PRODUCTION', 'sub-1', 'TESTER');
+  assert.equal((await listed.handler(bookingEvent(HANDLER_BODY, 'sub-1'))).statusCode, 201);
+  mock.timers.reset();
+  const unlisted = killSwitchBookingWorld('true', 'PRODUCTION', 'sub-1', 'TESTER');
+  assert.equal((await unlisted.handler(bookingEvent(HANDLER_BODY, 'sub-2'))).statusCode, 403);
+  assert.equal(unlisted.calls.getDb, 0);
+});
+
+test('production access mode: PUBLIC admits any authenticated customer, with or without a tester list', async () => {
+  for (const testers of [undefined, '', 'sub-somebody-else']) {
+    const w = killSwitchBookingWorld('true', 'PRODUCTION', testers, 'PUBLIC');
+    const res = await w.handler(bookingEvent(HANDLER_BODY, 'sub-customer'));
+    assert.equal(res.statusCode, 201, JSON.stringify(testers));
+    assert.ok(w.calls.queries.some((q) => /INSERT INTO bookings/.test(q)));
+    assert.deepEqual(w.calls.bookingEnvironments, ['PRODUCTION'], 'environment stays hard-coded PRODUCTION');
+    mock.timers.reset();
+  }
+});
+
+test('production access mode: PUBLIC still requires a verified subject, validation and the kill switch', async () => {
+  const w = killSwitchBookingWorld('true', 'PRODUCTION', '', 'PUBLIC');
+  const noSub = await w.handler({ ...bookingEvent(HANDLER_BODY, 'x'), requestContext: { authorizer: { jwt: { claims: {} } } } } as never);
+  assert.equal(noSub.statusCode, 401);
+  assert.equal((await w.handler(bookingEvent({ ...HANDLER_BODY, customerPhone: 'nope' }, 'sub-customer'))).statusCode, 400);
+  mock.timers.reset();
+  const off = killSwitchBookingWorld('false', 'PRODUCTION', '', 'PUBLIC');
+  assert.equal((await off.handler(bookingEvent(HANDLER_BODY, 'sub-customer'))).statusCode, 503);
+  assert.equal(off.calls.getDb, 0);
+});
+
+test('production access mode: a request body cannot switch the mode or the environment', async () => {
+  const w = killSwitchBookingWorld('true', 'PRODUCTION', '', 'TESTER');
+  const body = { ...HANDLER_BODY, PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC', accessMode: 'PUBLIC', environment: 'SANDBOX' };
+  assert.equal((await w.handler(bookingEvent(body, 'sub-customer'))).statusCode, 403);
+  mock.timers.reset();
+  const pub = killSwitchBookingWorld('true', 'PRODUCTION', '', 'PUBLIC');
+  assert.equal((await pub.handler(bookingEvent(body, 'sub-customer'))).statusCode, 201);
+  assert.deepEqual(pub.calls.bookingEnvironments, ['PRODUCTION']);
+});
+
+test('production access mode: SANDBOX bookings ignore the production mode entirely', async () => {
+  for (const mode of [undefined, 'TESTER', 'PUBLIC']) {
+    const w = killSwitchBookingWorld('true', 'SANDBOX', '', mode);
+    const res = await w.handler(bookingEvent(HANDLER_BODY, 'sub-anyone'));
+    assert.equal(res.statusCode, 201, JSON.stringify(mode));
+    assert.deepEqual(w.calls.bookingEnvironments, ['SANDBOX']);
     mock.timers.reset();
   }
 });

@@ -379,3 +379,41 @@ test('stale context does not override an explicit valid bookingId from the retur
   const stale = memoryStorage({ [P.CHECKOUT_STORAGE_KEY]: JSON.stringify({ bookingId: BOOKING_ID, startedAt: now - P.CHECKOUT_MAX_AGE_MS - 1 }) });
   assert.equal(P.resolveBookingId(`?bookingId=${OTHER_ID}`, stale, now), OTHER_ID);
 });
+
+// ---- Stage 2E: PAY NOW back/forward-cache recovery ----------------------------------------------
+test('hasRedirected: only true once a checkout redirect was actually issued', async () => {
+  const failed = makeClient({ fetchImpl: () => jsonResponse(502, { error: 'payment_provider_error', message: 'raw provider text' }) });
+  const result = await failed.client.startPayment(BOOKING_ID);
+  assert.equal(result.kind, 'provider_rejected');
+  assert.ok(!result.message.includes('raw provider text'), 'raw provider text is never displayed');
+  assert.equal(failed.client.hasRedirected(), false);
+
+  const ok = makeClient({ fetchImpl: startOk });
+  assert.equal(ok.client.hasRedirected(), false);
+  await ok.client.startPayment(BOOKING_ID);
+  assert.equal(ok.client.hasRedirected(), true);
+});
+
+test('shouldReloadOnPageShow: a bfcache-restored page reloads only after a redirect to PhonePe', async () => {
+  const ok = makeClient({ fetchImpl: startOk });
+  assert.equal(P.shouldReloadOnPageShow({ persisted: true }, ok.client), false, 'nothing started yet');
+  await ok.client.startPayment(BOOKING_ID);
+  assert.equal(P.shouldReloadOnPageShow({ persisted: true }, ok.client), true);
+  assert.equal(P.shouldReloadOnPageShow({ persisted: false }, ok.client), false, 'normal load');
+  assert.equal(P.shouldReloadOnPageShow(null, ok.client), false);
+});
+
+test('PAY NOW: a definite refusal on My Bookings stops offering the button (same list as the booking step)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'my-bookings.js'), 'utf8');
+  const script = fs.readFileSync(path.join(__dirname, '..', 'js', 'script.js'), 'utf8');
+  const list = (text, marker) => {
+    const m = text.match(new RegExp(`\\[([^\\]]*)\\]\\.includes\\(outcome\\.kind\\)[^\\n]*${marker}`)) || text.match(/\[([^\]]*'hold_expired'[^\]]*)\]\.includes\(outcome\.kind\)/);
+    return m[1].split(',').map((x) => x.trim().replace(/'/g, '')).sort();
+  };
+  assert.deepEqual(list(src, ''), list(script, ''));
+  for (const kind of ['not_permitted', 'checkout_window_closed', 'hold_expired', 'already_paid']) {
+    assert.ok(list(src, '').includes(kind), kind);
+  }
+});

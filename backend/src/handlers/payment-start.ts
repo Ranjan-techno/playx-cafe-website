@@ -10,7 +10,7 @@ import { findCustomerBooking } from '../lib/payment-repository';
 import { getCheckoutHoldMinutes, getPaymentReturnUrl } from '../lib/payment-settings';
 import type { PhonePeEnvironment } from '../lib/phonepe-config';
 import type * as PhonePeRuntime from '../lib/phonepe-runtime';
-import { assertProductionTesterAllowed } from '../lib/production-access';
+import { assertProductionAccessAllowed } from '../lib/production-access';
 import { createSqsReconcileQueue, isValidQueueUrl, type ReconcileQueue } from '../lib/reconcile-queue';
 import { assertPaymentStartAllowed, type PaymentUserIdentity } from '../lib/sandbox-access';
 import { startPayment } from '../lib/start-payment';
@@ -27,11 +27,12 @@ import { startPayment } from '../lib/start-payment';
 //   environment tester gate (403) -> ownership (404) -> startPayment() -> re-check the gate
 //   against the environment the secret ACTUALLY declares.
 //
-// Tester gates (both server-side, both fail closed on an empty list):
+// Access gates (both server-side; each tester list fails closed when empty):
 //   SANDBOX     PHONEPE_SANDBOX_TESTERS — Cognito subs and/or verified emails (sandbox-access.ts).
-//   PRODUCTION  PHONEPE_PRODUCTION_TESTERS — Cognito subs ONLY (production-access.ts). PhonePe
-//               cutover Stage 2C: even once PAYMENT_START_ENABLED is later turned on for the
-//               production Lambda, only allowlisted subjects may start a production payment.
+//   PRODUCTION  the production access gate (production-access.ts): in TESTER mode (the default)
+//               PHONEPE_PRODUCTION_TESTERS — Cognito subs ONLY, empty = nobody; in PUBLIC mode
+//               (PHONEPE_PRODUCTION_ACCESS_MODE=PUBLIC exactly) any authenticated customer.
+//               Ownership, the server-side amount and the PRODUCTION environment apply in both.
 //
 // Kill switch: payment initiation runs only when the Lambda's PAYMENT_START_ENABLED is exactly
 // "true" (set explicitly per function in infra/lib/constructs/api.ts). Missing, "false", "TRUE",
@@ -89,7 +90,7 @@ function configuredEnvironment(env: NodeJS.ProcessEnv): PhonePeEnvironment {
 /** Throws (mapped to a generic 403) unless `identity` may start a payment in `environment`. */
 function assertEnvironmentAccess(environment: PhonePeEnvironment, identity: PaymentUserIdentity, env: NodeJS.ProcessEnv): void {
   if (environment === 'PRODUCTION') {
-    assertProductionTesterAllowed(identity.sub, env.PHONEPE_PRODUCTION_TESTERS);
+    assertProductionAccessAllowed(identity.sub, env);
     return;
   }
   assertPaymentStartAllowed(environment, identity, env.PHONEPE_SANDBOX_TESTERS);

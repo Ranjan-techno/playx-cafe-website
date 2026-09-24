@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { CallbackResponse } from '@phonepe-pg/pg-sdk-node';
 import { authenticateCallback, extractCallbackMerchantOrderId, headerValue, readRawBody } from './phonepe-callback';
-import { assertProductionTesterAllowed, isProductionTester, parseProductionTesters, ProductionTesterNotAllowedError } from './production-access';
+import {
+  assertProductionAccessAllowed,
+  assertProductionTesterAllowed,
+  isProductionAccessAllowed,
+  isProductionTester,
+  parseProductionTesters,
+  ProductionTesterNotAllowedError,
+  resolveProductionAccessMode,
+} from './production-access';
 
 const cb = (payload: unknown) => ({ type: 'CHECKOUT_ORDER_COMPLETED', payload }) as unknown as CallbackResponse;
 
@@ -66,4 +74,22 @@ test('production testers: comma list of subs, trimmed, exact match; empty list d
     assert.throws(() => assertProductionTesterAllowed('sub-a', empty), ProductionTesterNotAllowedError);
   }
   assert.doesNotThrow(() => assertProductionTesterAllowed('sub-a', 'sub-a'));
+});
+
+test('production access mode: only the exact string PUBLIC selects PUBLIC; everything else is TESTER', () => {
+  assert.equal(resolveProductionAccessMode('PUBLIC'), 'PUBLIC');
+  for (const raw of [undefined, '', 'TESTER', 'public', ' PUBLIC', 'PUBLIC ', 'OPEN', 'ALL']) {
+    assert.equal(resolveProductionAccessMode(raw), 'TESTER', JSON.stringify(raw));
+  }
+});
+
+test('production access mode: TESTER requires the allowlist (empty fails closed); PUBLIC requires only a verified sub', () => {
+  assert.equal(isProductionAccessAllowed('sub-a', { PHONEPE_PRODUCTION_TESTERS: 'sub-a' }), true);
+  assert.equal(isProductionAccessAllowed('sub-b', { PHONEPE_PRODUCTION_TESTERS: 'sub-a' }), false);
+  assert.equal(isProductionAccessAllowed('sub-a', { PHONEPE_PRODUCTION_ACCESS_MODE: 'TESTER', PHONEPE_PRODUCTION_TESTERS: '' }), false);
+  assert.equal(isProductionAccessAllowed('sub-a', {}), false, 'no mode + no list = nobody');
+  assert.equal(isProductionAccessAllowed('sub-a', { PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC' }), true);
+  assert.equal(isProductionAccessAllowed('', { PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC' }), false, 'PUBLIC still needs a subject');
+  assert.throws(() => assertProductionAccessAllowed('sub-a', { PHONEPE_PRODUCTION_TESTERS: ' , ' }), ProductionTesterNotAllowedError);
+  assert.doesNotThrow(() => assertProductionAccessAllowed('sub-z', { PHONEPE_PRODUCTION_ACCESS_MODE: 'PUBLIC' }));
 });
