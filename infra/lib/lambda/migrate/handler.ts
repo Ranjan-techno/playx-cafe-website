@@ -22,6 +22,7 @@ import schema004 from '../../../../database/migrations/004_short_booking_number.
 import schema005 from '../../../../database/migrations/005_duplicate_payment_recording.sql';
 import schema006 from '../../../../database/migrations/006_payment_environment_expansion.sql';
 import schema007 from '../../../../database/migrations/007_enforce_payment_environment.sql';
+import schema008 from '../../../../database/migrations/008_booking_notifications.sql';
 
 interface Migration {
   filename: string;
@@ -52,6 +53,10 @@ const MIGRATIONS: Migration[] = [
   // NOT NULL (still no DEFAULT) and drops 005's environment-blind reconciliation index — see the
   // file's own header. Apply only after the Stage 1B code is deployed and verified.
   { filename: '007_enforce_payment_environment.sql', sql: schema007 },
+  // Stage 2F: booking_notifications — the per-booking outbox for the booking-confirmation email
+  // (UNIQUE booking_id + notification_type). Additive only, no backfill: bookings confirmed before
+  // it (e.g. #1033/#1034) are never emailed — see the file's own header.
+  { filename: '008_booking_notifications.sql', sql: schema008 },
 ];
 
 interface DbSecret {

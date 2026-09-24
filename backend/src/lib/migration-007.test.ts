@@ -121,5 +121,6 @@ test('007: is registered with the migration runner, after 006, with 001-006 stil
   ].map((entry) => handler.indexOf(entry));
   assert.ok(order.every((i) => i > 0), 'every migration is registered');
   assert.deepEqual([...order].sort((a, b) => a - b), order, 'registered in filename order');
-  assert.equal(handler.match(/filename: '/g)?.length, 7);
+  // Later migrations (008+) append after 007; migration-008.test.ts pins the current total.
+  assert.ok((handler.match(/filename: '/g)?.length ?? 0) >= 7);
 });
