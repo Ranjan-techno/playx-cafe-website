@@ -606,7 +606,7 @@ test('handler: enabled run sends and returns the summary; logs never contain the
   for (const line of logged) {
     assert.ok(!line.includes(CUSTOMER_EMAIL), 'recipient address never logged');
     assert.ok(!line.includes(SUB), 'Cognito sub never logged');
-    assert.ok(!line.includes('Race. Play. Chill.'), 'email body never logged');
+    assert.ok(!line.includes('Race Xperience Hangout'), 'email body never logged');
   }
 });
 

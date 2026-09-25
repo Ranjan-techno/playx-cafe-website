@@ -34,7 +34,7 @@ test('text body carries every customer-facing field, in IST, and the closing lin
     'Time: 3:00 PM – 3:30 PM IST',
     'Amount paid: ₹399',
     'Status: CONFIRMED',
-    'Race. Play. Chill.',
+    'Race Xperience Hangout',
   ]) {
     assert.ok(text.includes(part), `text missing: ${part}`);
   }
@@ -59,7 +59,7 @@ test('HTML part: same facts, product name escaped', () => {
   const { html } = buildBookingConfirmationEmail({ ...details, productName: '<b>Race & "Chill"</b>' });
   assert.ok(html.includes('&lt;b&gt;Race &amp; &quot;Chill&quot;&lt;/b&gt;'));
   assert.ok(!html.includes('<b>Race'));
-  for (const part of ['Booking confirmed', '#1033', 'CONFIRMED', '₹399', 'Race. Play. Chill.', '3:00 PM – 3:30 PM IST']) {
+  for (const part of ['Booking confirmed', '#1033', 'CONFIRMED', '₹399', 'Race Xperience Hangout', '3:00 PM – 3:30 PM IST']) {
     assert.ok(html.includes(part), `html missing: ${part}`);
   }
 });
@@ -76,4 +76,11 @@ test('no internal identifiers can appear: the only inputs are display fields, an
     assert.doesNotMatch(body, uuid);
     assert.doesNotMatch(body, /sub|order id|transaction|upi|card|token|secret/i);
   }
+});
+
+test('footer tagline is "Race Xperience Hangout" in both bodies; the old tagline is gone', () => {
+  const { html, text } = buildBookingConfirmationEmail(details);
+  assert.ok(html.includes('>Race Xperience Hangout</p>'));
+  assert.ok(text.includes('Race Xperience Hangout\n'));
+  for (const body of [html, text]) assert.ok(!body.includes('Race. Play. Chill.'));
 });

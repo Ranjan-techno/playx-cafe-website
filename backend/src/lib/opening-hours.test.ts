@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { afterEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CLOSE_TIME,
@@ -24,7 +24,21 @@ test('sanity: the Grand Opening constants are what the business rule specifies',
   assert.notEqual(dayOfWeekUtc(2026, 9, 25), 1);
 });
 
+// The two tests below book 2026-09-24 itself, which is only "not yet open" (rather than a past
+// date) while that day is still today/ahead in IST, so they pin Date to the pre-launch day they
+// were written for: 2026-09-24 12:00 IST. Same mock.timers pattern as start-payment.test.ts;
+// afterEach restores the real clock so no other test sees it.
+const PRE_LAUNCH_NOON_IST_MS = Date.parse('2026-09-24T12:00:00+05:30');
+
+afterEach(() => mock.timers.reset());
+
+function clockAt(ms: number): void {
+  mock.timers.reset();
+  mock.timers.enable({ apis: ['Date'], now: ms });
+}
+
 test('2026-09-24 (the day before launch): every startTime is rejected as not_yet_open', () => {
+  clockAt(PRE_LAUNCH_NOON_IST_MS);
   const violation = validateBookingSchedule('2026-09-24', '11:00', 60);
   assert.equal(violation?.code, 'not_yet_open');
 
@@ -70,6 +84,7 @@ test('direct POST /bookings cannot bypass the launch restriction: validateBookin
   // unconditionally, before ever touching simulator allocation — there is no code path that skips
   // it, so exercising the function directly with attacker-controlled-looking input is equivalent
   // to exercising the handler's own enforcement.
+  clockAt(PRE_LAUNCH_NOON_IST_MS);
   assert.equal(validateBookingSchedule('2026-09-24', '11:00', 15)?.code, 'not_yet_open');
   assert.equal(validateBookingSchedule('2026-09-25', '00:00', 15)?.code, 'invalid_time');
 });

@@ -79,7 +79,7 @@ export function buildBookingConfirmationEmail(details: BookingConfirmationDetail
     'Your payment was received and your booking is confirmed.\n\n' +
     rows.map(([label, value]) => `${label}: ${value}`).join('\n') +
     '\n\nPlease arrive a few minutes before your start time.\n\n' +
-    'Race. Play. Chill.\n' +
+    'Race Xperience Hangout\n' +
     'Play X Cafe';
 
   const htmlRows = rows
@@ -99,7 +99,7 @@ export function buildBookingConfirmationEmail(details: BookingConfirmationDetail
     '<p style="margin:0 0 16px;color:#444444;font-size:14px;">Your payment was received and your booking is confirmed.</p>' +
     `<table role="presentation" style="border-collapse:collapse;font-size:14px;">${htmlRows}</table>` +
     '<p style="margin:20px 0 0;color:#444444;font-size:14px;">Please arrive a few minutes before your start time.</p>' +
-    '<p style="margin:20px 0 0;color:#e2231a;font-size:14px;font-weight:700;">Race. Play. Chill.</p>' +
+    '<p style="margin:20px 0 0;color:#e2231a;font-size:14px;font-weight:700;">Race Xperience Hangout</p>' +
     '</div></div></body></html>';
 
   return { subject, text, html };

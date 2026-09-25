@@ -588,13 +588,24 @@ function setPaymentStepMode(mode, statusText, isError) {
 }
 
 function setupPaymentStep(booking) {
+  const notice = document.getElementById('paymentHoldNotice');
   if (!paymentStep || !bookingPaymentClient || !booking || !PlayXPayments.isUuid(booking.id) || booking.status !== 'pending') {
     if (paymentStep) paymentStep.hidden = true;
+    // A pending booking this page can't attach a payment step to (no usable id in the response):
+    // point the customer at My Bookings, which re-reads it behind the backend's ownership checks.
+    if (paymentStep && bookingPaymentClient && booking && booking.status === 'pending') {
+      paymentStepBookingId = null;
+      payNowBtn.hidden = true;
+      if (notice) notice.hidden = true;
+      paymentStepStatus.classList.add('error');
+      paymentStepStatus.textContent = 'Your booking is reserved, but we could not open its payment step here. Please go to My Bookings to complete your payment.';
+      paymentStep.hidden = false;
+    }
     return;
   }
   paymentStepBookingId = booking.id;
   setPaymentStepMode('pay');
-  const notice = document.getElementById('paymentHoldNotice');
+  if (notice) notice.hidden = false;
   if (notice && booking.holdExpiresAt) {
     const until = new Date(booking.holdExpiresAt);
     if (!Number.isNaN(until.getTime())) {
@@ -749,9 +760,16 @@ async function submitBookingRequest({
         referenceEl.hidden = true;
       }
     }
+    // Collapse the Review/OTP/"Almost There" card (the OTP path's container, which sits above
+    // #bookingResult) *before* revealing and scrolling to the result. Hiding it afterwards
+    // shrank the page above the viewport without moving the scroll position, so after OTP the
+    // customer landed on the My Bookings section below instead of this booking's payment step.
+    reservationReview.hidden = true;
+    bookingCreationPanel.hidden = true;
     bookingResult.hidden = false;
     setupPaymentStep(result);
-    bookingResult.focus();
+    bookingResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    bookingResult.focus({ preventScroll: true });
     bookingForm.reset();
     // Reflect the new booking in the My Bookings list (js/my-bookings.js)
     // right away instead of waiting for the visitor to reload the page.
