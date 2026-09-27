@@ -1,7 +1,7 @@
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { buildBookingConfirmationEmail } from './booking-confirmation-email';
 import type { BookingConfirmationDetails } from './booking-notifications';
-import { NOTIFICATION_ID_TAG } from './booking-email-events';
+import { NOTIFICATION_ID_TAG } from './ses-tags';
 
 // Guest-first passwordless auth: shared SES client for auth-create-challenge.ts, cached at
 // module scope so warm Lambda invocations reuse it — same caching rationale as lib/cognito.ts's

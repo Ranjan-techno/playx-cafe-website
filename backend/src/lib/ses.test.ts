@@ -2,6 +2,9 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { getSesClient, sendBookingConfirmationEmail, sendOtpEmail } from './ses';
 import type { BookingConfirmationDetails } from './booking-notifications';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { NOTIFICATION_ID_TAG } from './ses-tags';
 
 let sent: any[] = [];
 
@@ -134,4 +137,15 @@ test('OTP email is unchanged by Stage 2G: no configuration set, no tags', async 
   await sendOtpEmail('a@b.com', '123456');
   assert.equal(sent[0].ConfigurationSetName, undefined);
   assert.equal(sent[0].Tags, undefined);
+});
+
+test('tag contract: playx_notification_id, from a dependency-free module the OTP sender path can import', () => {
+  // lib/ses.ts is bundled into the OTP CreateAuthChallenge Lambda: it must not import the Stage 2G
+  // event consumer (whose top-level initializers esbuild cannot tree-shake), and ses-tags.ts must stay
+  // a bare constant with no imports.
+  assert.equal(NOTIFICATION_ID_TAG, 'playx_notification_id');
+  const ses = readFileSync(path.join(__dirname, 'ses.ts'), 'utf8');
+  assert.ok(!/from '\.\/booking-email-events'/.test(ses), 'ses.ts must not import booking-email-events');
+  const tags = readFileSync(path.join(__dirname, 'ses-tags.ts'), 'utf8');
+  assert.ok(!/^\s*import\b/m.test(tags), 'ses-tags.ts must not import anything');
 });

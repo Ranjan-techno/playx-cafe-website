@@ -56,10 +56,7 @@
 // codes, reporting MTAs, rendering error messages or any header.
 
 import type { DbClient } from './allocate-simulators';
-
-/** The SES message tag carrying booking_notifications.id — the ONLY tag lib/ses.ts adds, and the
- *  correlation key here. An internal UUID: never an address, name, phone, Cognito sub or note. */
-export const NOTIFICATION_ID_TAG = 'playx_notification_id';
+import { NOTIFICATION_ID_TAG } from './ses-tags';
 
 export type DeliveryStatus = 'accepted' | 'delayed' | 'delivered' | 'bounced' | 'complained' | 'rejected' | 'rendering_failed';
 
