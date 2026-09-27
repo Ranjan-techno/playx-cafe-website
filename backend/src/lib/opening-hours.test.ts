@@ -11,10 +11,11 @@ import {
   validateBookingSchedule,
 } from './opening-hours';
 
-// Grand Opening launch restriction: Play X Cafe opens 2026-09-25 at 15:00 IST. Every date used
-// below is comfortably in the future relative to whenever this suite actually runs (see
-// todayInIst()'s "past date" check, which none of these scenarios are meant to exercise), so these
-// assertions don't depend on "today" the way a past-date test would have to.
+// Grand Opening launch restriction: Play X Cafe opens 2026-09-25 at 15:00 IST. The dates below are
+// only in the future relative to the pre-launch day this suite was written for — validateBookingSchedule
+// also rejects past dates (todayInIst()), which none of these scenarios are meant to exercise — so
+// every scenario that books a specific 2026-09 date pins Date to 2026-09-24 12:00 IST via clockAt()
+// below, and the suite's result never depends on the real "today".
 
 test('sanity: the Grand Opening constants are what the business rule specifies', () => {
   assert.equal(GRAND_OPENING_DATE, '2026-09-25');
@@ -24,10 +25,8 @@ test('sanity: the Grand Opening constants are what the business rule specifies',
   assert.notEqual(dayOfWeekUtc(2026, 9, 25), 1);
 });
 
-// The two tests below book 2026-09-24 itself, which is only "not yet open" (rather than a past
-// date) while that day is still today/ahead in IST, so they pin Date to the pre-launch day they
-// were written for: 2026-09-24 12:00 IST. Same mock.timers pattern as start-payment.test.ts;
-// afterEach restores the real clock so no other test sees it.
+// The pinned pre-launch clock: 2026-09-24 12:00 IST. Same mock.timers pattern as
+// start-payment.test.ts; afterEach restores the real clock so no other test sees it.
 const PRE_LAUNCH_NOON_IST_MS = Date.parse('2026-09-24T12:00:00+05:30');
 
 afterEach(() => mock.timers.reset());
@@ -49,16 +48,19 @@ test('2026-09-24 (the day before launch): every startTime is rejected as not_yet
 });
 
 test('2026-09-25 14:45 (before the 3pm launch time): rejected as invalid_time', () => {
+  clockAt(PRE_LAUNCH_NOON_IST_MS);
   const violation = validateBookingSchedule('2026-09-25', '14:45', 15);
   assert.equal(violation?.code, 'invalid_time');
 });
 
 test('2026-09-25 15:00 (the launch moment itself): passes schedule validation', () => {
+  clockAt(PRE_LAUNCH_NOON_IST_MS);
   const violation = validateBookingSchedule('2026-09-25', '15:00', 60);
   assert.equal(violation, null);
 });
 
 test('2026-09-25 15:00 remains bookable right up to closing, same as any other day', () => {
+  clockAt(PRE_LAUNCH_NOON_IST_MS);
   // 15:00 + 60min finishes well before 23:00 close.
   assert.equal(validateBookingSchedule('2026-09-25', '15:00', 60), null);
   // 22:00 + 60min finishes exactly at 23:00 close — still valid.
@@ -68,12 +70,14 @@ test('2026-09-25 15:00 remains bookable right up to closing, same as any other d
 });
 
 test('2026-09-26 (the day after launch): normal 11:00-23:00 operating hours apply', () => {
+  clockAt(PRE_LAUNCH_NOON_IST_MS);
   assert.equal(validateBookingSchedule('2026-09-26', '11:00', 30), null);
   // Before the normal 11:00 open — same as any pre-launch-era date — is still rejected.
   assert.equal(validateBookingSchedule('2026-09-26', '10:45', 30)?.code, 'invalid_time');
 });
 
 test('Monday 2026-09-28 (after launch): the existing Monday closure still applies', () => {
+  clockAt(PRE_LAUNCH_NOON_IST_MS);
   assert.equal(dayOfWeekUtc(2026, 9, 28), 1, 'sanity check: 2026-09-28 is a Monday');
   const violation = validateBookingSchedule('2026-09-28', '15:00', 30);
   assert.equal(violation?.code, 'closed');

@@ -33,9 +33,16 @@ import { ScriptedProvider } from './test-support/scripted-provider';
 import { createHandler as createStatusHandler } from '../handlers/payment-status';
 import { getCognitoClient } from './cognito';
 import { resolveVerifiedAccountEmail } from './verified-account-email';
-import { createHandler as createNotifyHandler, NotificationDeliveryFailedError } from '../handlers/booking-confirmation-notify';
+import {
+  createHandler as createNotifyHandler,
+  NotificationDeliveryFailedError,
+  type ConfirmationEmailSend,
+} from '../handlers/booking-confirmation-notify';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { createHandler as createEmailEventsHandler } from '../handlers/booking-email-events';
+import { DeliveryTrackingMisconfiguredError } from './booking-notifications';
+import { sesEvent } from './test-support/ses-events';
 
 // Stage 2F: the booking-confirmation email, end to end against the in-memory fake DB — the REAL
 // confirmSuccessfulPayment() and the REAL webhook / status-poll / fast-SQS / scheduled reconciliation
@@ -61,6 +68,8 @@ interface SentEmail {
   paymentStatus: string;
   bookingStatus: string;
   anyTransactionOpen: boolean;
+  /** Stage 2G: the row id the sender was given (for the SES message tag). */
+  notificationId: string;
 }
 
 interface World {
@@ -75,6 +84,9 @@ interface World {
   sendError?: (attempt: number) => Error | undefined;
   resolution: RecipientResolution | Error;
   notifyDeps: (overrides?: Partial<NotificationDeps>) => NotificationDeps;
+  /** The handler-level send (Stage 2G): records the tracking options, then delegates to notifyDeps' sender. */
+  send: ConfirmationEmailSend;
+  trackings: ({ configurationSetName: string; notificationId: string } | undefined)[];
 }
 
 /** A PRODUCTION (default) booking with one open PhonePe attempt started through startPayment(). */
@@ -124,18 +136,30 @@ async function world(opts: { environment?: 'SANDBOX' | 'PRODUCTION'; price?: str
         return w.resolution;
       },
       sender: {
-        sendBookingConfirmation: async (to, details) => {
+        sendBookingConfirmation: async (to, details, context) => {
           const failure = w.sendError?.(w.sent.length);
           if (failure) throw failure;
           const payment = store.payments.find((p) => p.id === w.paymentId)!;
           const b = store.bookings.find((x) => x.id === w.bookingId)!;
-          w.sent.push({ to, details, paymentStatus: payment.payment_status, bookingStatus: b.status, anyTransactionOpen: db.inTransaction() });
+          w.sent.push({
+            to,
+            details,
+            paymentStatus: payment.payment_status,
+            bookingStatus: b.status,
+            anyTransactionOpen: db.inTransaction(),
+            notificationId: context.notificationId,
+          });
           return `ses-msg-${w.sent.length}`;
         },
       },
       sandboxAllowlist: new Set(),
       ...overrides,
     }),
+    trackings: [],
+    send: async (to, details, tracking) => {
+      w.trackings.push(tracking);
+      return w.notifyDeps().sender.sendBookingConfirmation(to, details, { notificationId: tracking?.notificationId ?? 'untracked' });
+    },
   };
   return w;
 }
@@ -354,9 +378,9 @@ test('duplicate / overlapping sender runs: exactly one email', async () => {
   const slowDeps = w.notifyDeps();
   const inner = slowDeps.sender.sendBookingConfirmation;
   slowDeps.sender = {
-    sendBookingConfirmation: async (to, details) => {
+    sendBookingConfirmation: async (to, details, context) => {
       await gate;
-      return inner(to, details);
+      return inner(to, details, context);
     },
   };
   const runA = processDueNotifications(slowDeps);
@@ -422,7 +446,7 @@ test('retries exhausted: the row becomes failed, the handler throws for the alar
     getDb: async () => createFakePaymentDbClient(w.store),
     resetDb: () => {},
     resolveRecipient: w.notifyDeps().resolveRecipient,
-    sender: w.notifyDeps().sender,
+    send: w.send,
     env: { BOOKING_CONFIRMATION_EMAIL_ENABLED: 'true' },
   });
   await assert.rejects(handler({}), NotificationDeliveryFailedError);
@@ -460,7 +484,7 @@ test('outbox insert failure (table unexpectedly missing) never fails the confirm
     getDb: async () => createFakePaymentDbClient(w.store),
     resetDb: () => {},
     resolveRecipient: w.notifyDeps().resolveRecipient,
-    sender: w.notifyDeps().sender,
+    send: w.send,
     env: { BOOKING_CONFIRMATION_EMAIL_ENABLED: 'true' },
   });
   await assert.rejects(handler({}), NotificationsTableMissingError);
@@ -574,7 +598,7 @@ test('handler: disabled unless BOOKING_CONFIRMATION_EMAIL_ENABLED is exactly "tr
       },
       resetDb: () => {},
       resolveRecipient: async () => ({ kind: 'unavailable' }),
-      sender: { sendBookingConfirmation: async () => 'x' },
+      send: async () => 'x',
       env: { BOOKING_CONFIRMATION_EMAIL_ENABLED: value },
     });
     assert.deepEqual(await handler({}), { disabled: true });
@@ -593,7 +617,7 @@ test('handler: enabled run sends and returns the summary; logs never contain the
       getDb: async () => createFakePaymentDbClient(w.store),
       resetDb: () => {},
       resolveRecipient: w.notifyDeps().resolveRecipient,
-      sender: w.notifyDeps().sender,
+      send: w.send,
       env: { BOOKING_CONFIRMATION_EMAIL_ENABLED: 'true' },
     });
     const summary = await handler({});
@@ -698,4 +722,116 @@ test('more than one matching Cognito user: never chosen arbitrarily — no Admin
   assert.deepEqual(cognitoCalls, ['ListUsersCommand']);
   assert.equal(notificationsOf(w)[0].last_error, 'no_verified_recipient');
   assert.equal(w.sent.length, 0);
+});
+
+// ------------------------------------------------------------------ Stage 2G: delivery tracking
+
+const TRACKING_ENV = {
+  BOOKING_CONFIRMATION_EMAIL_ENABLED: 'true',
+  BOOKING_EMAIL_DELIVERY_TRACKING_ENABLED: 'true',
+  SES_CONFIGURATION_SET: 'playx-booking-emails',
+};
+
+function notifyHandler(w: World, env: Record<string, string | undefined>) {
+  return createNotifyHandler({
+    getDb: async () => createFakePaymentDbClient(w.store),
+    resetDb: () => {},
+    resolveRecipient: w.notifyDeps().resolveRecipient,
+    send: w.send,
+    env,
+  });
+}
+
+test('Stage 2G: tracked send uses the configuration set + the row id tag; MessageId recorded; delivery_status accepted', async () => {
+  const w = await world();
+  await confirmViaWebhook(w);
+  const summary = await notifyHandler(w, TRACKING_ENV)({});
+  assert.deepEqual(summary, { claimed: 1, sent: 1, suppressed: 0, retried: 0, failed: 0 });
+  const row = notificationsOf(w)[0];
+  assert.deepEqual(w.trackings, [{ configurationSetName: 'playx-booking-emails', notificationId: row.id }]);
+  assert.equal(w.sent[0].notificationId, row.id);
+  assert.equal(row.status, 'sent');
+  assert.equal(row.provider_message_id, 'ses-msg-1');
+  assert.equal(row.delivery_status, 'accepted');
+});
+
+test('Stage 2G: tracking off -> no configuration set/tag and delivery_status stays NULL (not tracked)', async () => {
+  const w = await world();
+  await confirmViaWebhook(w);
+  await notifyHandler(w, { BOOKING_CONFIRMATION_EMAIL_ENABLED: 'true', SES_CONFIGURATION_SET: 'playx-booking-emails' })({});
+  assert.deepEqual(w.trackings, [undefined]);
+  const row = notificationsOf(w)[0];
+  assert.equal(row.status, 'sent');
+  assert.equal(row.provider_message_id, 'ses-msg-1');
+  assert.equal(row.delivery_status ?? null, null);
+});
+
+test('Stage 2G: tracking on without a valid SES_CONFIGURATION_SET fails closed — nothing claimed or sent', async () => {
+  for (const bad of [undefined, '', 'has spaces', 'x'.repeat(65)]) {
+    const w = await world();
+    await confirmViaWebhook(w);
+    const handler = notifyHandler(w, { ...TRACKING_ENV, SES_CONFIGURATION_SET: bad });
+    const err = mock.method(console, 'error', () => {});
+    try {
+      await assert.rejects(handler({}), DeliveryTrackingMisconfiguredError);
+    } finally {
+      err.mock.restore();
+    }
+    assert.equal(w.sent.length, 0);
+    const row = notificationsOf(w)[0];
+    assert.equal(row.status, 'pending');
+    assert.equal(row.attempt_count, 0, 'not even claimed');
+  }
+});
+
+test('Stage 2G: migration 009 missing at send time -> the accepted email is still recorded sent (no duplicate email)', async () => {
+  const w = await world();
+  await confirmViaWebhook(w);
+  w.store.deliveryColumnsMissing = true;
+  const err = mock.method(console, 'error', () => {});
+  try {
+    assert.equal((await notifyHandler(w, TRACKING_ENV)({}) as { sent: number }).sent, 1);
+  } finally {
+    err.mock.restore();
+  }
+  assert.equal(notificationsOf(w)[0].status, 'sent');
+  assert.equal(notificationsOf(w)[0].provider_message_id, 'ses-msg-1');
+  clockAt(T0 + (CLAIM_LEASE_SECONDS + 60) * 1000);
+  await notifyHandler(w, TRACKING_ENV)({});
+  assert.equal(w.sent.length, 1, 'never re-sent');
+});
+
+test('Stage 2G end to end: real confirmation -> tracked send -> SES events; booking/payment/allocations never change', async () => {
+  const w = await world();
+  await confirmViaWebhook(w);
+  await notifyHandler(w, TRACKING_ENV)({});
+  const row = notificationsOf(w)[0];
+  const before = snapshot(w);
+  const events = createEmailEventsHandler({
+    getDb: async () => createFakePaymentDbClient(w.store),
+    resetDb: () => {},
+    env: { SES_CONFIGURATION_SET: 'playx-booking-emails' },
+  });
+  const ev = (type: Parameters<typeof sesEvent>[0], at: string) =>
+    sesEvent(type, { notificationId: row.id, messageId: row.provider_message_id!, at, eventBridgeTime: at.replace(/\.\d{3}Z$/, 'Z') });
+  const quiet = [mock.method(console, 'log', () => {}), mock.method(console, 'warn', () => {})];
+  try {
+    const sendAt = new Date(T0 + MIN).toISOString();
+    assert.equal((await events(ev('Email Sent', sendAt))).result, 'no_change', 'already accepted at send time');
+    assert.equal((await events(ev('Email Delivered', new Date(T0 + 2 * MIN).toISOString()))).result, 'applied');
+    assert.equal((await events(ev('Email Delivery Delayed', new Date(T0 + MIN).toISOString()))).result, 'no_change');
+    assert.equal((await events(ev('Email Bounced', new Date(T0 + 3 * MIN).toISOString()))).result, 'applied');
+  } finally {
+    for (const q of quiet) q.mock.restore();
+  }
+  assert.equal(row.delivery_status, 'bounced');
+  assert.equal(row.delivered_at?.getTime(), T0 + 2 * MIN);
+  assert.equal(row.bounced_at?.getTime(), T0 + 3 * MIN);
+  assert.equal(snapshot(w), before, 'a bounce never touches the booking, payment or allocations');
+  assert.equal(paymentOf(w).payment_status, 'paid');
+  assert.equal(bookingOf(w).status, 'confirmed');
+  assert.equal(row.status, 'sent', 'the outbox status stays independent');
+  // The outbox is never re-driven by a delivery event.
+  assert.equal((await processDueNotifications(w.notifyDeps())).claimed, 0);
+  assert.equal(w.sent.length, 1);
 });

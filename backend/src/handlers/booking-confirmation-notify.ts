@@ -4,6 +4,8 @@ import {
   isConfirmationEmailEnabled,
   parseEmailAllowlist,
   processDueNotifications,
+  resolveDeliveryTrackingConfigurationSet,
+  type BookingConfirmationDetails,
   type NotificationDeps,
   type NotificationRunSummary,
 } from '../lib/booking-notifications';
@@ -25,6 +27,11 @@ import { sendBookingConfirmationEmail } from '../lib/ses';
 //   BOOKING_EMAIL_SANDBOX_ALLOWLIST     comma-separated emails SANDBOX (staging) confirmations may go
 //                                       to. Empty (the default) -> every SANDBOX email is suppressed,
 //                                       so staging never emails real customers.
+//   BOOKING_EMAIL_DELIVERY_TRACKING_ENABLED  Stage 2G: exactly "true" -> send through the SES
+//                                       configuration set SES_CONFIGURATION_SET with the
+//                                       playx_notification_id tag, and record delivery_status =
+//                                       'accepted'. "true" with no valid SES_CONFIGURATION_SET FAILS
+//                                       CLOSED: the run throws before claiming anything (alarm).
 //
 // ERRORS: transient send/lookup failures are recorded on the row and retried by later runs — they do
 // not fail the invocation. The invocation THROWS (-> Lambda Errors -> alarm) only for a notification
@@ -34,11 +41,18 @@ import { sendBookingConfirmationEmail } from '../lib/ses';
 // Logs: run summary counts, notification/booking ids and reason codes. Never recipient addresses,
 // email bodies, tokens or credentials.
 
+/** Sends one confirmation; `tracking` is undefined when delivery tracking is off. */
+export type ConfirmationEmailSend = (
+  to: string,
+  details: BookingConfirmationDetails,
+  tracking: { configurationSetName: string; notificationId: string } | undefined,
+) => Promise<string | undefined>;
+
 export interface NotifyHandlerDeps {
   getDb: () => Promise<DbClient>;
   resetDb: () => void;
   resolveRecipient: NotificationDeps['resolveRecipient'];
-  sender: NotificationDeps['sender'];
+  send: ConfirmationEmailSend;
   env: Record<string, string | undefined>;
   now?: () => Date;
 }
@@ -47,7 +61,7 @@ const defaultDeps: NotifyHandlerDeps = {
   getDb,
   resetDb,
   resolveRecipient: (cognitoSub) => resolveVerifiedAccountEmail(cognitoSub),
-  sender: { sendBookingConfirmation: sendBookingConfirmationEmail },
+  send: sendBookingConfirmationEmail,
   env: process.env,
 };
 
@@ -70,13 +84,27 @@ export function createHandler(deps: NotifyHandlerDeps = defaultDeps) {
       return { disabled: true };
     }
 
+    let configurationSetName: string | null;
+    try {
+      configurationSetName = resolveDeliveryTrackingConfigurationSet(deps.env);
+    } catch (err) {
+      // Fail closed before claiming anything: the rows wait as 'pending' and the Errors alarm fires.
+      console.error(`${LOG} failed`, JSON.stringify({ error: err instanceof Error ? err.name : 'unknown' }));
+      throw err;
+    }
+    const sender: NotificationDeps['sender'] = {
+      sendBookingConfirmation: (to, details, { notificationId }) =>
+        deps.send(to, details, configurationSetName ? { configurationSetName, notificationId } : undefined),
+    };
+
     let summary: NotificationRunSummary;
     try {
       const db = await deps.getDb();
       summary = await processDueNotifications({
         db,
         resolveRecipient: deps.resolveRecipient,
-        sender: deps.sender,
+        sender,
+        deliveryTracking: configurationSetName !== null,
         sandboxAllowlist: parseEmailAllowlist(deps.env.BOOKING_EMAIL_SANDBOX_ALLOWLIST),
         now: deps.now,
         hasTimeLeft: context ? () => context.getRemainingTimeInMillis() > SAFETY_MARGIN_MS : undefined,

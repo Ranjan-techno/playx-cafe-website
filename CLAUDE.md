@@ -127,6 +127,17 @@ recipient. Migration 008 does not backfill, so bookings confirmed before it are 
 *before* the Stage 2F code is deployed (migration-only deploy first). Kill switch:
 `notificationConfigs.dev.confirmationEmailEnabled`.
 
+Delivery tracking (Stage 2G): the sender sends booking confirmations (only — not the OTP email) through the SES
+configuration set `playx-booking-emails` with one tag, `playx_notification_id` = `booking_notifications.id`, and
+records `delivery_status = 'accepted'`. The set publishes SEND/DELIVERY/DELIVERY_DELAY/BOUNCE/COMPLAINT/REJECT/
+RENDERING_FAILURE to the EventBridge default bus; a rule (source `aws.ses`, those detail-types, that set's tag)
+invokes `backend/src/handlers/booking-email-events.ts` (DB secret only — no SES/Cognito/PhonePe/SQS), which
+applies forward-only, idempotent transitions to migration 009's delivery columns
+(`backend/src/lib/booking-email-events.ts`). It never touches bookings, payments or allocations. Migration 009 does
+not backfill (old sent rows stay "NOT TRACKED") and is applied *before* the Stage 2G code is deployed. Kill switch:
+`notificationConfigs.dev.deliveryTrackingEnabled` (the sender fails closed if on without a configuration set).
+Admin Booking Detail shows it via `emailNotification` / `js/admin-email-status.js`.
+
 CORS: `infra/lib/config/api-config.ts`'s dev config allows only `https://ranjan-techno.github.io` (the GitHub
 Pages origin this site deploys to) to call the API. Testing this integration from `python3 -m http.server`
 locally will hit CORS errors calling the deployed API unless that config is temporarily extended (and

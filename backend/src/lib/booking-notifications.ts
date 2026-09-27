@@ -30,6 +30,11 @@
 // Nothing here ever reads or writes payments or bookings state — a failed email cannot un-pay or
 // un-confirm anything.
 //
+// Stage 2G (delivery tracking): with deps.deliveryTracking the sender is given the row id (it tags
+// the SES message playx_notification_id=<id> and sends through the booking-emails configuration
+// set), and 'sent' also records delivery_status = 'accepted' (migration 009). Later SES events
+// (delivered / delayed / bounced / ...) are applied by booking-email-events.ts — never here.
+//
 // At-most-once is not achievable around an external send; the one remaining duplicate window is a
 // crash after SES accepted the message but before 'sent' was recorded (the row is re-claimed once
 // its lease lapses). Everything else — duplicate successes, overlapping runs, retries after a
@@ -105,9 +110,15 @@ export type RecipientResolution =
   /** The Cognito account is gone or has no verified email — retrying cannot help. */
   | { kind: 'unavailable' };
 
+/** Stage 2G: identifiers the sender may attach to the message — internal ids only, never PII. */
+export interface NotificationSendContext {
+  /** booking_notifications.id of the row being sent. */
+  notificationId: string;
+}
+
 export interface NotificationSender {
   /** Sends the confirmation email; resolves to the SES MessageId. Throws on failure. */
-  sendBookingConfirmation(to: string, details: BookingConfirmationDetails): Promise<string | undefined>;
+  sendBookingConfirmation(to: string, details: BookingConfirmationDetails, context: NotificationSendContext): Promise<string | undefined>;
 }
 
 export interface NotificationDeps {
@@ -117,6 +128,9 @@ export interface NotificationDeps {
   sender: NotificationSender;
   /** Lower-cased emails SANDBOX confirmations may go to. Empty = every SANDBOX email suppressed. */
   sandboxAllowlist: ReadonlySet<string>;
+  /** Stage 2G: the sender sends through the SES delivery-tracking configuration set, so a 'sent' row
+   *  starts at delivery_status = 'accepted'. Off/absent: delivery_status stays NULL (not tracked). */
+  deliveryTracking?: boolean;
   now?: () => Date;
   /** Stop claiming new batches when this returns false (Lambda time budget). */
   hasTimeLeft?: () => boolean;
@@ -220,7 +234,27 @@ async function loadBookingForNotification(db: DbClient, bookingId: string): Prom
   return rows[0];
 }
 
-async function markSent(db: DbClient, id: string, recipientEmail: string, messageId: string | undefined): Promise<void> {
+async function markSent(db: DbClient, id: string, recipientEmail: string, messageId: string | undefined, tracked: boolean): Promise<void> {
+  if (tracked) {
+    try {
+      await db.query(
+        `UPDATE booking_notifications
+         SET status = 'sent', sent_at = now(), recipient_email = $2, provider_message_id = $3, last_error = NULL,
+             delivery_status = 'accepted', updated_at = now()
+         WHERE id = $1 AND status = 'pending'`,
+        [id, recipientEmail, messageId ?? null],
+      );
+      return;
+    } catch (err) {
+      if (pgCode(err) !== '42703') {
+        throw err;
+      }
+      // undefined_column: migration 009 is not applied (the rollout applies it first). SES has
+      // ALREADY accepted this email, so the row must still become 'sent' — otherwise the lease would
+      // lapse and the customer would be emailed again. Record it the Stage 2F way and fail loudly.
+      console.error('booking confirmation delivery tracking columns missing (migration 009 not applied)', JSON.stringify({ notificationId: id }));
+    }
+  }
   await db.query(
     `UPDATE booking_notifications
      SET status = 'sent', sent_at = now(), recipient_email = $2, provider_message_id = $3, last_error = NULL, updated_at = now()
@@ -344,14 +378,17 @@ export async function processNotification(deps: NotificationDeps, claimed: Claim
 
   let messageId: string | undefined;
   try {
-    messageId = await deps.sender.sendBookingConfirmation(to, details);
+    messageId = await deps.sender.sendBookingConfirmation(to, details, { notificationId: claimed.id });
   } catch (err) {
     const name = errorName(err);
     return PERMANENT_SEND_ERRORS.has(name) ? fail(`ses_${name}`) : retryOrFail(`ses_${name}`);
   }
 
-  await markSent(db, claimed.id, to, messageId);
-  console.log('booking confirmation email sent', JSON.stringify({ ...logBase, environment: booking.booking_environment }));
+  await markSent(db, claimed.id, to, messageId, deps.deliveryTracking === true);
+  console.log(
+    'booking confirmation email sent',
+    JSON.stringify({ ...logBase, environment: booking.booking_environment, deliveryTracked: deps.deliveryTracking === true }),
+  );
   return { result: 'sent' };
 }
 
@@ -403,6 +440,37 @@ export function parseEmailAllowlist(raw: string | undefined): Set<string> {
  *  switches (BOOKING_CREATE_ENABLED, PAYMENT_START_ENABLED). */
 export function isConfirmationEmailEnabled(env: Record<string, string | undefined>): boolean {
   return env.BOOKING_CONFIRMATION_EMAIL_ENABLED === 'true';
+}
+
+/** Stage 2G switch: only the exact string "true" turns delivery tracking on (same convention). */
+export function isDeliveryTrackingEnabled(env: Record<string, string | undefined>): boolean {
+  return env.BOOKING_EMAIL_DELIVERY_TRACKING_ENABLED === 'true';
+}
+
+/** SES configuration set names: letters, digits, '_' and '-', at most 64 characters. */
+const CONFIGURATION_SET_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export class DeliveryTrackingMisconfiguredError extends Error {
+  constructor() {
+    super('BOOKING_EMAIL_DELIVERY_TRACKING_ENABLED is "true" but SES_CONFIGURATION_SET is missing or invalid');
+    this.name = 'DeliveryTrackingMisconfiguredError';
+  }
+}
+
+/**
+ * Stage 2G: the configuration set to send booking confirmations through, or null when tracking is
+ * off. FAILS CLOSED: tracking on without a valid SES_CONFIGURATION_SET throws — nothing is sent
+ * (rows wait as 'pending') rather than silently sending untracked mail.
+ */
+export function resolveDeliveryTrackingConfigurationSet(env: Record<string, string | undefined>): string | null {
+  if (!isDeliveryTrackingEnabled(env)) {
+    return null;
+  }
+  const name = env.SES_CONFIGURATION_SET;
+  if (!name || !CONFIGURATION_SET_NAME_RE.test(name)) {
+    throw new DeliveryTrackingMisconfiguredError();
+  }
+  return name;
 }
 
 const SAFE_NAME_RE = /^[A-Za-z0-9_]{1,64}$/;

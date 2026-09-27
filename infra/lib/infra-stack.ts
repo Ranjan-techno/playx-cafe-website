@@ -176,6 +176,10 @@ export class InfraStack extends cdk.Stack {
       sandboxAllowlist: resolveBookingEmailSandboxAllowlist(this.node.tryGetContext('bookingEmailSandboxAllowlist')),
       functionName: resourceName('booking-confirmation-notify'),
       errorsAlarmName: resourceName('booking-confirmation-notify-errors'),
+      // Stage 2G: SES delivery tracking — the 'playx-booking-emails' configuration set (EventBridge
+      // destination), the events rule and this consumer Lambda (DB access only) + its Errors alarm.
+      emailEventsFunctionName: resourceName('booking-email-events'),
+      emailEventsErrorsAlarmName: resourceName('booking-email-events-errors'),
       vpc: network.vpc,
       lambdaSecurityGroup: database.lambdaSecurityGroup,
       databaseSecret,

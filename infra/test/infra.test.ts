@@ -34,9 +34,9 @@ test('Story 2.1 (+ payments egress): VPC keeps its isolated subnets and adds NAT
   // payment-status-production/payment-webhook-production functions, and Stage 2E's bookings-me-production function — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
   // guarded against separately (that flag is explicitly disabled for this VPC — see
   // constructs/network.ts).
-  // + Stage 2F's booking-confirmation-notify sender.
+  // + Stage 2F's booking-confirmation-notify sender, + Stage 2G's booking-email-events consumer.
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
-  template.resourceCountIs('AWS::Lambda::Function', 28);
+  template.resourceCountIs('AWS::Lambda::Function', 29);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -105,8 +105,9 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   // two production functions, Stage 2B's two production reconcile functions and Stage 2C's
   // production status + webhook functions — see below), but health/auth-start/auth-verify/the three
   // triggers are the six of the twenty-six that do NOT sit in the VPC.
-  // + Stage 2F's booking-confirmation-notify sender (VPC-attached).
-  template.resourceCountIs('AWS::Lambda::Function', 28);
+  // + Stage 2F's booking-confirmation-notify sender (VPC-attached), + Stage 2G's booking-email-events
+  // consumer (VPC-attached, isolated subnets).
+  template.resourceCountIs('AWS::Lambda::Function', 29);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -871,8 +872,8 @@ test('PhonePe Phase 2: POST /payments/start and GET /payments/{bookingId}/status
 test('Phase 5A: payment reconciliation runs on an EventBridge schedule every 5 minutes, targeting only the reconcile Lambda, with no retries', () => {
   const { template, json } = synth();
   // The sandbox rule + (Stage 2B) the separate PRODUCTION fallback rule + (Stage 2F) the
-  // booking-confirmation email sender's rule.
-  template.resourceCountIs('AWS::Events::Rule', 3);
+  // booking-confirmation email sender's rule + (Stage 2G) the SES delivery-event rule.
+  template.resourceCountIs('AWS::Events::Rule', 4);
   const reconcile = lambdaEntries(json).find(([, r]) => r.Properties.FunctionName === 'playx-dev-payment-reconcile')!;
   const [ruleId, rule] = Object.entries<Json>(json.Resources).find(
     ([, r]) => r.Type === 'AWS::Events::Rule' && r.Properties.Targets.some((t: Json) => t.Arn['Fn::GetAtt']?.[0] === reconcile[0]),
@@ -1089,16 +1090,16 @@ test('Stage 2A/2B: shared infrastructure only — no second VPC/RDS/Cognito/NAT/
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
   template.resourceCountIs('AWS::SQS::Queue', 2);
-  // + Stage 2F's notification-sender rule (not a payment schedule).
-  template.resourceCountIs('AWS::Events::Rule', 3);
+  // + Stage 2F's notification-sender rule and Stage 2G's SES delivery-event rule (not payment schedules).
+  template.resourceCountIs('AWS::Events::Rule', 4);
   template.resourceCountIs('AWS::SecretsManager::Secret', 1);
   // The EventBridge targets are exactly the sandbox and production 5-minute reconcilers, plus
-  // Stage 2F's booking-confirmation email sender.
+  // Stage 2F's booking-confirmation email sender and Stage 2G's delivery-event consumer.
   const targets = Object.values<Json>(json.Resources)
     .filter((r) => r.Type === 'AWS::Events::Rule')
     .flatMap((r) => r.Properties.Targets.map((t: Json) => json.Resources[t.Arn['Fn::GetAtt'][0]].Properties.FunctionName))
     .sort();
-  assert.deepEqual(targets, ['playx-dev-booking-confirmation-notify', 'playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production']);
+  assert.deepEqual(targets, ['playx-dev-booking-confirmation-notify', 'playx-dev-booking-email-events', 'playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production']);
   // + Stage 2C's production payment-status and webhook Lambdas, + Stage 2E's production My Bookings.
   const names = lambdaEntries(json).map(([, r]) => r.Properties.FunctionName as string);
   assert.deepEqual(names.filter((n) => /production/.test(n)).sort(), [
@@ -1308,8 +1309,8 @@ test('Stage 2B: the existing sandbox reconciler and its rule are unchanged', () 
 test('Stage 2B: DLQ alarm fires on ApproximateNumberOfMessagesVisible > 0 for the production DLQ', () => {
   const { template, json } = synth();
   // Stage 2E adds two Lambda-error alarms beside this one (see the Stage 2E tests), Stage 2F one
-  // more on the notification sender.
-  template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
+  // more on the notification sender, Stage 2G one on the delivery-event consumer.
+  template.resourceCountIs('AWS::CloudWatch::Alarm', 5);
   const alarm = Object.values<Json>(json.Resources).find(
     (r) => r.Type === 'AWS::CloudWatch::Alarm' && r.Properties.AlarmName === 'playx-dev-payment-reconcile-production-dlq-messages',
   )!.Properties;
@@ -1485,8 +1486,8 @@ test('Stage 2C: production kill switches are independent of the tester list (Sta
 test('Stage 2C: shared infrastructure only — no new queue, rule, secret, authorizer, API or NAT', () => {
   const { template } = synth();
   template.resourceCountIs('AWS::SQS::Queue', 2);
-  // 2 payment reconcile rules + Stage 2F's notification-sender rule.
-  template.resourceCountIs('AWS::Events::Rule', 3);
+  // 2 payment reconcile rules + Stage 2F's notification-sender rule + Stage 2G's SES event rule.
+  template.resourceCountIs('AWS::Events::Rule', 4);
   template.resourceCountIs('AWS::SecretsManager::Secret', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Authorizer', 1);
   template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
@@ -1711,8 +1712,9 @@ test('Stage 2E: minimal production Lambda-error alarms on payment start and the 
   const { json } = synth();
   const alarms = Object.values<Json>(json.Resources).filter((r) => r.Type === 'AWS::CloudWatch::Alarm').map((r) => r.Properties);
   assert.deepEqual(alarms.map((a) => a.AlarmName).sort(), [
-    // Stage 2F (asserted in its own tests).
+    // Stage 2F / 2G (asserted in their own tests).
     'playx-dev-booking-confirmation-notify-errors',
+    'playx-dev-booking-email-events-errors',
     'playx-dev-payment-reconcile-production-dlq-messages',
     'playx-dev-payment-start-production-errors',
     'playx-dev-payment-webhook-production-errors',
@@ -1828,4 +1830,176 @@ test('Stage 2F: bookingEmailSandboxAllowlist — context only, emails only, norm
   assert.throws(() => resolveBookingEmailSandboxAllowlist(42), /comma-separated/);
   const { json } = synth({ bookingEmailSandboxAllowlist: 'QA@playxcafe.com' });
   assert.equal(envOf(json, NOTIFY_FUNCTION).BOOKING_EMAIL_SANDBOX_ALLOWLIST, 'qa@playxcafe.com');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Stage 2G: SES booking-confirmation delivery tracking — configuration set -> EventBridge default
+// bus -> one consumer Lambda with DB access only. The sender only gains two env vars.
+// ---------------------------------------------------------------------------------------------
+
+const EVENTS_FUNCTION = 'playx-dev-booking-email-events';
+const TRACKED_DETAIL_TYPES = [
+  'Email Sent',
+  'Email Delivered',
+  'Email Delivery Delayed',
+  'Email Bounced',
+  'Email Complaint Received',
+  'Email Rejected',
+  'Email Rendering Failed',
+];
+let stage2g: { template: Template; json: Json } | undefined;
+const synth2g = () => (stage2g ??= synth());
+
+function configurationSetId(json: Json): string {
+  const entries = Object.entries<Json>(json.Resources).filter(([, r]) => r.Type === 'AWS::SES::ConfigurationSet');
+  assert.equal(entries.length, 1, 'exactly one SES configuration set');
+  return entries[0][0];
+}
+
+test('Stage 2G: SES configuration set "playx-booking-emails" — no open/click tracking or other overrides', () => {
+  const { json } = synth2g();
+  const set = json.Resources[configurationSetId(json)].Properties;
+  assert.equal(set.Name, 'playx-booking-emails');
+  for (const key of ['TrackingOptions', 'VdmOptions', 'SuppressionOptions', 'ReputationOptions', 'DeliveryOptions', 'SendingOptions']) {
+    assert.equal(set[key], undefined, `${key} left at account defaults`);
+  }
+});
+
+test('Stage 2G: one EventBridge (default bus) event destination with exactly the seven tracked events — no OPEN/CLICK', () => {
+  const { json } = synth2g();
+  const destinations = Object.values<Json>(json.Resources).filter((r) => r.Type === 'AWS::SES::ConfigurationSetEventDestination');
+  assert.equal(destinations.length, 1);
+  const props = destinations[0].Properties;
+  assert.deepEqual(props.ConfigurationSetName, { Ref: configurationSetId(json) });
+  const dest = props.EventDestination;
+  assert.equal(dest.Enabled, true);
+  assert.deepEqual([...dest.MatchingEventTypes].sort(), ['bounce', 'complaint', 'delivery', 'deliveryDelay', 'reject', 'renderingFailure', 'send']);
+  assert.ok(!dest.MatchingEventTypes.some((t: string) => /open|click|subscription/i.test(t)));
+  assert.match(JSON.stringify(dest.EventBridgeDestination.EventBusArn), /event-bus\/default/);
+  for (const other of ['CloudWatchDestination', 'KinesisFirehoseDestination', 'SnsDestination']) {
+    assert.equal(dest[other], undefined, `no ${other}`);
+  }
+});
+
+test('Stage 2G: the sender sends through the configuration set with tracking ON; its IAM is unchanged', () => {
+  const { json } = synth2g();
+  const env = envOf(json, NOTIFY_FUNCTION);
+  assert.equal(env.BOOKING_EMAIL_DELIVERY_TRACKING_ENABLED, 'true');
+  assert.deepEqual(env.SES_CONFIGURATION_SET, { Ref: configurationSetId(json) });
+  const ses = statementsFor(json, NOTIFY_FUNCTION).filter((st) => actionsOf(st).some((a) => a.startsWith('ses:')));
+  assert.equal(ses.length, 1);
+  assert.deepEqual(actionsOf(ses[0]), ['ses:SendEmail']);
+  // The OTP sender (auth-create-challenge) is untouched: no configuration set.
+  assert.equal(envOf(json, 'playx-dev-auth-create-challenge').SES_CONFIGURATION_SET, undefined);
+});
+
+test('Stage 2G: consumer Lambda — isolated subnets + shared Lambda SG, only DB_SECRET_ARN + SES_CONFIGURATION_SET', () => {
+  const { json } = synth2g();
+  const [, fn] = lambdaNamed(json, EVENTS_FUNCTION);
+  assert.equal(fn.Properties.Runtime, 'nodejs22.x');
+  assert.equal(fn.Properties.Timeout, 15);
+  const subnets: string[] = fn.Properties.VpcConfig.SubnetIds.map((x: Json) => x.Ref);
+  assert.ok(subnets.length === 2 && subnets.every((x) => x.includes('privateisolated')), 'no internet egress needed');
+  assert.deepEqual(fn.Properties.VpcConfig.SecurityGroupIds, lambdaNamed(json, NOTIFY_FUNCTION)[1].Properties.VpcConfig.SecurityGroupIds);
+  const env = envOf(json, EVENTS_FUNCTION);
+  assert.deepEqual(Object.keys(env).sort(), ['DB_SECRET_ARN', 'SES_CONFIGURATION_SET']);
+  assert.deepEqual(env.SES_CONFIGURATION_SET, { Ref: configurationSetId(json) });
+});
+
+test('Stage 2G: consumer IAM — DB secret read + logs/VPC only; no SES, Cognito, PhonePe secret or SQS', () => {
+  const { json } = synth2g();
+  const statements = statementsFor(json, EVENTS_FUNCTION);
+  const actions = statements.flatMap(actionsOf);
+  assert.ok(actions.length > 0);
+  assert.ok(actions.every((a) => a.startsWith('secretsmanager:')), `only secret access: ${actions.join(',')}`);
+  assert.ok(!statements.some(isPhonePeSecretStatement));
+  assert.equal(secretsResourcesFor(json, EVENTS_FUNCTION), secretsResourcesFor(json, 'playx-dev-admin-booking-detail'), 'the same DB secret as the admin Lambdas');
+  const [, fn] = lambdaNamed(json, EVENTS_FUNCTION);
+  const role = json.Resources[fn.Properties.Role['Fn::GetAtt'][0]].Properties;
+  const managed = JSON.stringify(role.ManagedPolicyArns);
+  assert.match(managed, /AWSLambdaBasicExecutionRole/);
+  assert.match(managed, /AWSLambdaVPCAccessExecutionRole/);
+  assert.equal(role.ManagedPolicyArns.length, 2);
+});
+
+test('Stage 2G: EventBridge rule — source aws.ses, exactly the seven email detail-types, only this configuration set', () => {
+  const { json } = synth2g();
+  const [fnId] = lambdaNamed(json, EVENTS_FUNCTION);
+  const rules = Object.values<Json>(json.Resources).filter(
+    (r) => r.Type === 'AWS::Events::Rule' && r.Properties.Targets.some((t: Json) => t.Arn['Fn::GetAtt']?.[0] === fnId),
+  );
+  assert.equal(rules.length, 1);
+  const rule = rules[0].Properties;
+  assert.equal(rule.EventBusName, undefined, 'default bus');
+  assert.equal(rule.ScheduleExpression, undefined);
+  assert.deepEqual(rule.EventPattern, {
+    source: ['aws.ses'],
+    'detail-type': TRACKED_DETAIL_TYPES,
+    detail: { mail: { tags: { 'ses:configuration-set': ['playx-booking-emails'] } } },
+  });
+  assert.equal(rule.Targets.length, 1);
+  assert.equal(rule.Targets[0].RetryPolicy.MaximumRetryAttempts, 4);
+  const permissions = Object.values<Json>(json.Resources).filter(
+    (r) => r.Type === 'AWS::Lambda::Permission' && JSON.stringify(r.Properties.FunctionName).includes(fnId),
+  );
+  assert.deepEqual(permissions.map((p) => p.Properties.Principal), ['events.amazonaws.com'], 'invocable only by EventBridge — no API route');
+});
+
+test('Stage 2G: consumer async invocation — Lambda retries function errors twice within 6 hours; no on-failure destination', () => {
+  const { json } = synth2g();
+  const [fnId] = lambdaNamed(json, EVENTS_FUNCTION);
+  const configs = Object.values<Json>(json.Resources).filter(
+    (r) => r.Type === 'AWS::Lambda::EventInvokeConfig' && JSON.stringify(r.Properties.FunctionName).includes(fnId),
+  );
+  assert.equal(configs.length, 1);
+  const config = configs[0].Properties;
+  assert.equal(config.MaximumRetryAttempts, 2);
+  assert.equal(config.MaximumEventAgeInSeconds, 6 * 60 * 60);
+  assert.equal(config.Qualifier, '$LATEST');
+  assert.equal(config.DestinationConfig, undefined, 'no DLQ/destination: raw SES events are never retained');
+  // Only this Lambda gained an async-invoke configuration in Stage 2G (the sender keeps its own model).
+  const [notifyId] = lambdaNamed(json, NOTIFY_FUNCTION);
+  assert.ok(!Object.values<Json>(json.Resources).some(
+    (r) => r.Type === 'AWS::Lambda::EventInvokeConfig' && JSON.stringify(r.Properties.FunctionName).includes(notifyId),
+  ));
+  assert.equal(Object.values<Json>(json.Resources).filter((r) => r.Type === 'AWS::SQS::Queue').length, 2, 'no new DLQ queue');
+});
+
+test('Stage 2G: consumer Errors alarm, no actions', () => {
+  const { json } = synth2g();
+  const [fnId] = lambdaNamed(json, EVENTS_FUNCTION);
+  const alarm = Object.values<Json>(json.Resources).find(
+    (r) => r.Type === 'AWS::CloudWatch::Alarm' && r.Properties.AlarmName === 'playx-dev-booking-email-events-errors',
+  )!.Properties;
+  assert.equal(alarm.Namespace, 'AWS/Lambda');
+  assert.equal(alarm.MetricName, 'Errors');
+  assert.deepEqual(alarm.Dimensions, [{ Name: 'FunctionName', Value: { Ref: fnId } }]);
+  assert.equal(alarm.Statistic, 'Sum');
+  assert.equal(alarm.Threshold, 0);
+  assert.equal(alarm.ComparisonOperator, 'GreaterThanThreshold');
+  assert.equal(alarm.TreatMissingData, 'notBreaching');
+  assert.equal(alarm.AlarmActions, undefined);
+});
+
+test('Stage 2G: no payment Lambda changes — no new env, SES, Cognito or events permission; no new queue/secret/NAT/API', () => {
+  const { template, json } = synth2g();
+  for (const name of PAYMENT_FUNCTIONS) {
+    const env = envOf(json, name);
+    assert.equal(env.SES_CONFIGURATION_SET, undefined, name);
+    assert.equal(env.BOOKING_EMAIL_DELIVERY_TRACKING_ENABLED, undefined, name);
+    assert.ok(!statementsFor(json, name).flatMap(actionsOf).some((a) => a.startsWith('ses:') || a.startsWith('events:')), name);
+  }
+  template.resourceCountIs('AWS::SQS::Queue', 2);
+  template.resourceCountIs('AWS::SecretsManager::Secret', 1);
+  template.resourceCountIs('AWS::EC2::NatGateway', 1);
+  template.resourceCountIs('AWS::EC2::VPCEndpoint', 1);
+  template.resourceCountIs('AWS::ApiGatewayV2::Api', 1);
+});
+
+test('Stage 2G: the stack refuses to synth if the SES region differs from the stack region', () => {
+  const app = new cdk.App();
+  assert.throws(
+    () => new InfraStack(app, 'WrongRegionStack', { envConfig: environments.dev, env: { region: 'us-east-1' } }),
+    /sesRegion \(ap-south-1\) to equal the stack region \(us-east-1\)/,
+  );
 });

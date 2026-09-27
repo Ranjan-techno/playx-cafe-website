@@ -12,6 +12,7 @@
 // Postgres). confirm-successful-payment.ts's/start-payment.ts's rollback-on-failure tests need
 // writes made earlier in a failed transaction to disappear.
 
+import { randomUUID } from 'node:crypto';
 import type { DbClient } from '../allocate-simulators';
 import type { PaymentProvider, PaymentStatus } from '../payment-repository';
 import type { SimulatorRow } from '../simulator-allocation';
@@ -77,7 +78,17 @@ export interface FakeNotificationRow {
   sent_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  // Stage 2G (migration 009) — optional so rows seeded before it read as "not tracked".
+  delivery_status?: FakeDeliveryStatus | null;
+  last_delivery_event_at?: Date | null;
+  delivered_at?: Date | null;
+  bounced_at?: Date | null;
+  complained_at?: Date | null;
+  delivery_failure_type?: string | null;
+  delivery_failure_subtype?: string | null;
 }
+
+export type FakeDeliveryStatus = 'accepted' | 'delivered' | 'delayed' | 'bounced' | 'complained' | 'rejected' | 'rendering_failed';
 
 export const DEFAULT_FAKE_SIMULATORS: SimulatorRow[] = [
   { id: 'sim-S1', code: 'S1', simulator_type: 'static' },
@@ -102,6 +113,9 @@ export interface FakePaymentDbStore {
   /** Models "migration 008 not applied yet": every booking_notifications statement fails with
    *  SQLSTATE 42P01 (undefined_table), like Postgres. */
   notificationsTableMissing: boolean;
+  /** Models "migration 009 not applied yet": any statement naming a Stage 2G column fails with
+   *  SQLSTATE 42703 (undefined_column), like Postgres. */
+  deliveryColumnsMissing?: boolean;
   /** Test clock for booking_notifications' now() (defaults to the real clock). */
   now?: () => Date;
 }
@@ -808,8 +822,58 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
       err.code = '42P01';
       throw err;
     }
+    if (store.deliveryColumnsMissing && /delivery_status|delivered_at|bounced_at|complained_at|delivery_failure_|last_delivery_event_at/i.test(sql)) {
+      const err = new Error('column "delivery_status" does not exist') as Error & { code: string };
+      err.code = '42703';
+      throw err;
+    }
     const now = store.now ? store.now() : new Date();
     const plusSeconds = (seconds: number) => new Date(now.getTime() + seconds * 1000);
+
+    // Stage 2G: booking-email-events.ts's correlation read (by primary key).
+    if (/^SELECT id, status, provider_message_id, delivery_status FROM booking_notifications WHERE id = \$1 AND notification_type = 'BOOKING_CONFIRMED'$/i.test(sql.replace(/\s+/g, ' ').trim())) {
+      const row = store.notifications.find((n) => n.id === params[0] && n.notification_type === 'BOOKING_CONFIRMED');
+      return {
+        rows: (row
+          ? [{ id: row.id, status: row.status, provider_message_id: row.provider_message_id, delivery_status: row.delivery_status ?? null }]
+          : []) as unknown as T[],
+      };
+    }
+
+    // Stage 2G: booking-email-events.ts's guarded forward-only transition.
+    if (/^UPDATE booking_notifications\s+SET delivery_status = \$2/i.test(sql)) {
+      const [id, next, eventAt, failureType, failureSubtype, messageId, allowedFrom] = params as [
+        string, FakeDeliveryStatus, Date, string | null, string | null, string, FakeDeliveryStatus[],
+      ];
+      const guarded =
+        /WHERE id = \$1 AND notification_type = 'BOOKING_CONFIRMED' AND status = 'sent'/i.test(sql) &&
+        /AND provider_message_id = \$6\b/i.test(sql) &&
+        /\(delivery_status IS NULL OR delivery_status = ANY\(\$7::text\[\]\)\)/i.test(sql);
+      if (!guarded) {
+        throw new Error(`FakePaymentDbClient: unguarded delivery transition: ${sql}`);
+      }
+      const row = store.notifications.find((n) => n.id === id);
+      if (
+        !row ||
+        row.notification_type !== 'BOOKING_CONFIRMED' ||
+        row.status !== 'sent' ||
+        row.provider_message_id !== messageId ||
+        (row.delivery_status != null && !allowedFrom.includes(row.delivery_status))
+      ) {
+        return { rows: [] };
+      }
+      touch(row);
+      const failure = !['accepted', 'delivered'].includes(next);
+      row.delivery_status = next;
+      row.last_delivery_event_at = eventAt;
+      if (next === 'delivered') row.delivered_at = row.delivered_at ?? eventAt;
+      if (next === 'bounced') row.bounced_at = row.bounced_at ?? eventAt;
+      if (next === 'complained') row.complained_at = row.complained_at ?? eventAt;
+      row.delivery_failure_type = failure ? failureType : null;
+      row.delivery_failure_subtype = failure ? failureSubtype : null;
+      row.updated_at = now;
+      return { rows: [{ delivery_status: next }] as unknown as T[] };
+    }
 
     // enqueueBookingConfirmedNotification: INSERT ... ON CONFLICT (booking_id, notification_type) DO NOTHING RETURNING id
     if (/^INSERT INTO booking_notifications/i.test(sql)) {
@@ -827,7 +891,8 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         return { rows: [] };
       }
       const row: FakeNotificationRow = {
-        id: nextId('notification'),
+        // A real UUID, like gen_random_uuid(): Stage 2G correlates SES events by this id.
+        id: randomUUID(),
         booking_id: bookingId,
         notification_type: type,
         status: 'pending',
@@ -878,6 +943,9 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         row.recipient_email = recipient;
         row.provider_message_id = messageId;
         row.last_error = null;
+        if (/delivery_status = 'accepted'/i.test(sql)) {
+          row.delivery_status = 'accepted';
+        }
       } else if (/SET status = \$2/i.test(sql)) {
         const [, status, reason] = params as [string, 'failed' | 'suppressed', string];
         row.status = status;

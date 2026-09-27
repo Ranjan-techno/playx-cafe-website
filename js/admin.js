@@ -824,6 +824,11 @@
       </div>
 
       <div class="admin-detail-section">
+        <h3>Email</h3>
+        ${window.PlayXAdminEmailStatus.emailNotificationHtml(detail.emailNotification, formatDateTimeDisplay)}
+      </div>
+
+      <div class="admin-detail-section">
         <h3>Update Status</h3>
         ${renderStatusControl(detail)}
       </div>

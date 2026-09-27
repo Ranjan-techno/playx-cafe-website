@@ -636,6 +636,69 @@ interface AdminPaymentAttemptRow {
   duplicate_of_payment_id?: string | null;
 }
 
+/** Stage 2F/2G: booking_notifications' BOOKING_CONFIRMED row, as the admin detail may show it. */
+interface AdminEmailNotificationRow {
+  status: string;
+  sent_at: Date | null;
+  delivery_status?: string | null;
+  last_delivery_event_at?: Date | null;
+  delivered_at?: Date | null;
+  bounced_at?: Date | null;
+  complained_at?: Date | null;
+  delivery_failure_type?: string | null;
+  delivery_failure_subtype?: string | null;
+}
+
+export type AdminEmailOutboxStatus = 'pending' | 'sent' | 'failed' | 'suppressed';
+export type AdminEmailDeliveryStatus = 'accepted' | 'delayed' | 'delivered' | 'bounced' | 'complained' | 'rejected' | 'rendering_failed';
+
+/**
+ * Stage 2G: the booking-confirmation email's state, deliberately minimal. `deliveryStatus` null on a
+ * 'sent' email means "delivery not tracked" (sent before Stage 2G) — never a failure. Never includes
+ * the SES message id, the notification id, the recipient, last_error or anything from an SES event
+ * beyond its sanitized bounce/complaint type.
+ */
+export interface AdminEmailNotification {
+  status: AdminEmailOutboxStatus;
+  deliveryStatus: AdminEmailDeliveryStatus | null;
+  sentAt: string | null;
+  deliveredAt: string | null;
+  bouncedAt: string | null;
+  complainedAt: string | null;
+  lastDeliveryEventAt: string | null;
+  deliveryFailureType: string | null;
+  deliveryFailureSubtype: string | null;
+}
+
+const EMAIL_OUTBOX_STATUSES: readonly AdminEmailOutboxStatus[] = ['pending', 'sent', 'failed', 'suppressed'];
+const EMAIL_DELIVERY_STATUSES: readonly AdminEmailDeliveryStatus[] = ['accepted', 'delayed', 'delivered', 'bounced', 'complained', 'rejected', 'rendering_failed'];
+const SAFE_DELIVERY_REASON_RE = /^[A-Za-z0-9 _.-]{1,64}$/;
+
+/** Pure shaping of the notification row (null -> null: no confirmation email was ever queued). */
+export function buildAdminEmailNotification(row: AdminEmailNotificationRow | undefined): AdminEmailNotification | null {
+  if (!row || !(EMAIL_OUTBOX_STATUSES as readonly string[]).includes(row.status)) {
+    return null;
+  }
+  const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
+  const reason = (v: string | null | undefined) => (typeof v === 'string' && SAFE_DELIVERY_REASON_RE.test(v) ? v : null);
+  const status = row.status as AdminEmailOutboxStatus;
+  const deliveryStatus =
+    status === 'sent' && (EMAIL_DELIVERY_STATUSES as readonly string[]).includes(row.delivery_status ?? '')
+      ? (row.delivery_status as AdminEmailDeliveryStatus)
+      : null;
+  return {
+    status,
+    deliveryStatus,
+    sentAt: iso(row.sent_at),
+    deliveredAt: iso(row.delivered_at),
+    bouncedAt: iso(row.bounced_at),
+    complainedAt: iso(row.complained_at),
+    lastDeliveryEventAt: iso(row.last_delivery_event_at),
+    deliveryFailureType: deliveryStatus ? reason(row.delivery_failure_type) : null,
+    deliveryFailureSubtype: deliveryStatus ? reason(row.delivery_failure_subtype) : null,
+  };
+}
+
 export interface AdminBookingDetail {
   id: string;
   // Kept for compatibility with existing callers — now the same UUID as `id`. The human-facing
@@ -678,6 +741,8 @@ export interface AdminBookingDetail {
   currentPaymentStatus: string | null;
   /** From the typed bookings.booking_environment column (NULL/unknown -> null). */
   bookingEnvironment: PaymentEnvironmentLabel | null;
+  /** Stage 2G: the booking-confirmation email (null = none queued, e.g. unpaid or pre-Stage 2F). */
+  emailNotification: AdminEmailNotification | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -691,6 +756,7 @@ export function buildAdminBookingDetail(
   booking: AdminBookingDetailRow,
   allocations: AdminAllocationDetailRow[],
   payments: AdminPaymentAttemptRow[],
+  emailNotification?: AdminEmailNotificationRow,
 ): AdminBookingDetail {
   const { date, time } = toIstDateTimeParts(booking.scheduled_start_at);
   const paidAttempt = payments.find((p) => p.payment_status === 'paid');
@@ -741,9 +807,43 @@ export function buildAdminBookingDetail(
     })),
     currentPaymentStatus,
     bookingEnvironment: toPaymentEnvironment(booking.booking_environment),
+    emailNotification: buildAdminEmailNotification(emailNotification),
     createdAt: booking.created_at.toISOString(),
     updatedAt: booking.updated_at.toISOString(),
   };
+}
+
+/**
+ * Stage 2G: the booking's confirmation-email row. Selects only the columns the admin view may show.
+ * Tolerates a database where migration 009 (42703: delivery columns) or 008 (42P01: the table) is
+ * not applied yet, so the booking detail itself never fails because of email tracking.
+ */
+async function loadAdminEmailNotification(db: DbClient, bookingId: string): Promise<AdminEmailNotificationRow | undefined> {
+  try {
+    const { rows } = await db.query<AdminEmailNotificationRow>(
+      `SELECT status, sent_at, delivery_status, last_delivery_event_at, delivered_at, bounced_at, complained_at,
+              delivery_failure_type, delivery_failure_subtype
+       FROM booking_notifications
+       WHERE booking_id = $1 AND notification_type = 'BOOKING_CONFIRMED'`,
+      [bookingId],
+    );
+    return rows[0];
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === '42P01') {
+      return undefined;
+    }
+    if (code !== '42703') {
+      throw err;
+    }
+  }
+  const { rows } = await db.query<AdminEmailNotificationRow>(
+    `SELECT status, sent_at
+     FROM booking_notifications
+     WHERE booking_id = $1 AND notification_type = 'BOOKING_CONFIRMED'`,
+    [bookingId],
+  );
+  return rows[0];
 }
 
 /** Returns null for an unknown booking id — the handler turns that into 404, never a 500. Never
@@ -789,7 +889,9 @@ export async function getAdminBookingDetail(db: DbClient, bookingId: string): Pr
     [bookingId],
   );
 
-  return buildAdminBookingDetail(booking, allocations, payments);
+  const emailNotification = await loadAdminEmailNotification(db, bookingId);
+
+  return buildAdminBookingDetail(booking, allocations, payments, emailNotification);
 }
 
 // ============================================================================

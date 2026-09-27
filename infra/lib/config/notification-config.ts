@@ -10,6 +10,14 @@ export interface NotificationConfig {
    *  on the sender Lambda. Always set explicitly — the backend treats anything but "true" as off.
    *  Off = pending confirmations wait (and are suppressed if they go stale or the session passes). */
   confirmationEmailEnabled: boolean;
+  /** Stage 2G: send booking confirmations through the SES configuration set below and track their
+   *  delivery events. Rendered as BOOKING_EMAIL_DELIVERY_TRACKING_ENABLED ('true'/'false') on the
+   *  sender; the sender fails closed if this is on and SES_CONFIGURATION_SET is missing. The
+   *  configuration set, EventBridge rule and events Lambda exist either way (they are idle when off). */
+  deliveryTrackingEnabled: boolean;
+  /** Stage 2G: stable SES configuration set name for booking-confirmation emails. Only that email uses
+   *  it — the OTP email and Cognito's own emails are unchanged. */
+  bookingEmailConfigurationSetName: string;
 }
 
 export const notificationConfigs: Record<'dev' | 'prod', NotificationConfig> = {
@@ -17,10 +25,14 @@ export const notificationConfigs: Record<'dev' | 'prod', NotificationConfig> = {
     // The deployed shared stack (production + staging). PRODUCTION bookings are emailed; SANDBOX
     // (staging) ones are suppressed unless their account email is on the sandbox allowlist below.
     confirmationEmailEnabled: true,
+    deliveryTrackingEnabled: true,
+    bookingEmailConfigurationSetName: 'playx-booking-emails',
   },
   prod: {
     // Not read by any stack this phase (see bin/infra.ts).
     confirmationEmailEnabled: false,
+    deliveryTrackingEnabled: false,
+    bookingEmailConfigurationSetName: 'playx-prod-booking-emails',
   },
 };
 

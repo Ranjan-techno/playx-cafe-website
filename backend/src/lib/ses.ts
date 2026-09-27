@@ -1,6 +1,7 @@
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { buildBookingConfirmationEmail } from './booking-confirmation-email';
 import type { BookingConfirmationDetails } from './booking-notifications';
+import { NOTIFICATION_ID_TAG } from './booking-email-events';
 
 // Guest-first passwordless auth: shared SES client for auth-create-challenge.ts, cached at
 // module scope so warm Lambda invocations reuse it — same caching rationale as lib/cognito.ts's
@@ -52,15 +53,31 @@ export async function sendOtpEmail(toEmail: string, code: string): Promise<void>
   );
 }
 
+
+/** SES tag values: letters, digits, '_' and '-', at most 256 characters. */
+const SES_TAG_VALUE_RE = /^[A-Za-z0-9_-]{1,256}$/;
+
+export interface DeliveryTrackingOptions {
+  /** The SES configuration set that publishes this message's events (e.g. 'playx-booking-emails'). */
+  configurationSetName: string;
+  /** booking_notifications.id of the row being sent — an internal UUID, not PII. */
+  notificationId: string;
+}
+
 /**
  * Stage 2F: sends the booking-confirmation email (booking-notifications.ts's sender) through the
  * same verified SES identity, client and SES_* configuration as the OTP above — no second sender,
  * domain or provider. Text + HTML parts. Resolves to SES's MessageId. Never logs the recipient or
  * the body; the caller logs only ids and outcome codes.
+ *
+ * Stage 2G: with `tracking`, the message is sent through that SES configuration set (which publishes
+ * its delivery events to EventBridge) and carries exactly one message tag, playx_notification_id =
+ * the outbox row id. Only this email is tracked — the OTP email above is unchanged.
  */
 export async function sendBookingConfirmationEmail(
   toEmail: string,
   details: BookingConfirmationDetails,
+  tracking?: DeliveryTrackingOptions,
 ): Promise<string | undefined> {
   const fromEmail = process.env.SES_FROM_EMAIL;
   const fromName = process.env.SES_FROM_NAME ?? 'Play X Cafe';
@@ -68,6 +85,10 @@ export async function sendBookingConfirmationEmail(
     throw new Error('SES_FROM_EMAIL env var not configured');
   }
   const replyTo = process.env.SES_REPLY_TO_EMAIL;
+  if (tracking && (!tracking.configurationSetName || !SES_TAG_VALUE_RE.test(tracking.notificationId))) {
+    // Fail closed: never send a "tracked" email that could not be correlated.
+    throw new Error('booking confirmation delivery tracking misconfigured');
+  }
   const content = buildBookingConfirmationEmail(details);
 
   const response = await getSesClient().send(
@@ -82,6 +103,12 @@ export async function sendBookingConfirmationEmail(
           Html: { Data: content.html, Charset: 'UTF-8' },
         },
       },
+      ...(tracking
+        ? {
+            ConfigurationSetName: tracking.configurationSetName,
+            Tags: [{ Name: NOTIFICATION_ID_TAG, Value: tracking.notificationId }],
+          }
+        : {}),
     }),
   );
   return response?.MessageId;

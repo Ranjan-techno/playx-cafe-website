@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAdminBookingDetail,
+  buildAdminEmailNotification,
   buildDashboardSummary,
   buildSimulatorBoard,
   describePaymentReviewReason,
@@ -821,4 +822,102 @@ test('admin payment/booking-detail SQL reads the duplicate_of_payment_id column,
   const src = require('node:fs').readFileSync(require.resolve('./admin-repository.ts'), 'utf8') as string;
   assert.doesNotMatch(src, /metadata ->> 'duplicateOfPaymentId'/);
   assert.match(src, /p\.duplicate_of_payment_id/);
+});
+
+// ----------------------------------------------------------------------------
+// Stage 2G: booking detail emailNotification — safe delivery state only
+// ----------------------------------------------------------------------------
+
+const SENT_AT = new Date('2026-09-25T06:00:00.000Z');
+const DELIVERED_AT = new Date('2026-09-25T06:00:04.000Z');
+
+test('emailNotification: delivered confirmation exposes status/deliveryStatus/timestamps only', () => {
+  const detail = buildAdminBookingDetail({ ...BOOKING_DETAIL_ROW, status: 'confirmed' } as never, [], [], {
+    status: 'sent', sent_at: SENT_AT, delivery_status: 'delivered', last_delivery_event_at: DELIVERED_AT,
+    delivered_at: DELIVERED_AT, bounced_at: null, complained_at: null, delivery_failure_type: null, delivery_failure_subtype: null,
+    // Columns the query never selects — even if a row carried them, they must not be exposed.
+    id: '6f1c1d0e-3a52-4c5e-9a0b-1f2e3d4c5b6a', provider_message_id: 'ses-msg-secret', recipient_email: 'racer@example.com',
+    last_error: 'ses_Throttling', booking_id: 'booking-1', cognito_sub: 'sub-secret',
+  } as never);
+  assert.deepEqual(detail.emailNotification, {
+    status: 'sent',
+    deliveryStatus: 'delivered',
+    sentAt: SENT_AT.toISOString(),
+    deliveredAt: DELIVERED_AT.toISOString(),
+    bouncedAt: null,
+    complainedAt: null,
+    lastDeliveryEventAt: DELIVERED_AT.toISOString(),
+    deliveryFailureType: null,
+    deliveryFailureSubtype: null,
+  });
+  const json = JSON.stringify(detail.emailNotification);
+  for (const secret of ['ses-msg-secret', '6f1c1d0e', 'racer@example.com', 'ses_Throttling', 'sub-secret', 'providerMessageId', 'notificationId']) {
+    assert.ok(!json.includes(secret), `leaks ${secret}`);
+  }
+});
+
+test('emailNotification: old SENT row without tracking -> deliveryStatus null (NOT TRACKED), never failed', () => {
+  assert.deepEqual(buildAdminEmailNotification({ status: 'sent', sent_at: SENT_AT }), {
+    status: 'sent', deliveryStatus: null, sentAt: SENT_AT.toISOString(), deliveredAt: null, bouncedAt: null,
+    complainedAt: null, lastDeliveryEventAt: null, deliveryFailureType: null, deliveryFailureSubtype: null,
+  });
+  assert.equal(buildAdminEmailNotification({ status: 'sent', sent_at: SENT_AT, delivery_status: null })?.deliveryStatus, null);
+});
+
+test('emailNotification: bounced shows the sanitized bounce type; free text / unknown values are dropped', () => {
+  const bounced = buildAdminEmailNotification({
+    status: 'sent', sent_at: SENT_AT, delivery_status: 'bounced', bounced_at: DELIVERED_AT,
+    delivery_failure_type: 'Permanent', delivery_failure_subtype: 'General',
+  });
+  assert.equal(bounced?.deliveryStatus, 'bounced');
+  assert.equal(bounced?.bouncedAt, DELIVERED_AT.toISOString());
+  assert.equal(bounced?.deliveryFailureType, 'Permanent');
+  assert.equal(bounced?.deliveryFailureSubtype, 'General');
+  const dirty = buildAdminEmailNotification({ status: 'sent', sent_at: SENT_AT, delivery_status: 'bounced', delivery_failure_subtype: '550 <racer@example.com>' });
+  assert.equal(dirty?.deliveryFailureSubtype, null);
+  assert.equal(buildAdminEmailNotification({ status: 'sent', sent_at: SENT_AT, delivery_status: 'opened' })?.deliveryStatus, null);
+  // Delivery state is only ever reported for a sent email.
+  assert.equal(buildAdminEmailNotification({ status: 'failed', sent_at: null, delivery_status: 'delivered' })?.deliveryStatus, null);
+  assert.equal(buildAdminEmailNotification({ status: 'weird', sent_at: null }), null);
+  assert.equal(buildAdminEmailNotification(undefined), null);
+});
+
+test('getAdminBookingDetail: selects only safe notification columns; tolerates missing migration 009/008', async () => {
+  const bookingRow = { ...BOOKING_DETAIL_ROW, scheduled_start_at: new Date('2026-09-26T10:00:00Z'), scheduled_end_at: new Date('2026-09-26T10:30:00Z'), created_at: SENT_AT, updated_at: SENT_AT };
+  const run = async (notificationBehaviour: (sql: string) => unknown[]) => {
+    const queries: string[] = [];
+    const db = {
+      async query(sql: string) {
+        queries.push(sql);
+        if (/FROM bookings b/.test(sql)) return { rows: [bookingRow] };
+        if (/FROM booking_notifications/.test(sql)) return { rows: notificationBehaviour(sql) };
+        return { rows: [] };
+      },
+    };
+    const detail = await getAdminBookingDetail(db as never, '00000000-0000-4000-8000-000000000000');
+    return { detail, queries };
+  };
+
+  const tracked = await run(() => [{ status: 'sent', sent_at: SENT_AT, delivery_status: 'delivered', delivered_at: DELIVERED_AT }]);
+  const notificationSql = tracked.queries.find((q) => /FROM booking_notifications/.test(q))!;
+  assert.match(notificationSql, /WHERE booking_id = \$1 AND notification_type = 'BOOKING_CONFIRMED'/);
+  assert.doesNotMatch(notificationSql, /provider_message_id|recipient_email|last_error|\bid\b|SELECT \*/);
+  assert.equal(tracked.detail?.emailNotification?.deliveryStatus, 'delivered');
+
+  const no009 = await run((sql) => {
+    if (/delivery_status/.test(sql)) throw Object.assign(new Error('column does not exist'), { code: '42703' });
+    return [{ status: 'sent', sent_at: SENT_AT }];
+  });
+  assert.equal(no009.detail?.emailNotification?.status, 'sent');
+  assert.equal(no009.detail?.emailNotification?.deliveryStatus, null);
+
+  const no008 = await run(() => {
+    throw Object.assign(new Error('relation does not exist'), { code: '42P01' });
+  });
+  assert.equal(no008.detail?.emailNotification, null);
+
+  const none = await run(() => []);
+  assert.equal(none.detail?.emailNotification, null);
+
+  await assert.rejects(run(() => { throw Object.assign(new Error('boom'), { code: '08006' }); }), /boom/);
 });
