@@ -23,6 +23,7 @@ import schema005 from '../../../../database/migrations/005_duplicate_payment_rec
 import schema006 from '../../../../database/migrations/006_payment_environment_expansion.sql';
 import schema007 from '../../../../database/migrations/007_enforce_payment_environment.sql';
 import schema008 from '../../../../database/migrations/008_booking_notifications.sql';
+import schema009 from '../../../../database/migrations/009_booking_notification_delivery.sql';
 
 interface Migration {
   filename: string;
@@ -57,6 +58,10 @@ const MIGRATIONS: Migration[] = [
   // (UNIQUE booking_id + notification_type). Additive only, no backfill: bookings confirmed before
   // it (e.g. #1033/#1034) are never emailed — see the file's own header.
   { filename: '008_booking_notifications.sql', sql: schema008 },
+  // Stage 2G: SES delivery tracking — nullable delivery_status/timestamps/failure type columns on
+  // booking_notifications. Additive only, no backfill: rows sent before it stay "not tracked" — see
+  // the file's own header. Apply before the Stage 2G code is deployed.
+  { filename: '009_booking_notification_delivery.sql', sql: schema009 },
 ];
 
 interface DbSecret {

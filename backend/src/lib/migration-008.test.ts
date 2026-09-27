@@ -39,11 +39,11 @@ test('008: durable idempotency — UNIQUE (booking_id, notification_type), FK to
   }
 });
 
-test('008: registered with the migration runner, last, after 007 (8 migrations in total)', () => {
+test('008: registered with the migration runner, after 007 (Stage 2G\'s 009 follows it — see migration-009.test.ts)', () => {
   const handler = readFileSync(path.join(root, 'infra/lib/lambda/migrate/handler.ts'), 'utf8');
   assert.match(handler, /import schema008 from '\.\.\/\.\.\/\.\.\/\.\.\/database\/migrations\/008_booking_notifications\.sql';/);
   const i007 = handler.indexOf("filename: '007_enforce_payment_environment.sql', sql: schema007");
   const i008 = handler.indexOf("filename: '008_booking_notifications.sql', sql: schema008");
-  assert.ok(i007 > 0 && i008 > i007);
-  assert.equal(handler.match(/filename: '/g)?.length, 8);
+  const i009 = handler.indexOf("filename: '009_booking_notification_delivery.sql', sql: schema009");
+  assert.ok(i007 > 0 && i008 > i007 && i009 > i008);
 });
