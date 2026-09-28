@@ -280,6 +280,8 @@ async function reservePaymentAttempt(
         requirement: requirementForProduct({ simulatorType: booking.simulator_type, racers: booking.racers }),
         scheduledStartAt: scheduledStart,
         scheduledEndAt: scheduledEnd,
+        // Already verified above to equal the booking's own stored environment.
+        environment: input.environment,
       });
       if (picked === null) {
         throw new SimulatorCapacityUnavailableError(booking.id);

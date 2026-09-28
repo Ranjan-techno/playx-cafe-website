@@ -169,7 +169,10 @@ function getAvailabilityContext() {
 // overwriting the newer selection's placeholder/slots.
 let availabilityRequestSeq = 0;
 
-// GET /availability?productCode=&date= - the one place that calls it.
+// GET /availability?productCode=&date= - the one place that calls it. The
+// path comes from PlayXApiRoutes (hostname-selected): playxcafe.com asks
+// /availability/production (PRODUCTION occupancy - online + walk-ins),
+// everything else /availability (SANDBOX test occupancy).
 // Fails closed (Phase 2B requirement 7): a network error or non-2xx never
 // falls back to "assume available" - it always surfaces the explicit
 // "couldn't check" error state with a retry, and no time becomes
@@ -195,7 +198,7 @@ async function refreshTimeSlotAvailability() {
 
   try {
     const response = await fetch(
-      `${AWS_CONFIG.apiBaseUrl}/availability?productCode=${encodeURIComponent(context.productCode)}&date=${encodeURIComponent(context.date)}`
+      `${AWS_CONFIG.apiBaseUrl}${PlayXApiRoutes.currentRoutes().availability}?productCode=${encodeURIComponent(context.productCode)}&date=${encodeURIComponent(context.date)}`
     );
     const body = await response.json().catch(() => ({}));
     if (mySeq !== availabilityRequestSeq) return; // superseded by a newer selection

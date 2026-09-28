@@ -25,7 +25,16 @@
 // function already relies on (idx_booking_allocations_booking_id) to do the anti-join, and runs
 // after the simulators lock below, so it's covered by the exact same serialization guarantee the
 // booking_allocations occupancy read is.
+//
+// Stage 3A.1 — ENVIRONMENT-SCOPED OCCUPANCY: S1/S2/M1/M2 are one physical inventory, but SANDBOX
+// (staging/test) and PRODUCTION (live online + walk-in) bookings must never block each other.
+// Every occupancy read below is therefore filtered through the owning booking's
+// bookings.booking_environment (NOT NULL since migration 007): an allocation only counts against a
+// request of the same environment. There are still no per-environment simulator rows and still one
+// simulators lock — the lock is environment-blind on purpose, so every allocating transaction (of
+// either environment) stays serialized exactly as before; only what counts as "occupied" changed.
 
+import { assertAppEnvironment, type AppEnvironment } from './environment';
 import type { BlockingAllocation, LegacyBookingWindow, Requirement, SimulatorRow } from './simulator-allocation';
 import { legacyReservedCounts, occupiedSimulatorIds, pickSimulators, requirementForProduct } from './simulator-allocation';
 
@@ -40,11 +49,7 @@ export interface DbClient {
   query<T extends object = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
 }
 
-export interface AllocationRequest {
-  bookingId: string;
-  requirement: Requirement;
-  scheduledStartAt: Date;
-  scheduledEndAt: Date;
+export interface AllocationRequest extends CapacityQuery {
   /** Minutes until a fresh HOLD's hold_expires_at — the story's fixed 15 minutes, passed in
    *  rather than hardcoded here so a test can use a much shorter window. */
   holdMinutes: number;
@@ -87,6 +92,70 @@ export interface CapacityQuery {
   requirement: Requirement;
   scheduledStartAt: Date;
   scheduledEndAt: Date;
+  /** Whose occupancy counts: only allocations/legacy bookings whose booking_environment equals
+   *  this. Always the booking's own (server-side) environment, never request data. */
+  environment: AppEnvironment;
+}
+
+/**
+ * Every allocation that currently blocks inventory in `environment` and overlaps [start, end):
+ * 'confirmed' always; 'hold' only while hold_expires_at > now() (database clock). Scoped through
+ * the owning booking's booking_environment — see this file's header. Shared by
+ * findAvailableSimulators() (under the simulators lock) and GET /availability (read-only).
+ */
+export async function loadBlockingAllocations(
+  db: DbClient,
+  start: Date,
+  end: Date,
+  environment: AppEnvironment,
+): Promise<BlockingAllocation[]> {
+  const env = assertAppEnvironment(environment, 'environment');
+  const { rows } = await db.query<AllocationRow>(
+    `SELECT ba.simulator_id, ba.scheduled_start_at, ba.scheduled_end_at
+     FROM booking_allocations ba
+     JOIN bookings b ON b.id = ba.booking_id
+     WHERE ba.scheduled_start_at < $2
+       AND ba.scheduled_end_at > $1
+       AND (ba.allocation_status = 'confirmed' OR (ba.allocation_status = 'hold' AND ba.hold_expires_at > now()))
+       AND b.booking_environment = $3`,
+    [start, end, env],
+  );
+  return rows.map((row) => ({
+    simulatorId: row.simulator_id,
+    scheduledStartAt: new Date(row.scheduled_start_at),
+    scheduledEndAt: new Date(row.scheduled_end_at),
+  }));
+}
+
+/**
+ * Legacy (pre-Phase-2, allocation-less) bookings in `environment` overlapping [start, end) — see
+ * this file's header. `excludeBookingId` (or null for none) is the booking currently being
+ * allocated, which has no allocation rows of its own yet either.
+ */
+export async function loadLegacyBookingWindows(
+  db: DbClient,
+  start: Date,
+  end: Date,
+  environment: AppEnvironment,
+  excludeBookingId: string | null,
+): Promise<LegacyBookingWindow[]> {
+  const env = assertAppEnvironment(environment, 'environment');
+  const { rows } = await db.query<LegacyBookingRow>(
+    `SELECT simulator_type, racers, scheduled_start_at, scheduled_end_at
+     FROM bookings b
+     WHERE b.id IS DISTINCT FROM $3::uuid
+       AND b.status <> 'cancelled'
+       AND b.scheduled_start_at < $2
+       AND b.scheduled_end_at > $1
+       AND b.booking_environment = $4
+       AND NOT EXISTS (SELECT 1 FROM booking_allocations ba WHERE ba.booking_id = b.id)`,
+    [start, end, excludeBookingId, env],
+  );
+  return rows.map((row) => ({
+    requirement: requirementForProduct({ simulatorType: row.simulator_type, racers: row.racers }),
+    scheduledStartAt: new Date(row.scheduled_start_at),
+    scheduledEndAt: new Date(row.scheduled_end_at),
+  }));
 }
 
 /**
@@ -100,44 +169,20 @@ export async function findAvailableSimulators(
   inventory: SimulatorRow[],
   request: CapacityQuery,
 ): Promise<SimulatorRow[] | null> {
-  // Only allocations that actually block inventory: 'confirmed' always does; a 'hold' only while
-  // its hold_expires_at hasn't passed yet — an expired HOLD is exactly what item 7 means by "must
-  // not block future availability", and this filter (not a cleanup job) is what enforces that.
-  const { rows: allocationRows } = await db.query<AllocationRow>(
-    `SELECT simulator_id, scheduled_start_at, scheduled_end_at
-     FROM booking_allocations
-     WHERE scheduled_start_at < $2
-       AND scheduled_end_at > $1
-       AND (allocation_status = 'confirmed' OR (allocation_status = 'hold' AND hold_expires_at > now()))`,
-    [request.scheduledStartAt, request.scheduledEndAt],
-  );
-
-  const blocking: BlockingAllocation[] = allocationRows.map((row) => ({
-    simulatorId: row.simulator_id,
-    scheduledStartAt: new Date(row.scheduled_start_at),
-    scheduledEndAt: new Date(row.scheduled_end_at),
-  }));
+  // Only allocations that actually block inventory ('confirmed', or an unexpired 'hold' — an
+  // expired HOLD is filtered out by the query, not by a cleanup job) and only in the request's own
+  // environment. The booking being allocated is excluded from the legacy count: create-booking.ts
+  // inserts it before calling allocateSimulators(), so it has no allocation rows yet either.
+  const blocking = await loadBlockingAllocations(db, request.scheduledStartAt, request.scheduledEndAt, request.environment);
   const occupied = occupiedSimulatorIds(blocking, request.scheduledStartAt, request.scheduledEndAt);
 
-  // Legacy bookings still occupying capacity — see this file's header. `b.id <> $3` excludes the
-  // booking this very call is allocating for: create-booking.ts inserts it into `bookings` before
-  // calling allocateSimulators(), so at this point it has no booking_allocations rows yet either
-  // and would otherwise count itself as "legacy" demand against its own request.
-  const { rows: legacyRows } = await db.query<LegacyBookingRow>(
-    `SELECT simulator_type, racers, scheduled_start_at, scheduled_end_at
-     FROM bookings b
-     WHERE b.id <> $3
-       AND b.status <> 'cancelled'
-       AND b.scheduled_start_at < $2
-       AND b.scheduled_end_at > $1
-       AND NOT EXISTS (SELECT 1 FROM booking_allocations ba WHERE ba.booking_id = b.id)`,
-    [request.scheduledStartAt, request.scheduledEndAt, request.bookingId],
+  const legacy = await loadLegacyBookingWindows(
+    db,
+    request.scheduledStartAt,
+    request.scheduledEndAt,
+    request.environment,
+    request.bookingId,
   );
-  const legacy: LegacyBookingWindow[] = legacyRows.map((row) => ({
-    requirement: requirementForProduct({ simulatorType: row.simulator_type, racers: row.racers }),
-    scheduledStartAt: new Date(row.scheduled_start_at),
-    scheduledEndAt: new Date(row.scheduled_end_at),
-  }));
   const reserved = legacyReservedCounts(legacy, request.scheduledStartAt, request.scheduledEndAt);
 
   return pickSimulators(inventory, request.requirement, occupied, reserved);

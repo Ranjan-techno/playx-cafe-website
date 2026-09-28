@@ -11,7 +11,13 @@
 import type { DbClient } from './allocate-simulators';
 import { assertAppEnvironment, environmentMatchSql, type AppEnvironment } from './environment';
 
-export type PaymentProvider = 'phonepe' | 'mock';
+/** Providers a checkout/webhook/reconciliation code path can ever handle. 'counter' is deliberately
+ *  NOT one: gateway code (payment-provider.ts, confirm-successful-payment.ts, sync-payment-status.ts,
+ *  createPaymentAttempt) is typed against this, so it cannot be handed a counter payment. */
+export type GatewayPaymentProvider = 'phonepe' | 'mock';
+/** Every value payments.provider can hold. 'counter' (migration 010) is a front-desk walk-in
+ *  payment written only by walk-in-booking.ts — never started, polled or reconciled. */
+export type PaymentProvider = GatewayPaymentProvider | 'counter';
 export type PaymentStatus = 'created' | 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';
 
 /** Terminal states a payment attempt never leaves once reached — see 003_payment_foundation.sql's
@@ -68,7 +74,7 @@ export interface AllocationLockRow {
 
 export interface CreatePaymentAttemptInput {
   bookingId: string;
-  provider: PaymentProvider;
+  provider: GatewayPaymentProvider;
   providerOrderId: string;
   amountInr: string;
   currency?: string;

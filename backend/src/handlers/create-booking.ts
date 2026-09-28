@@ -7,6 +7,7 @@ import { errorResponse, jsonResponse } from '../lib/http';
 import { istPartsToUtcDate, parseTimeToMinutes, validateBookingSchedule } from '../lib/opening-hours';
 import { normalizeIndianPhone } from '../lib/phone';
 import { isProductionAccessAllowed } from '../lib/production-access';
+import { loadBookableSessionProduct } from '../lib/session-product';
 import { requirementForProduct } from '../lib/simulator-allocation';
 
 // Story 2.6: POST /bookings — creates a pending booking for the authenticated Cognito user.
@@ -200,16 +201,6 @@ export async function insertPendingBooking(
   return rows[0];
 }
 
-interface ProductRow {
-  id: string;
-  product_type: 'session' | 'race_pass';
-  simulator_type: 'static' | 'motion' | null;
-  racers: number;
-  duration_minutes: number;
-  price_inr: string; // pg returns NUMERIC as a string
-  is_active: boolean;
-}
-
 export interface CreateBookingDeps {
   getDb: () => Promise<DbClient>;
   resetDb: () => void;
@@ -276,22 +267,11 @@ export function createBookingHandler(bookingEnvironment: AppEnvironment, deps: C
     try {
       db = await deps.getDb();
 
-      const { rows } = await db.query<ProductRow>(
-        `SELECT id, product_type, simulator_type, racers, duration_minutes, price_inr, is_active
-         FROM products
-         WHERE product_code = $1`,
-        [body.productCode],
-      );
-      const product = rows[0];
-      if (!product) {
-        return errorResponse(404, 'product_not_found', `No product with code "${body.productCode}"`);
+      const lookup = await loadBookableSessionProduct(db, body.productCode);
+      if (!lookup.ok) {
+        return errorResponse(lookup.statusCode, lookup.error, lookup.message);
       }
-      if (!product.is_active) {
-        return errorResponse(400, 'product_inactive', `Product "${body.productCode}" is not currently bookable`);
-      }
-      if (product.product_type !== 'session') {
-        return errorResponse(400, 'product_not_bookable', `Product "${body.productCode}" cannot be booked as a session`);
-      }
+      const product = lookup.product;
 
       // Also enforces the Grand Opening launch restriction (opening-hours.ts's GRAND_OPENING_DATE/
       // GRAND_OPENING_TIME) — a date before 25 Sep 2026, or a startTime before 15:00 on 25 Sep 2026
@@ -343,6 +323,9 @@ export function createBookingHandler(bookingEnvironment: AppEnvironment, deps: C
         scheduledStartAt,
         scheduledEndAt,
         holdMinutes: HOLD_MINUTES,
+        // Stage 3A.1: this handler's own server-side environment — SANDBOX bookings only compete
+        // with SANDBOX occupancy, PRODUCTION (incl. walk-ins) only with PRODUCTION.
+        environment,
       });
 
       if (!allocation) {

@@ -13,6 +13,7 @@
 
 import { findAvailableSimulators, insertAllocations, lockSimulatorInventory, type DbClient } from './allocate-simulators';
 import { confirmBookingAllocations, lockAllocationsForBooking, releaseHeldAllocations } from './payment-repository';
+import { assertAppEnvironment } from './environment';
 import { requirementForProduct } from './simulator-allocation';
 
 export interface CapacityBooking {
@@ -21,6 +22,9 @@ export interface CapacityBooking {
   racers: number;
   scheduled_start_at: Date;
   scheduled_end_at: Date;
+  /** The booking's own stored environment (NOT NULL since migration 007) — the only occupancy a
+   *  re-allocation is checked against. NULL/unknown throws (fail closed) rather than guessing. */
+  booking_environment: string | null;
 }
 
 export type CapacityOutcome =
@@ -63,6 +67,7 @@ export async function secureBookingCapacity(db: DbClient, booking: CapacityBooki
     requirement: requirementForProduct({ simulatorType: booking.simulator_type, racers: booking.racers }),
     scheduledStartAt: start,
     scheduledEndAt: end,
+    environment: assertAppEnvironment(booking.booking_environment, 'booking_environment'),
   });
   if (picked === null) {
     return { kind: 'unavailable', previousSimulatorIds };

@@ -119,6 +119,7 @@ export class InfraStack extends cdk.Stack {
       // Stage 2E: GET /bookings/production/me (GET /bookings/me lists SANDBOX bookings only).
       listMyBookingsProductionFunctionName: resourceName('bookings-me-production'),
       availabilityFunctionName: resourceName('availability'),
+      availabilityProductionFunctionName: resourceName('availability-production'),
       authStartFunctionName: resourceName('auth-start'),
       authVerifyFunctionName: resourceName('auth-verify'),
       adminDashboardFunctionName: resourceName('admin-dashboard'),
@@ -127,6 +128,7 @@ export class InfraStack extends cdk.Stack {
       adminPaymentsFunctionName: resourceName('admin-payments'),
       adminSimulatorsFunctionName: resourceName('admin-simulators'),
       adminBookingStatusFunctionName: resourceName('admin-booking-status'),
+      adminWalkInBookingFunctionName: resourceName('admin-walk-in-booking'),
       paymentStartFunctionName: resourceName('payment-start'),
       paymentStatusFunctionName: resourceName('payment-status'),
       paymentReconcileFunctionName: resourceName('payment-reconcile'),

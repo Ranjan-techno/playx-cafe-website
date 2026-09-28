@@ -34,9 +34,10 @@ test('Story 2.1 (+ payments egress): VPC keeps its isolated subnets and adds NAT
   // payment-status-production/payment-webhook-production functions, and Stage 2E's bookings-me-production function — not the restrictDefaultSecurityGroup feature flag's custom-resource Lambda, which stays
   // guarded against separately (that flag is explicitly disabled for this VPC — see
   // constructs/network.ts).
-  // + Stage 2F's booking-confirmation-notify sender, + Stage 2G's booking-email-events consumer.
+  // + Stage 2F's booking-confirmation-notify sender, + Stage 2G's booking-email-events consumer,
+  // + Stage 3A.1's availability-production and admin-walk-in-booking functions.
   template.resourceCountIs('AWS::EC2::NatGateway', 1);
-  template.resourceCountIs('AWS::Lambda::Function', 29);
+  template.resourceCountIs('AWS::Lambda::Function', 31);
 });
 
 test('Story 2.2: RDS PostgreSQL created private, isolated, and encrypted, with a locked-down SG pair', () => {
@@ -107,7 +108,7 @@ test('Story 2.3: migration Lambda deployed in isolated subnets with no public tr
   // triggers are the six of the twenty-six that do NOT sit in the VPC.
   // + Stage 2F's booking-confirmation-notify sender (VPC-attached), + Stage 2G's booking-email-events
   // consumer (VPC-attached, isolated subnets).
-  template.resourceCountIs('AWS::Lambda::Function', 29);
+  template.resourceCountIs('AWS::Lambda::Function', 31);
   template.hasResourceProperties('AWS::Lambda::Function', {
     FunctionName: 'playx-dev-migrate',
     Runtime: 'nodejs22.x',
@@ -295,8 +296,10 @@ test('Story 2.6: authenticated booking APIs — Cognito JWT authorizer on POST /
   // passwordless auth, checked separately below), GET /availability (Phase 2, checked separately
   // further below), and Phase 3B's six admin routes (checked separately further below too).
   // Twenty integrations, one per route (Stage 2E added GET /bookings/production/me).
-  template.resourceCountIs('AWS::ApiGatewayV2::Route', 20);
-  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 20);
+  // Stage 3A.1 adds GET /availability/production (public) and POST /admin/bookings/walk-in (JWT):
+  // twenty-two routes, twenty-two integrations.
+  template.resourceCountIs('AWS::ApiGatewayV2::Route', 22);
+  template.resourceCountIs('AWS::ApiGatewayV2::Integration', 22);
 
   // GET /products is public: no authorizer attached (CloudFormation emits AuthorizationType:
   // 'NONE' explicitly for an unauthenticated route, rather than omitting the property).
@@ -1063,14 +1066,21 @@ test('Stage 2A: routes — sandbox and production booking/payment-start routes h
   const routeKeys = Object.values<Json>(json.Resources)
     .filter((r) => r.Type === 'AWS::ApiGatewayV2::Route')
     .map((r) => r.Properties as Json);
-  // Every production route is JWT-protected EXCEPT Stage 2C's PhonePe webhook (PhonePe holds no
-  // token; the Lambda authenticates each callback itself — see the Stage 2C tests below).
-  for (const r of routeKeys.filter((x) => /production/.test(x.RouteKey) && x.RouteKey !== 'POST /payments/production/webhook')) {
+  // Every production route is JWT-protected EXCEPT exactly two, each public by design:
+  //   - Stage 2C's PhonePe webhook (PhonePe holds no token; the Lambda authenticates each callback);
+  //   - Stage 3A.1's GET /availability/production — read-only free start times, public for the same
+  //     reason its SANDBOX twin GET /availability always has been (visitors browse before sign-in).
+  const PUBLIC_PRODUCTION_ROUTES = ['POST /payments/production/webhook', 'GET /availability/production'];
+  for (const r of routeKeys.filter((x) => /production/.test(x.RouteKey) && !PUBLIC_PRODUCTION_ROUTES.includes(x.RouteKey))) {
     assert.equal(r.AuthorizationType, 'JWT', `${r.RouteKey} is never public`);
+  }
+  for (const key of PUBLIC_PRODUCTION_ROUTES) {
+    assert.equal(routeKeys.find((r) => r.RouteKey === key)?.AuthorizationType, 'NONE', key);
   }
   assert.deepEqual(
     routeKeys.map((r) => r.RouteKey as string).filter((k) => /production/.test(k)).sort(),
     [
+      'GET /availability/production',
       'GET /bookings/production/me',
       'GET /payments/production/{bookingId}/status',
       'POST /bookings/production',
@@ -1100,9 +1110,11 @@ test('Stage 2A/2B: shared infrastructure only — no second VPC/RDS/Cognito/NAT/
     .flatMap((r) => r.Properties.Targets.map((t: Json) => json.Resources[t.Arn['Fn::GetAtt'][0]].Properties.FunctionName))
     .sort();
   assert.deepEqual(targets, ['playx-dev-booking-confirmation-notify', 'playx-dev-booking-email-events', 'playx-dev-payment-reconcile', 'playx-dev-payment-reconcile-production']);
-  // + Stage 2C's production payment-status and webhook Lambdas, + Stage 2E's production My Bookings.
+  // + Stage 2C's production payment-status and webhook Lambdas, + Stage 2E's production My Bookings,
+  // + Stage 3A.1's production availability.
   const names = lambdaEntries(json).map(([, r]) => r.Properties.FunctionName as string);
   assert.deepEqual(names.filter((n) => /production/.test(n)).sort(), [
+    'playx-dev-availability-production',
     'playx-dev-bookings-me-production',
     'playx-dev-create-booking-production',
     'playx-dev-payment-reconcile-production',
@@ -2002,4 +2014,59 @@ test('Stage 2G: the stack refuses to synth if the SES region differs from the st
     () => new InfraStack(app, 'WrongRegionStack', { envConfig: environments.dev, env: { region: 'us-east-1' } }),
     /sesRegion \(ap-south-1\) to equal the stack region \(us-east-1\)/,
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// Stage 3A.1: walk-in bookings + PRODUCTION/SANDBOX availability isolation.
+// ---------------------------------------------------------------------------------------------
+
+let stage3a: { template: Template; json: Json } | undefined;
+const synth3a = () => (stage3a ??= synth());
+
+test('Stage 3A.1: POST /admin/bookings/walk-in is JWT-protected and invokes only the walk-in Lambda', () => {
+  const { json } = synth3a();
+  const { route, functionLogicalId } = routeTarget(json, 'POST /admin/bookings/walk-in');
+  assert.equal(route.Properties.AuthorizationType, 'JWT');
+  assert.ok(route.Properties.AuthorizerId, 'the shared Cognito authorizer');
+  assert.equal(functionLogicalId, lambdaNamed(json, 'playx-dev-admin-walk-in-booking')[0]);
+  // Same authorizer as every other /admin/* route (requireAdmin is enforced in the handler).
+  assert.deepEqual(route.Properties.AuthorizerId, routeTarget(json, 'GET /admin/bookings').route.Properties.AuthorizerId);
+});
+
+test('Stage 3A.1: the walk-in Lambda is VPC-isolated with ONLY the DB secret — no PhonePe, SES, Cognito admin or SQS', () => {
+  const { json } = synth3a();
+  const [, fn] = lambdaNamed(json, 'playx-dev-admin-walk-in-booking');
+  assert.ok(fn.Properties.VpcConfig, 'VPC-attached');
+  assert.equal(fn.Properties.Runtime, 'nodejs22.x');
+  const env = envOf(json, 'playx-dev-admin-walk-in-booking');
+  assert.deepEqual(Object.keys(env).sort(), ['DB_SECRET_ARN'], 'no PhonePe/SES/Cognito/queue configuration');
+
+  const statements = statementsFor(json, 'playx-dev-admin-walk-in-booking');
+  const actions = statements.flatMap((st) => [st.Action].flat() as string[]);
+  assert.ok(actions.includes('secretsmanager:GetSecretValue'), 'reads the DB credentials secret');
+  for (const action of actions) {
+    assert.match(action, /^secretsmanager:(GetSecretValue|DescribeSecret)$/, `unexpected action ${action}`);
+  }
+  assert.ok(!statements.some(isPhonePeSecretStatement), 'no PhonePe secret');
+  const text = JSON.stringify(statements);
+  for (const forbidden of ['ses:', 'cognito-idp:', 'sqs:', 'events:', 'lambda:InvokeFunction']) {
+    assert.ok(!text.includes(forbidden), `no ${forbidden}`);
+  }
+  // The DB secret is the only secret it can read.
+  assert.equal(secretsResourcesFor(json, 'playx-dev-admin-walk-in-booking'), secretsResourcesFor(json, 'playx-dev-admin-booking-status'));
+});
+
+test('Stage 3A.1: GET /availability/production is public and served by its own PRODUCTION Lambda; GET /availability keeps its SANDBOX one', () => {
+  const { json } = synth3a();
+  const prod = routeTarget(json, 'GET /availability/production');
+  assert.equal(prod.route.Properties.AuthorizationType, 'NONE');
+  assert.equal(prod.functionLogicalId, lambdaNamed(json, 'playx-dev-availability-production')[0]);
+  const sandbox = routeTarget(json, 'GET /availability');
+  assert.equal(sandbox.functionLogicalId, lambdaNamed(json, 'playx-dev-availability')[0]);
+  assert.notEqual(prod.functionLogicalId, sandbox.functionLogicalId);
+
+  const [, fn] = lambdaNamed(json, 'playx-dev-availability-production');
+  assert.ok(fn.Properties.VpcConfig);
+  assert.deepEqual(Object.keys(envOf(json, 'playx-dev-availability-production')).sort(), ['DB_SECRET_ARN']);
+  assert.ok(!statementsFor(json, 'playx-dev-availability-production').some(isPhonePeSecretStatement));
 });

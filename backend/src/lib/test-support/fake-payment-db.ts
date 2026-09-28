@@ -32,7 +32,42 @@ export interface FakeBookingRow {
   product_name?: string;
   /** bookings.booking_environment; undefined/null model a NULL row (impossible after migration 007). */
   booking_environment?: 'SANDBOX' | 'PRODUCTION' | null;
+  /** Stage 3A.1 (migration 011) — set by the fake's INSERT INTO bookings; seeded rows leave them unset. */
+  booking_source?: 'ONLINE' | 'WALK_IN';
+  created_by_admin_sub?: string | null;
+  product_id?: string;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
+  duration_minutes?: number;
+  notes?: string | null;
 }
+
+/** Stage 3A.1: a products row, for session-product.ts's lookup. */
+export interface FakeProductRow {
+  id: string;
+  product_code: string;
+  name: string;
+  product_type: 'session' | 'race_pass';
+  simulator_type: 'static' | 'motion' | null;
+  racers: number;
+  duration_minutes: number;
+  price_inr: string;
+  is_active: boolean;
+}
+
+/** A slice of 001's seeded catalog (same codes/shapes/prices), plus one inactive session. */
+export const DEFAULT_FAKE_PRODUCTS: FakeProductRow[] = [
+  { id: 'prod-solo-pro-static', product_code: 'solo-pro-static', name: 'Solo Racing Xperience — Pro Race (Static)', product_type: 'session', simulator_type: 'static', racers: 1, duration_minutes: 30, price_inr: '599.00', is_active: true },
+  { id: 'prod-solo-pro-motion', product_code: 'solo-pro-motion', name: 'Solo Racing Xperience — Pro Race (Motion)', product_type: 'session', simulator_type: 'motion', racers: 1, duration_minutes: 30, price_inr: '999.00', is_active: true },
+  { id: 'prod-solo-endurance-static', product_code: 'solo-endurance-static', name: 'Solo Racing Xperience — Endurance (Static)', product_type: 'session', simulator_type: 'static', racers: 1, duration_minutes: 60, price_inr: '999.00', is_active: true },
+  { id: 'prod-duo-30-static', product_code: 'duo-30-static', name: 'Race Together — Duo Xperience 30 min (Static)', product_type: 'session', simulator_type: 'static', racers: 2, duration_minutes: 30, price_inr: '1099.00', is_active: true },
+  { id: 'prod-duo-30-motion', product_code: 'duo-30-motion', name: 'Race Together — Duo Xperience 30 min (Motion)', product_type: 'session', simulator_type: 'motion', racers: 2, duration_minutes: 30, price_inr: '1799.00', is_active: true },
+  { id: 'prod-grand-race-30', product_code: 'grand-race-30', name: 'Play X Grand Race — 30 min', product_type: 'session', simulator_type: null, racers: 4, duration_minutes: 30, price_inr: '2799.00', is_active: true },
+  { id: 'prod-retired', product_code: 'solo-retired-static', name: 'Retired', product_type: 'session', simulator_type: 'static', racers: 1, duration_minutes: 30, price_inr: '499.00', is_active: false },
+  // race_pass rows have NULL racers/duration in Postgres; the lookup rejects them before reading those.
+  { id: 'prod-race-pass', product_code: 'play-x-race-pass', name: 'Play X Race Pass', product_type: 'race_pass', simulator_type: null, racers: 0, duration_minutes: 0, price_inr: '2499.00', is_active: true },
+];
 
 export interface FakeAllocationRow {
   id: string;
@@ -58,6 +93,8 @@ export interface FakePaymentRow {
   duplicate_of_payment_id?: string | null;
   /** payments.payment_environment; undefined/null model a NULL row (impossible after migration 007). */
   payment_environment?: 'SANDBOX' | 'PRODUCTION' | null;
+  /** Stage 3A.1 (migration 011): set only on provider = 'counter' rows. */
+  payment_method?: 'CASH' | 'UPI' | 'CARD' | 'COMPLIMENTARY' | null;
   created_at: Date;
   updated_at: Date;
   paid_at: Date | null;
@@ -118,6 +155,10 @@ export interface FakePaymentDbStore {
   deliveryColumnsMissing?: boolean;
   /** Test clock for booking_notifications' now() (defaults to the real clock). */
   now?: () => Date;
+  /** Stage 3A.1: the product catalog session-product.ts reads. */
+  products: FakeProductRow[];
+  /** Stage 3A.1: models booking_number_seq for bookings INSERTed through SQL. */
+  nextBookingNumber: number;
 }
 
 let idCounter = 0;
@@ -141,7 +182,17 @@ export function createFakePaymentDbStore(simulators: SimulatorRow[] = DEFAULT_FA
     paymentLocks: new Map(),
     notifications: [],
     notificationsTableMissing: false,
+    products: DEFAULT_FAKE_PRODUCTS.map((p) => ({ ...p })),
+    nextBookingNumber: 1001,
   };
+}
+
+/** Throws like Postgres does for a violated CHECK constraint (SQLSTATE 23514). */
+function pgCheckViolation(constraint: string): Error & { code: string; constraint: string } {
+  const err = new Error(`new row violates check constraint "${constraint}"`) as Error & { code: string; constraint: string };
+  err.code = '23514';
+  err.constraint = constraint;
+  return err;
 }
 
 /** Test setup helper: seeds a booking directly into the store, optionally with HOLD allocation
@@ -205,7 +256,9 @@ export function seedBooking(
 }
 
 /** Test invariant: no simulator is ever claimed by two overlapping live (hold-unexpired or
- *  confirmed) allocations at the instant `at`. Returns the offending pairs (empty = safe). */
+ *  confirmed) allocations at the instant `at` WITHIN ONE ENVIRONMENT (Stage 3A.1: SANDBOX and
+ *  PRODUCTION deliberately share rig codes but not occupancy). Returns the offending pairs
+ *  (empty = safe). */
 export function findDoubleBookings(store: FakePaymentDbStore, at: Date = new Date()): string[] {
   const live = store.allocations.filter(
     (a) => a.allocation_status === 'confirmed' || (a.allocation_status === 'hold' && a.hold_expires_at !== null && a.hold_expires_at > at),
@@ -215,7 +268,13 @@ export function findDoubleBookings(store: FakePaymentDbStore, at: Date = new Dat
     for (let j = i + 1; j < live.length; j += 1) {
       const x = live[i];
       const y = live[j];
-      if (x.simulator_id === y.simulator_id && x.scheduled_start_at < y.scheduled_end_at && y.scheduled_start_at < x.scheduled_end_at) {
+      const envOf = (bookingId: string) => store.bookings.find((b) => b.id === bookingId)?.booking_environment ?? null;
+      if (
+        x.simulator_id === y.simulator_id &&
+        envOf(x.booking_id) === envOf(y.booking_id) &&
+        x.scheduled_start_at < y.scheduled_end_at &&
+        y.scheduled_start_at < x.scheduled_end_at
+      ) {
         problems.push(`${x.simulator_id}: ${x.booking_id} vs ${y.booking_id}`);
       }
     }
@@ -264,6 +323,8 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
   // Undo journal: ROLLBACK reverts only what THIS connection wrote (like Postgres), never rows other
   // connections committed in the meantime.
   let journal: (() => void)[] = [];
+  // Run on COMMIT only (e.g. an INSERTed booking becoming visible to other connections).
+  let onCommit: (() => void)[] = [];
   const touch = <R extends object>(row: R): void => {
     const before = { ...row };
     journal.push(() => Object.assign(row, before));
@@ -355,6 +416,10 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
     }
     if (/^COMMIT/i.test(sql)) {
       txActive = false;
+      for (const hook of onCommit) {
+        hook();
+      }
+      onCommit = [];
       journal = [];
       savepoints.clear();
       releaseLocks();
@@ -365,6 +430,7 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
       for (const undo of journal.reverse()) {
         undo();
       }
+      onCommit = [];
       journal = [];
       savepoints.clear();
       releaseLocks();
@@ -554,10 +620,11 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
     // findAvailableSimulators — legacy-booking demand (checked before the occupancy query because
     // its NOT EXISTS clause also contains "FROM booking_allocations").
     if (/^SELECT .* FROM bookings b\b/is.test(sql)) {
-      const [start, end, excludeBookingId] = params as [Date, Date, string];
+      const [start, end, excludeBookingId, environment] = params as [Date, Date, string | null, 'SANDBOX' | 'PRODUCTION'];
       const rows = store.bookings.filter(
         (b) =>
           b.id !== excludeBookingId &&
+          b.booking_environment === environment &&
           !store.uncommittedBookingIds.has(b.id) &&
           b.status !== 'cancelled' &&
           b.scheduled_start_at < end &&
@@ -574,12 +641,15 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
       };
     }
 
-    // findAvailableSimulators — occupancy: confirmed, or hold with hold_expires_at > now().
-    if (/^SELECT simulator_id, scheduled_start_at/i.test(sql)) {
-      const [start, end] = params as [Date, Date];
+    // loadBlockingAllocations — occupancy: confirmed, or hold with hold_expires_at > now(), scoped
+    // (Stage 3A.1) through the owning booking's booking_environment. Models the real INNER JOIN:
+    // an allocation whose booking is unknown or has a NULL environment never counts.
+    if (/^SELECT ba\.simulator_id, ba\.scheduled_start_at/i.test(sql)) {
+      const [start, end, environment] = params as [Date, Date, 'SANDBOX' | 'PRODUCTION'];
       const now = new Date();
       const rows = store.allocations.filter(
         (a) =>
+          store.bookings.find((b) => b.id === a.booking_id)?.booking_environment === environment &&
           a.scheduled_start_at < end &&
           a.scheduled_end_at > start &&
           (a.allocation_status === 'confirmed' ||
@@ -619,6 +689,116 @@ export function createFakePaymentDbClient(store: FakePaymentDbStore): FakePaymen
         touch(row);
         row.metadata = { ...(row.metadata ?? {}), ...patch };
       }
+      return { rows: [] };
+    }
+
+    // session-product.ts's loadBookableSessionProduct
+    if (/^SELECT .* FROM products\s+WHERE product_code = \$1/is.test(sql)) {
+      const [code] = params as [string];
+      const row = store.products.find((p) => p.product_code === code);
+      return { rows: (row ? [{ ...row }] : []) as unknown as T[] };
+    }
+
+    // INSERT INTO bookings — create-booking.ts's insertPendingBooking (ONLINE, 'pending') or
+    // walk-in-booking.ts (WALK_IN, 'confirmed'). Enforces migration 011's
+    // bookings_source_identity_chk. The new row stays invisible to other connections' legacy-booking
+    // reads until COMMIT (uncommittedBookingIds), like an uncommitted Postgres row.
+    if (/^INSERT INTO bookings\b/i.test(sql)) {
+      const walkIn = /'WALK_IN'/.test(sql);
+      const v = params as unknown[];
+      const fields = walkIn
+        ? { productId: v[0], sub: null, name: v[1], phone: v[2], email: v[3], racers: v[4], duration: v[5], simType: v[6], price: v[7], start: v[8], end: v[9], notes: v[10], env: v[11], admin: v[12] }
+        : { productId: v[0], sub: v[1], name: v[2], phone: v[3], email: v[4], racers: v[5], duration: v[6], simType: v[7], price: v[8], start: v[9], end: v[10], notes: v[11], env: v[12], admin: null };
+      const status = walkIn ? 'confirmed' : 'pending';
+      if (walkIn ? !/'confirmed'/.test(sql) : !/'pending'/.test(sql)) {
+        throw new Error('FakePaymentDbClient: unexpected bookings INSERT status');
+      }
+      const identityOk = walkIn
+        ? /\bNULL\b/.test(sql) && typeof fields.admin === 'string' && fields.admin.length > 0 && typeof fields.name === 'string' && typeof fields.phone === 'string'
+        : typeof fields.sub === 'string' && fields.sub.length > 0;
+      if (!identityOk) {
+        throw pgCheckViolation('bookings_source_identity_chk');
+      }
+      if (fields.env !== 'SANDBOX' && fields.env !== 'PRODUCTION') {
+        throw pgCheckViolation('bookings_booking_environment_chk');
+      }
+      const row: FakeBookingRow = {
+        id: randomUUID(),
+        status,
+        price_inr: fields.price as string,
+        simulator_type: fields.simType as FakeBookingRow['simulator_type'],
+        racers: fields.racers as number,
+        scheduled_start_at: fields.start as Date,
+        scheduled_end_at: fields.end as Date,
+        cognito_sub: (fields.sub as string | null) ?? undefined,
+        booking_number: store.nextBookingNumber,
+        product_name: store.products.find((p) => p.id === fields.productId)?.name,
+        booking_environment: fields.env,
+        booking_source: walkIn ? 'WALK_IN' : 'ONLINE',
+        created_by_admin_sub: fields.admin as string | null,
+        product_id: fields.productId as string,
+        customer_name: fields.name as string | null,
+        customer_phone: fields.phone as string | null,
+        customer_email: fields.email as string | null,
+        duration_minutes: fields.duration as number,
+        notes: fields.notes as string | null,
+      };
+      store.nextBookingNumber += 1; // a sequence never gives a number back, even on ROLLBACK
+      inserted(store.bookings, row);
+      store.uncommittedBookingIds.add(row.id);
+      journal.push(() => store.uncommittedBookingIds.delete(row.id));
+      onCommit.push(() => store.uncommittedBookingIds.delete(row.id));
+      return { rows: [{ id: row.id, booking_number: row.booking_number }] as unknown as T[] };
+    }
+
+    // walk-in-booking.ts's counter payment: provider 'counter', final 'paid'. Enforces migration
+    // 011's payment_method / counter / complimentary CHECKs.
+    if (/^INSERT INTO payments/i.test(sql) && /'counter'/.test(sql)) {
+      const [bookingId, providerOrderId, providerTransactionId, amountInr, method, metadata, paymentEnvironment] = params as [
+        string,
+        string,
+        string | null,
+        string,
+        FakePaymentRow['payment_method'],
+        Record<string, unknown> | null,
+        'SANDBOX' | 'PRODUCTION',
+      ];
+      if (!/'paid', now\(\)/i.test(sql)) {
+        throw pgCheckViolation('payments_counter_final_chk');
+      }
+      if (method !== 'CASH' && method !== 'UPI' && method !== 'CARD' && method !== 'COMPLIMENTARY') {
+        throw pgCheckViolation('payments_counter_method_chk');
+      }
+      if (method === 'COMPLIMENTARY' && Number(amountInr) !== 0) {
+        throw pgCheckViolation('payments_complimentary_zero_chk');
+      }
+      if (paymentEnvironment !== 'SANDBOX' && paymentEnvironment !== 'PRODUCTION') {
+        throw pgCheckViolation('payments_payment_environment_chk');
+      }
+      if (store.payments.some((p) => p.provider === 'counter' && p.provider_order_id === providerOrderId)) {
+        throw pgUniqueViolation('idx_payments_provider_order_id_unique');
+      }
+      if (store.payments.some((p) => p.booking_id === bookingId && (p.payment_status === 'paid' || p.payment_status === 'refunded') && !p.duplicate_of_payment_id)) {
+        throw pgUniqueViolation('idx_payments_one_paid_per_booking');
+      }
+      const now = new Date();
+      inserted(store.payments, {
+        id: nextId('payment'),
+        booking_id: bookingId,
+        provider: 'counter',
+        provider_order_id: providerOrderId,
+        provider_transaction_id: providerTransactionId,
+        amount_inr: amountInr,
+        currency: 'INR',
+        payment_status: 'paid',
+        failure_reason: null,
+        metadata: metadata ?? null,
+        payment_environment: paymentEnvironment,
+        payment_method: method,
+        created_at: now,
+        updated_at: now,
+        paid_at: now,
+      });
       return { rows: [] };
     }
 

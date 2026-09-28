@@ -182,6 +182,7 @@ async function bookViaAllocator(store: FakePaymentDbStore, price = '999.00'): Pr
   const db = createFakePaymentDbClient(store);
   await db.query('BEGIN');
   const allocation = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId: booking.id, requirement: { static: 1, motion: 0 }, scheduledStartAt: SLOT_START, scheduledEndAt: SLOT_END, holdMinutes: 15,
   });
   await db.query(allocation ? 'COMMIT' : 'ROLLBACK');
@@ -335,6 +336,7 @@ async function createBookingB(store: FakePaymentDbStore, ticksBefore: number): P
   const booking = seedBooking(store, { priceInr: '500.00', holdAllocations: 0, start: SLOT_START, end: SLOT_END });
   store.uncommittedBookingIds.add(booking.id);
   const allocation = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId: booking.id, requirement: { static: 1, motion: 0 }, scheduledStartAt: SLOT_START, scheduledEndAt: SLOT_END, holdMinutes: 15,
   });
   if (!allocation) {

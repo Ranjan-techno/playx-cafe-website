@@ -12,11 +12,11 @@
 
 import type { DbClient } from './allocate-simulators';
 import { confirmSuccessfulPayment } from './confirm-successful-payment';
-import { markPaymentExpired, markPaymentFailed, markPaymentPending, type PaymentProvider } from './payment-repository';
+import { markPaymentExpired, markPaymentFailed, markPaymentPending, type GatewayPaymentProvider } from './payment-repository';
 import type { ProviderOutcome } from './payment-provider';
 
 export interface ApplyProviderOutcomeInput {
-  provider: PaymentProvider;
+  provider: GatewayPaymentProvider;
   providerOrderId: string;
   outcome: ProviderOutcome;
   providerTransactionId?: string;
@@ -102,7 +102,7 @@ async function markExpiredAttempt(db: DbClient, input: ApplyProviderOutcomeInput
  *  same transaction, and each of their own UPDATEs is already filtered to a safe source
  *  payment_status (see payment-repository.ts), so a benign race just makes one of two concurrent
  *  callers' UPDATEs a no-op rather than corrupting anything. */
-async function paymentIdFor(db: DbClient, input: { provider: PaymentProvider; providerOrderId: string }): Promise<string> {
+async function paymentIdFor(db: DbClient, input: { provider: GatewayPaymentProvider; providerOrderId: string }): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
     `SELECT id FROM payments WHERE provider = $1 AND provider_order_id = $2`,
     [input.provider, input.providerOrderId],

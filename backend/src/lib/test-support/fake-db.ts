@@ -11,6 +11,7 @@
 // issue (matched by a light regex on the SQL text, not a real parser) — nothing more.
 
 import type { DbClient } from '../allocate-simulators';
+import type { AppEnvironment } from '../environment';
 import type { SimulatorRow } from '../simulator-allocation';
 
 /** A minimal async mutex: models one Postgres row lock held for the lifetime of a transaction.
@@ -57,6 +58,8 @@ export interface FakeAllocationRow {
  *  rows) to exercise allocate-simulators.ts's legacy-booking query. See that file's header. */
 export interface FakeLegacyBookingRow {
   id: string;
+  /** bookings.booking_environment; defaults to 'SANDBOX' when omitted. */
+  booking_environment?: AppEnvironment;
   simulator_type: 'static' | 'motion' | null;
   racers: number;
   status: string;
@@ -66,10 +69,19 @@ export interface FakeLegacyBookingRow {
 
 export interface FakeDbStore {
   simulators: (SimulatorRow & { is_active: boolean })[];
-  bookings: { id: string }[];
+  /** booking_environment defaults to 'SANDBOX' when omitted (what POST /bookings writes). */
+  bookings: { id: string; booking_environment?: AppEnvironment }[];
   allocations: FakeAllocationRow[];
   legacyBookings: FakeLegacyBookingRow[];
   simulatorLock: Mutex;
+}
+
+/** Stage 3A.1: the environment an allocation's owning booking belongs to — models the real
+ *  occupancy query's `JOIN bookings b ... AND b.booking_environment = $n`. A booking the store
+ *  doesn't know (an allocation seeded directly by a test) counts as SANDBOX, the historical default. */
+function environmentOfBooking(store: FakeDbStore, bookingId: string): AppEnvironment {
+  const booking = store.bookings.find((b) => b.id === bookingId) ?? store.legacyBookings.find((b) => b.id === bookingId);
+  return booking?.booking_environment ?? 'SANDBOX';
 }
 
 let idCounter = 0;
@@ -133,10 +145,11 @@ export function createFakeDbClient(store: FakeDbStore): DbClient {
       // allocate-simulators.ts's legacy-booking query — see its header. Mirrors the real SQL's
       // "no allocation rows of its own, not cancelled, window-overlapping, not this call's own
       // booking" filter entirely in JS rather than parsing the query text.
-      const [start, end, excludeBookingId] = params as [Date, Date, string];
+      const [start, end, excludeBookingId, environment] = params as [Date, Date, string | null, AppEnvironment];
       const rows = store.legacyBookings.filter(
         (booking) =>
           booking.id !== excludeBookingId &&
+          (booking.booking_environment ?? 'SANDBOX') === environment &&
           booking.status !== 'cancelled' &&
           booking.scheduled_start_at < end &&
           booking.scheduled_end_at > start &&
@@ -153,10 +166,11 @@ export function createFakeDbClient(store: FakeDbStore): DbClient {
     }
 
     if (/^SELECT .* FROM booking_allocations\b/is.test(sql)) {
-      const [start, end] = params as [Date, Date];
+      const [start, end, environment] = params as [Date, Date, AppEnvironment];
       const now = new Date();
       const rows = store.allocations.filter(
         (allocation) =>
+          environmentOfBooking(store, allocation.booking_id) === environment &&
           allocation.scheduled_start_at < end &&
           allocation.scheduled_end_at > start &&
           (allocation.allocation_status === 'confirmed' ||
@@ -169,7 +183,9 @@ export function createFakeDbClient(store: FakeDbStore): DbClient {
 
     if (/^INSERT INTO bookings/i.test(sql)) {
       const id = nextId('booking');
-      store.bookings.push({ id });
+      // create-booking.ts binds booking_environment last ($13); a bare test INSERT binds nothing.
+      const environment = params.find((p): p is AppEnvironment => p === 'SANDBOX' || p === 'PRODUCTION');
+      store.bookings.push({ id, booking_environment: environment ?? 'SANDBOX' });
       return { rows: [{ id }] as unknown as T[] };
     }
 

@@ -11,8 +11,11 @@ import { createListMyBookingsHandler, listBookingsForOwner } from './list-my-boo
 interface StoredBooking {
   id: string;
   booking_number: number;
-  cognito_sub: string;
+  /** NULL for a WALK_IN booking (migration 011). */
+  cognito_sub: string | null;
   booking_environment: string | null;
+  booking_source?: 'ONLINE' | 'WALK_IN';
+  created_by_admin_sub?: string | null;
 }
 
 const ME = 'sub-me';
@@ -25,6 +28,16 @@ const STORE: StoredBooking[] = [
   { id: 'b-null', booking_number: 1000, cognito_sub: ME, booking_environment: null },
   { id: 'b-other-prod', booking_number: 1040, cognito_sub: OTHER, booking_environment: 'PRODUCTION' },
   { id: 'b-other-sandbox', booking_number: 1041, cognito_sub: OTHER, booking_environment: 'SANDBOX' },
+  // Stage 3A.1: a walk-in recorded at the desk BY the same person (an admin who is also a customer)
+  // — no customer account, so cognito_sub is NULL; the admin sub is audit-only.
+  {
+    id: 'b-walkin-1050',
+    booking_number: 1050,
+    cognito_sub: null,
+    booking_environment: 'PRODUCTION',
+    booking_source: 'WALK_IN',
+    created_by_admin_sub: ME,
+  },
 ];
 
 /** Evaluates the handler's query against STORE: asserts the SQL shape, then applies its two
@@ -37,7 +50,7 @@ function fakeDb() {
       calls.push({ text, params });
       assert.match(text, /WHERE b\.cognito_sub = \$1\s+AND b\.booking_environment = \$2/);
       const [sub, env] = params;
-      const rows = STORE.filter((b) => b.cognito_sub === sub && b.booking_environment !== null && b.booking_environment === env).map((b) => ({
+      const rows = STORE.filter((b) => b.cognito_sub !== null && b.cognito_sub === sub && b.booking_environment !== null && b.booking_environment === env).map((b) => ({
         id: b.id,
         booking_number: b.booking_number,
         product_code: 'solo-pro-static',
@@ -132,4 +145,21 @@ test('entry files hard-code their environment', () => {
     readFileSync(path.join(dir, 'list-my-bookings-production.ts'), 'utf8'),
     /^export const handler = createListMyBookingsHandler\('PRODUCTION'\);$/m,
   );
+});
+
+test('Stage 3A.1: a WALK_IN booking never appears in any customer My Bookings — not even the recording admin\'s', async () => {
+  for (const env of ['SANDBOX', 'PRODUCTION'] as const) {
+    for (const sub of [ME, OTHER]) {
+      const db = fakeDb();
+      const rows = await listBookingsForOwner(db, sub, env);
+      assert.ok(!rows.some((r) => r.id === 'b-walkin-1050'), `${env}/${sub}`);
+      // Ownership is decided by cognito_sub alone — never created_by_admin_sub or booking_source.
+      assert.doesNotMatch(db.calls[0].text, /created_by_admin_sub|booking_source/);
+    }
+  }
+  const handler = createListMyBookingsHandler('PRODUCTION', { getDb: async () => fakeDb(), resetDb: () => {} });
+  const res = await handler(event(ME));
+  const body = JSON.parse(String(res.body)) as { bookings: { id: string }[] };
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(body.bookings.map((b) => b.id), ['b-prod-1033']);
 });

@@ -1,18 +1,22 @@
 // Hostname -> backend environment routing for the customer booking/payment flow - the ONE place
 // that decides whether this page talks to the SANDBOX or the PRODUCTION booking/payment routes.
 //
-//   playxcafe.com / www.playxcafe.com   PRODUCTION   POST /bookings/production
+//   playxcafe.com / www.playxcafe.com   PRODUCTION   GET  /availability/production
+//                                                    POST /bookings/production
 //                                                    GET  /bookings/production/me
 //                                                    POST /payments/production/start
 //                                                    GET  /payments/production/{id}/status
-//   everything else (staging.playxcafe.com, SANDBOX      POST /bookings
+//   everything else (staging.playxcafe.com, SANDBOX      GET  /availability
+//                                                    POST /bookings
 //   localhost, previews, unknown hosts)              GET  /bookings/me
 //                                                    POST /payments/start
 //                                                    GET  /payments/{id}/status
 //
 // My Bookings is environment-isolated on the SERVER: GET /bookings/production/me returns only
 // PRODUCTION bookings and GET /bookings/me only SANDBOX ones (the environment is hard-coded per
-// Lambda), so nothing is downloaded and then hidden here.
+// Lambda), so nothing is downloaded and then hidden here. Availability is isolated the same way
+// (Stage 3A.1): /availability/production counts only PRODUCTION occupancy (live online bookings +
+// walk-ins), /availability only SANDBOX test bookings.
 //
 // Trust model:
 //   - The ONLY input is the page's own hostname. No query parameter, hash, storage value, cookie
@@ -36,6 +40,7 @@
   const ROUTES = Object.freeze({
     SANDBOX: Object.freeze({
       environment: 'SANDBOX',
+      availability: '/availability',
       createBooking: '/bookings',
       myBookings: '/bookings/me',
       startPayment: '/payments/start',
@@ -43,6 +48,7 @@
     }),
     PRODUCTION: Object.freeze({
       environment: 'PRODUCTION',
+      availability: '/availability/production',
       createBooking: '/bookings/production',
       myBookings: '/bookings/production/me',
       startPayment: '/payments/production/start',

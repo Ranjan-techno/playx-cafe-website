@@ -63,6 +63,7 @@ test('production hostnames select the PRODUCTION booking, payment-start and stat
     assert.equal(R.environmentForHostname(host), 'PRODUCTION', host);
     const routes = R.routesForHostname(host);
     assert.equal(routes.environment, 'PRODUCTION');
+    assert.equal(routes.availability, '/availability/production');
     assert.equal(routes.createBooking, '/bookings/production');
     assert.equal(routes.startPayment, '/payments/production/start');
     assert.equal(routes.paymentStatus(BOOKING_ID), `/payments/production/${BOOKING_ID}/status`);
@@ -73,6 +74,7 @@ test('staging stays SANDBOX: POST /bookings, POST /payments/start, GET /payments
   const routes = R.routesForHostname('staging.playxcafe.com');
   assert.equal(R.environmentForHostname('staging.playxcafe.com'), 'SANDBOX');
   assert.equal(routes.environment, 'SANDBOX');
+  assert.equal(routes.availability, '/availability');
   assert.equal(routes.createBooking, '/bookings');
   assert.equal(routes.startPayment, '/payments/start');
   assert.equal(routes.paymentStatus(BOOKING_ID), `/payments/${BOOKING_ID}/status`);
@@ -100,6 +102,13 @@ test('route tables are frozen: page scripts cannot re-point SANDBOX at PRODUCTIO
   assert.throws(() => { 'use strict'; R.ROUTES.SANDBOX.createBooking = '/bookings/production'; }, TypeError);
   assert.throws(() => R.PRODUCTION_HOSTNAMES.push('staging.playxcafe.com'), TypeError);
   assert.equal(R.routesForHostname('staging.playxcafe.com').createBooking, '/bookings');
+});
+
+test('Stage 3A.1: the booking form asks availability through the hostname-selected route, never a hard-coded path', () => {
+  const src = read('js/script.js');
+  assert.match(src, /\$\{PlayXApiRoutes\.currentRoutes\(\)\.availability\}\?productCode=/);
+  assert.doesNotMatch(src.replace(/^\s*\/\/.*$/gm, ''), /apiBaseUrl\}\/availability/, 'no environment-blind /availability call remains');
+  assert.throws(() => { 'use strict'; R.ROUTES.PRODUCTION.availability = '/availability'; }, TypeError);
 });
 
 // ---- no client-controlled environment override ---------------------------------------------

@@ -32,6 +32,7 @@ test('static allocation: Solo Static succeeds and allocates a static rig', async
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -51,6 +52,7 @@ test('motion allocation: Solo Motion succeeds and allocates a motion rig', async
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 0, motion: 1 },
     scheduledStartAt: SLOT_START,
@@ -70,6 +72,7 @@ test('duo allocation: Duo Motion succeeds and allocates both motion rigs', async
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 0, motion: 2 },
     scheduledStartAt: SLOT_START,
@@ -89,6 +92,7 @@ test('duo allocation: Duo Static succeeds and allocates both static rigs', async
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 2, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -108,6 +112,7 @@ test('Grand Race: succeeds only when all 4 rigs are free, and allocates all 4', 
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 2, motion: 2 },
     scheduledStartAt: SLOT_START,
@@ -130,6 +135,7 @@ test('conflicting booking: a second Solo Static request for the same window is r
     await db.query('BEGIN');
     const bookingId = await makeBooking(db);
     const result = await allocateSimulators(db, {
+      environment: 'SANDBOX',
       bookingId,
       requirement: { static: 1, motion: 0 },
       scheduledStartAt: SLOT_START,
@@ -144,6 +150,7 @@ test('conflicting booking: a second Solo Static request for the same window is r
   await db.query('BEGIN');
   const thirdBookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId: thirdBookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -163,6 +170,7 @@ test('conflicting booking: Duo Static is rejected while a Solo Static booking ho
   await db.query('BEGIN');
   const soloBookingId = await makeBooking(db);
   await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId: soloBookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -174,6 +182,7 @@ test('conflicting booking: Duo Static is rejected while a Solo Static booking ho
   await db.query('BEGIN');
   const duoBookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId: duoBookingId,
     requirement: { static: 2, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -196,6 +205,7 @@ test('adjacent booking: a booking ending exactly when another starts does not bl
   await db.query('BEGIN');
   const firstBookingId = await makeBooking(db);
   const firstResult = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId: firstBookingId,
     requirement: { static: 2, motion: 0 },
     scheduledStartAt: firstStart,
@@ -208,6 +218,7 @@ test('adjacent booking: a booking ending exactly when another starts does not bl
   await db.query('BEGIN');
   const secondBookingId = await makeBooking(db);
   const secondResult = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId: secondBookingId,
     requirement: { static: 2, motion: 0 },
     scheduledStartAt: secondStart,
@@ -237,6 +248,7 @@ test('released allocation: a released allocation does not block a new overlappin
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -266,6 +278,7 @@ test('confirmed allocation: a confirmed allocation (no expiry) blocks a new over
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -285,6 +298,7 @@ test('same hold_expires_at: a Duo Static booking\'s two allocation rows share th
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 2, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -310,6 +324,7 @@ test('same hold_expires_at: a Grand Race booking\'s four allocation rows all sha
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 2, motion: 2 },
     scheduledStartAt: SLOT_START,
@@ -348,6 +363,7 @@ test('legacy booking: a pre-Phase-2 Solo Static booking with no allocation rows 
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 2, motion: 0 }, // Duo Static needs both rigs.
     scheduledStartAt: SLOT_START,
@@ -375,6 +391,7 @@ test('legacy booking: a pre-Phase-2 booking still allows a new Solo Static reque
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -403,6 +420,7 @@ test('legacy booking: a cancelled pre-Phase-2 booking does not block a new overl
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 2, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -430,6 +448,7 @@ test('legacy booking: a legacy Grand Race booking (simulator_type NULL, racers 4
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 1, motion: 0 }, // even a single Solo Static can't fit anywhere.
     scheduledStartAt: SLOT_START,
@@ -460,6 +479,7 @@ test('expired hold: an allocation whose hold_expires_at is in the past does not 
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -489,6 +509,7 @@ test('expired hold: a still-active hold (not yet expired) keeps blocking, matchi
   await db.query('BEGIN');
   const bookingId = await makeBooking(db);
   const result = await allocateSimulators(db, {
+    environment: 'SANDBOX',
     bookingId,
     requirement: { static: 1, motion: 0 },
     scheduledStartAt: SLOT_START,
@@ -521,6 +542,7 @@ test('concurrent request safety: two overlapping Solo Static requests racing for
     await db.query('BEGIN');
     const bookingId = await makeBooking(db);
     const result = await allocateSimulators(db, {
+      environment: 'SANDBOX',
       bookingId,
       requirement: { static: 1, motion: 0 },
       scheduledStartAt: SLOT_START,
@@ -556,6 +578,7 @@ test('concurrent request safety: two Solo Static requests for two different free
     await db.query('BEGIN');
     const bookingId = await makeBooking(db);
     const result = await allocateSimulators(db, {
+      environment: 'SANDBOX',
       bookingId,
       requirement: { static: 1, motion: 0 },
       scheduledStartAt: SLOT_START,

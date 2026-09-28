@@ -1164,6 +1164,11 @@ export function buildSimulatorBoard(
   }));
 }
 
+/** Stage 3A.1: the board is the venue's live operational view, so it shows only PRODUCTION
+ *  bookings (online + walk-in) — SANDBOX test holds share the rig codes but not the occupancy
+ *  (see allocate-simulators.ts's header) and never appear here. */
+export const SIMULATOR_BOARD_ENVIRONMENT = 'PRODUCTION';
+
 export async function getSimulatorBoard(db: DbClient, istDate: string): Promise<SimulatorBoardItem[]> {
   const { start, end } = istDayBounds(istDate);
 
@@ -1177,8 +1182,9 @@ export async function getSimulatorBoard(db: DbClient, istDate: string): Promise<
      FROM booking_allocations ba
      JOIN bookings b ON b.id = ba.booking_id
      WHERE ba.scheduled_start_at < $2 AND ba.scheduled_end_at > $1
+       AND b.booking_environment = $3
      ORDER BY ba.scheduled_start_at`,
-    [start, end],
+    [start, end, SIMULATOR_BOARD_ENVIRONMENT],
   );
 
   return buildSimulatorBoard(simulators, allocations, new Date());

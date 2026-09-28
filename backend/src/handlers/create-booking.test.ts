@@ -273,7 +273,7 @@ function handlerWorld(): HandlerWorld {
           inserts.push(params);
           bookingNumber += 1;
           const id = `booking-${bookingNumber}`;
-          store.bookings.push({ id });
+          store.bookings.push({ id, booking_environment: params[12] as 'SANDBOX' | 'PRODUCTION' });
           return { rows: [{ id, booking_number: bookingNumber }] as unknown as T[] };
         }
         return inner.query<T>(text, params);
@@ -343,22 +343,36 @@ test('handler: the request body cannot override either environment', async () =>
   }
 });
 
-test('handler: both environments share the same capacity/allocation logic and the same inventory', async () => {
-  // A PRODUCTION booking takes the only static rig -> a SANDBOX booking for the same slot is 409.
+test('handler: both environments share the same allocation logic and rig codes, but NOT each other\'s occupancy (Stage 3A.1)', async () => {
+  // 1. A SANDBOX (staging/test) booking does NOT block PRODUCTION: the one static rig is still free
+  //    for a live booking of the same slot.
   const a = handlerWorld();
-  assert.equal((await invoke(a.production, bookingEvent(HANDLER_BODY))).statusCode, 201);
-  const clash = await invoke(a.sandbox, bookingEvent(HANDLER_BODY, 'sub-2'));
-  assert.equal(clash.statusCode, 409);
-  assert.equal(clash.body.error, 'simulator_unavailable');
-  assert.equal(a.store.allocations.length, 1);
+  assert.equal((await invoke(a.sandbox, bookingEvent(HANDLER_BODY))).statusCode, 201);
+  const live = await invoke(a.production, bookingEvent(HANDLER_BODY, 'sub-2'));
+  assert.equal(live.statusCode, 201, 'SANDBOX occupancy never blocks PRODUCTION');
+  assert.deepEqual(
+    a.store.allocations.map((x) => x.simulator_id),
+    ['s1', 's1'],
+    'same physical rig code in both environments — no duplicated simulator rows',
+  );
   mock.timers.reset();
 
-  // And the reverse, plus a second PRODUCTION booking is also refused.
+  // 2. A PRODUCTION booking does NOT block SANDBOX.
   const b = handlerWorld();
-  assert.equal((await invoke(b.sandbox, bookingEvent(HANDLER_BODY))).statusCode, 201);
-  assert.equal((await invoke(b.production, bookingEvent(HANDLER_BODY, 'sub-2'))).statusCode, 409);
-  assert.equal((await invoke(b.production, bookingEvent({ ...HANDLER_BODY, startTime: '19:00' }, 'sub-2'))).statusCode, 201, 'a free slot still books');
-  assert.equal(b.store.allocations.length, 2);
+  assert.equal((await invoke(b.production, bookingEvent(HANDLER_BODY))).statusCode, 201);
+  assert.equal((await invoke(b.sandbox, bookingEvent(HANDLER_BODY, 'sub-2'))).statusCode, 201, 'PRODUCTION occupancy never blocks SANDBOX');
+  mock.timers.reset();
+
+  // 3. Two PRODUCTION bookings still conflict (and two SANDBOX ones), while a free slot still books.
+  const c = handlerWorld();
+  assert.equal((await invoke(c.production, bookingEvent(HANDLER_BODY))).statusCode, 201);
+  const clash = await invoke(c.production, bookingEvent(HANDLER_BODY, 'sub-2'));
+  assert.equal(clash.statusCode, 409);
+  assert.equal(clash.body.error, 'simulator_unavailable');
+  assert.equal((await invoke(c.sandbox, bookingEvent(HANDLER_BODY))).statusCode, 201);
+  assert.equal((await invoke(c.sandbox, bookingEvent(HANDLER_BODY, 'sub-2'))).statusCode, 409, 'SANDBOX vs SANDBOX still conflicts');
+  assert.equal((await invoke(c.production, bookingEvent({ ...HANDLER_BODY, startTime: '19:00' }, 'sub-2'))).statusCode, 201, 'a free slot still books');
+  assert.equal(c.store.allocations.length, 3);
 });
 
 test('handler: same validation/schedule rules on the production route (bad body 400, Monday closed)', async () => {

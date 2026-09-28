@@ -6,7 +6,7 @@
 // Deliberately provider-agnostic: no field here is PhonePe-specific (no merchantId, no
 // X-VERIFY/checksum header, no PhonePe response envelope shape).
 
-import type { PaymentProvider } from './payment-repository';
+import type { GatewayPaymentProvider } from './payment-repository';
 
 /** What a provider call reports about a payment attempt, collapsed to the three outcomes the
  *  rest of this codebase's domain logic actually branches on (see sync-payment-status.ts).
@@ -94,7 +94,7 @@ export interface RefundResult {
  * this interface — see this file's header.
  */
 export interface PaymentProviderAdapter {
-  readonly provider: PaymentProvider;
+  readonly provider: GatewayPaymentProvider;
 
   /** Starts a new payment attempt with the provider for an already-created `payments` row (see
    *  start-payment.ts) — never called with browser-supplied amount/currency, always the

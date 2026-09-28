@@ -38,6 +38,9 @@ export interface ApiConstructProps {
   listMyBookingsProductionFunctionName: string;
   /** Full resource name for the Phase 2 availability Lambda, e.g. 'playx-dev-availability'. */
   availabilityFunctionName: string;
+  /** Stage 3A.1: GET /availability/production's Lambda (PRODUCTION occupancy only), e.g.
+   *  'playx-dev-availability-production'. */
+  availabilityProductionFunctionName: string;
   /** Full resource name for the passwordless auth-start Lambda, e.g. 'playx-dev-auth-start'. */
   authStartFunctionName: string;
   /** Full resource name for the passwordless auth-verify Lambda, e.g. 'playx-dev-auth-verify'. */
@@ -50,6 +53,8 @@ export interface ApiConstructProps {
   adminPaymentsFunctionName: string;
   adminSimulatorsFunctionName: string;
   adminBookingStatusFunctionName: string;
+  /** Stage 3A.1: POST /admin/bookings/walk-in's Lambda, e.g. 'playx-dev-admin-walk-in-booking'. */
+  adminWalkInBookingFunctionName: string;
 
   /** PhonePe payments (Phase 2): full resource names for the two customer payment Lambdas. */
   paymentStartFunctionName: string;
@@ -187,6 +192,7 @@ export class ApiConstruct extends Construct {
   public readonly listMyBookingsFunction: lambdaNodejs.NodejsFunction;
   public readonly listMyBookingsProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly availabilityFunction: lambdaNodejs.NodejsFunction;
+  public readonly availabilityProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly authStartFunction: lambdaNodejs.NodejsFunction;
   public readonly authVerifyFunction: lambdaNodejs.NodejsFunction;
   public readonly adminDashboardFunction: lambdaNodejs.NodejsFunction;
@@ -195,6 +201,7 @@ export class ApiConstruct extends Construct {
   public readonly adminPaymentsFunction: lambdaNodejs.NodejsFunction;
   public readonly adminSimulatorsFunction: lambdaNodejs.NodejsFunction;
   public readonly adminBookingStatusFunction: lambdaNodejs.NodejsFunction;
+  public readonly adminWalkInBookingFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentStartFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentStartProductionFunction: lambdaNodejs.NodejsFunction;
   public readonly paymentStatusFunction: lambdaNodejs.NodejsFunction;
@@ -311,6 +318,16 @@ export class ApiConstruct extends Construct {
     });
     props.databaseSecret.grantRead(this.availabilityFunction);
 
+    // Stage 3A.1: the PRODUCTION twin of GET /availability — same handler code, placement and DB
+    // access; its entry file hard-codes PRODUCTION, so playxcafe.com's slot list counts only live
+    // online bookings + walk-ins (the SANDBOX function counts only staging/test bookings).
+    this.availabilityProductionFunction = new lambdaNodejs.NodejsFunction(this, 'AvailabilityProductionFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.availabilityProductionFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/availability-production.ts'),
+    });
+    props.databaseSecret.grantRead(this.availabilityProductionFunction);
+
     // Phase 3B: PLAY X ADMIN — six Lambdas behind /admin/*, all Cognito-JWT-protected (via
     // cognitoAuthorizer below, the same authorizer /bookings*/ /bookings/me already use) plus a
     // backend requireAdmin() check inside each handler (see backend/src/lib/admin-auth.ts) — the
@@ -362,6 +379,17 @@ export class ApiConstruct extends Construct {
       entry: path.join(__dirname, '../../../backend/src/handlers/admin-booking-status.ts'),
     });
     props.databaseSecret.grantRead(this.adminBookingStatusFunction);
+
+    // Stage 3A.1: POST /admin/bookings/walk-in — books + allocates + records a counter payment in one
+    // DB transaction. Deliberately the plain DB-Lambda shape (isolated subnets, DB secret only): no
+    // PhonePe secret, no SES, no Cognito admin API, no reconciliation queue — a walk-in never talks
+    // to a payment gateway, never sends email, and never looks a user up.
+    this.adminWalkInBookingFunction = new lambdaNodejs.NodejsFunction(this, 'AdminWalkInBookingFunction', {
+      ...dbFunctionDefaults,
+      functionName: props.adminWalkInBookingFunctionName,
+      entry: path.join(__dirname, '../../../backend/src/handlers/admin-walk-in-booking.ts'),
+    });
+    props.databaseSecret.grantRead(this.adminWalkInBookingFunction);
 
     // PhonePe payments (Phase 2): the ONLY Lambdas placed in the PRIVATE_WITH_EGRESS subnets (NAT
     // route out to PhonePe over HTTPS). They still use the shared Story 2.2 Lambda security group,
@@ -770,6 +798,17 @@ export class ApiConstruct extends Construct {
       // signing in.
     });
 
+    // Stage 3A.1: PRODUCTION occupancy (playxcafe.com). Public, like its SANDBOX twin above.
+    this.httpApi.addRoutes({
+      path: '/availability/production',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2Integrations.HttpLambdaIntegration(
+        'AvailabilityProductionIntegration',
+        this.availabilityProductionFunction,
+      ),
+      // No authorizer: public.
+    });
+
     this.httpApi.addRoutes({
       path: '/auth/start',
       methods: [apigwv2.HttpMethod.POST],
@@ -827,6 +866,16 @@ export class ApiConstruct extends Construct {
       path: '/admin/simulators',
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2Integrations.HttpLambdaIntegration('AdminSimulatorsIntegration', this.adminSimulatorsFunction),
+      authorizer: cognitoAuthorizer,
+    });
+
+    // Stage 3A.1: an admin records a front-desk walk-in (JWT + requireAdmin in the handler, same as
+    // every /admin/* route). A literal path segment, so it never collides with GET /admin/bookings/{id}
+    // (different method anyway) or PATCH /admin/bookings/{id}/status.
+    this.httpApi.addRoutes({
+      path: '/admin/bookings/walk-in',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new apigwv2Integrations.HttpLambdaIntegration('AdminWalkInBookingIntegration', this.adminWalkInBookingFunction),
       authorizer: cognitoAuthorizer,
     });
 

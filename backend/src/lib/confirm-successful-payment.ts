@@ -64,13 +64,13 @@ import {
   lockBookingForPayment,
   lockPaymentByProviderOrderId,
   markPaymentPaid,
-  type PaymentProvider,
+  type GatewayPaymentProvider,
   type PaymentRow,
 } from './payment-repository';
 
 
 export interface ConfirmSuccessfulPaymentInput {
-  provider: PaymentProvider;
+  provider: GatewayPaymentProvider;
   /** Identifies the payment attempt — see lockPaymentByProviderOrderId's doc comment for why this
    *  (not payments.id) is the natural key a verified provider callback carries. */
   providerOrderId: string;
