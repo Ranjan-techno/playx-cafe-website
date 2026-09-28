@@ -34,7 +34,7 @@
       <a href="#xperience-card">Xperience</a>
       <a href="#hangout">Hangout</a>
       <a href="#pricing">Pricing</a>
-      <a href="#location">Location</a>
+      <a href="#location">Contact Us</a>
     </nav>
     <div class="header-actions">
       <!-- See the matching comment on #mobileAuthArea above - same
@@ -66,20 +66,14 @@
   <div class="hero-scrim" aria-hidden="true"></div>
 
   <div class="container hero-content">
-    <!-- Grand Opening launch badge - see js/script.js's GRAND_OPENING_DATE for the same date
-         enforced elsewhere. Purely presentational copy (not fed by availability data) - "opens"
-         language is deliberate so this never reads as "already open", see the Preferred Date
-         note/booking form's own launch restriction for the enforced side of this. This is the
-         page's one Grand Opening announcement (the old duplicate strip below the hero was
-         removed so the date/time/location is stated once, prominently). -->
+    <!-- Now Open status badge - purely presentational copy (not fed by availability data). -->
     <div class="hero-launch-block">
-      <p class="hero-launch-kicker">Grand Opening</p>
-      <p class="hero-launch-datetime">25 September 2026<span class="hero-launch-sep" aria-hidden="true">&bull;</span>From 3:00 PM</p>
+      <p class="hero-launch-kicker">NOW OPEN</p>
       <p class="hero-launch-location">Arumbakkam, Chennai</p>
     </div>
     <h1 class="hero-tagline">Race. <span class="accent">X</span>perience. Hangout.</h1>
     <p class="hero-sub">Static &amp; Motion Racing Simulators.</p>
-    <p class="hero-launch-line">Chennai, get ready to race.</p>
+    <p class="hero-launch-line">Bookings are open &mdash; reserve your racing slot today.</p>
     <div class="hero-cta">
       <a href="#booking" class="btn btn-primary btn-lg">Book Your Race</a>
     </div>
@@ -248,6 +242,10 @@
         <h4>Phone</h4>
         <p><a href="tel:+917448607146">+91 74486 07146</a></p>
       </div>
+      <div class="location-detail">
+        <h4>Email</h4>
+        <p><a href="mailto:bookings@playxcafe.com">bookings@playxcafe.com</a></p>
+      </div>
     </div>
 
     <div class="location-cta-row">
@@ -325,13 +323,6 @@
           <div class="form-field">
             <label for="date">Preferred Date</label>
             <input type="date" id="date" name="date" required>
-            <!-- Grand Opening: 25 Sep 2026, 3:00 PM IST - js/script.js's GRAND_OPENING_DATE
-                 mirrors backend/src/lib/opening-hours.ts's GRAND_OPENING_DATE/GRAND_OPENING_TIME
-                 (the one backend source of truth; this display copy can't literally import it,
-                 being a separate no-build static site) and sets the date picker's `min` to it, so
-                 the earliest selectable date is already the launch date - this note is the
-                 proactive heads-up on *why*, so the customer isn't just left to guess. -->
-            <p class="form-hint" id="grandOpeningNote">Grand Opening: 25 Sep 2026 &bull; Sessions from 3:00 PM</p>
             <!-- Play X is closed on Mondays and can't take a past date (or, before the Grand
                  Opening, any date/time earlier than it) - js/script.js rejects all of these via
                  setCustomValidity() and this inline message. The hint below is the proactive
@@ -745,7 +736,7 @@
     </div>
     <div>
       <h4>Contact</h4>
-      <a href="mailto:playxcafe@gmail.com">playxcafe@gmail.com</a>
+      <a href="mailto:bookings@playxcafe.com">bookings@playxcafe.com</a>
       <a href="tel:+917448607146">+91 74486 07146</a>
       <a href="#location">Arumbakkam, Chennai</a>
     </div>

@@ -254,10 +254,10 @@ p { color: var(--text-dim); }
   background: linear-gradient(100deg, var(--bg) 0%, rgba(12,12,13,0.85) 30%, rgba(12,12,13,0.35) 54%, transparent 72%);
 }
 .hero-content { position: relative; z-index: 2; max-width: 600px; text-align: left; }
-/* Grand Opening launch badge - a compact motorsport-launch marker (kicker + date/time + venue)
-   above the tagline, not a large info card: tight padding, small type, a hairline red border with a
-   soft outer glow so it reads as a status chip rather than a content block. Three short lines so the
-   headline right below it stays the visually dominant element in the hero. */
+/* Hero status badge - a compact motorsport-launch marker (kicker + venue) above the tagline, not a
+   large info card: tight padding, small type, a hairline red border with a soft outer glow so it
+   reads as a status chip rather than a content block. Short lines so the headline right below it
+   stays the visually dominant element in the hero. */
 .hero-launch-block {
   display: inline-flex;
   flex-direction: column;
@@ -304,7 +304,7 @@ p { color: var(--text-dim); }
 }
 .hero-tagline .accent { color: var(--red); }
 .hero-sub { font-size: 1.1rem; margin-bottom: 10px; }
-/* Grand Opening supporting line, directly under .hero-sub - kept to the one short line the story
+/* Hero supporting line, directly under .hero-sub - kept to the one short line the story
    asks for (not a second paragraph) so the hero doesn't gain a second block of copy. */
 .hero-launch-line { font-size: 1.05rem; font-weight: 600; color: var(--red); margin-bottom: 36px; }
 .hero-cta { display: flex; gap: 18px; flex-wrap: wrap; }
@@ -507,7 +507,7 @@ p { color: var(--text-dim); }
 }
 .location-map iframe { width: 100%; height: 380px; border: 0; display: block; }
 .location-details {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 28px;
   margin-top: 8px; padding-top: 32px; border-top: 1px solid var(--line);
 }
 .location-detail h4 { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--red); margin-bottom: 10px; }
@@ -528,10 +528,6 @@ p { color: var(--text-dim); }
 .form-field select:disabled { opacity: 0.6; cursor: not-allowed; }
 .form-hint { font-size: 0.78rem; color: var(--text-dim); margin-top: 6px; }
 .form-error { font-size: 0.78rem; color: var(--red); margin-top: 6px; font-weight: 600; }
-/* Grand Opening note under Preferred Date - same .form-hint size/spacing as the Monday-closed
-   hint right below it, just given the brand red + extra weight so the launch date reads as the
-   more important of the two rather than blending into ordinary dim hint copy. */
-#grandOpeningNote { color: var(--red); font-weight: 600; }
 /* Real-time availability status under Preferred Time (js/script.js's
    refreshTimeSlotAvailability()) - reuses .form-hint/.form-error for the
    text itself (toggled via classList depending on loading/empty/error), this
