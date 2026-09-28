@@ -52,14 +52,16 @@ test('009: no backfill — old SENT rows stay delivery_status NULL (never claime
   assert.match(raw, /NO BACKFILL/);
 });
 
-test('009: registered with the migration runner, last, after 008 (9 migrations in total)', () => {
+test('009: registered with the migration runner, after 008 (later stages append after it)', () => {
   const handler = readFileSync(path.join(root, 'infra/lib/lambda/migrate/handler.ts'), 'utf8');
   assert.match(handler, /import schema009 from '\.\.\/\.\.\/\.\.\/\.\.\/database\/migrations\/009_booking_notification_delivery\.sql';/);
   const i008 = handler.indexOf("filename: '008_booking_notifications.sql', sql: schema008");
   const i009 = handler.indexOf("filename: '009_booking_notification_delivery.sql', sql: schema009");
   assert.ok(i008 > 0 && i009 > i008);
-  assert.equal(handler.match(/filename: '/g)?.length, 9);
-  assert.equal(handler.lastIndexOf("filename: '"), i009, '009 is the last entry');
+  // Stage 3A.1 appended 010/011 after it; the "latest entry / total count" pin lives in
+  // migration-011.test.ts now.
+  const i010 = handler.indexOf("filename: '010_counter_payment_provider.sql', sql: schema010");
+  assert.ok(i010 > i009, '009 precedes 010');
 });
 
 test('009: migrations 001-008 are unchanged by Stage 2G (git blob check)', () => {

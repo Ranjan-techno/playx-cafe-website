@@ -1,0 +1,22 @@
+-- Stage 3A.1 (walk-in bookings), step 1 of 2: the 'counter' payment provider.
+--
+-- Applied by the migration Lambda (infra/lib/lambda/migrate/handler.ts), same mechanism as
+-- 001-009 — never automatically, never on deploy, see infra/lib/constructs/migration.ts. Run inside
+-- its own transaction by the migration runner.
+--
+-- WHY THIS FILE HOLDS ONLY ONE STATEMENT: PostgreSQL lets `ALTER TYPE ... ADD VALUE` run inside a
+-- transaction block (PG 12+), but the new label cannot be USED — in a CHECK constraint, a
+-- comparison, an INSERT — until that transaction has committed ("unsafe use of new value").
+-- 011_walk_in_bookings.sql's constraints compare `provider = 'counter'`, so the label must be
+-- committed first, by this separate migration.
+--
+-- 'counter' = a payment taken in person at the Play X front desk (cash, UPI, card, or a
+-- complimentary session) and recorded by an admin through POST /admin/bookings/walk-in. It is
+-- never a gateway: no PhonePe code path handles it (the reconcilers select provider = 'phonepe'
+-- only; confirm-successful-payment.ts looks payments up by the PhonePe provider), and 011 makes a
+-- counter row carry a payment_method and only ever be 'paid'.
+--
+-- Purely additive: no existing payments row changes; 'phonepe' and 'mock' are untouched.
+-- IF NOT EXISTS makes a re-run after a partial failure a no-op.
+
+ALTER TYPE payment_provider ADD VALUE IF NOT EXISTS 'counter';

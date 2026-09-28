@@ -24,6 +24,8 @@ import schema006 from '../../../../database/migrations/006_payment_environment_e
 import schema007 from '../../../../database/migrations/007_enforce_payment_environment.sql';
 import schema008 from '../../../../database/migrations/008_booking_notifications.sql';
 import schema009 from '../../../../database/migrations/009_booking_notification_delivery.sql';
+import schema010 from '../../../../database/migrations/010_counter_payment_provider.sql';
+import schema011 from '../../../../database/migrations/011_walk_in_bookings.sql';
 
 interface Migration {
   filename: string;
@@ -62,6 +64,13 @@ const MIGRATIONS: Migration[] = [
   // booking_notifications. Additive only, no backfill: rows sent before it stay "not tracked" — see
   // the file's own header. Apply before the Stage 2G code is deployed.
   { filename: '009_booking_notification_delivery.sql', sql: schema009 },
+  // Stage 3A.1 step 1: ONLY `ALTER TYPE payment_provider ADD VALUE 'counter'` — its own migration
+  // (own transaction) because a new enum label can't be used until it has committed, and 011 uses it.
+  { filename: '010_counter_payment_provider.sql', sql: schema010 },
+  // Stage 3A.1 step 2: walk-in model — bookings.booking_source/created_by_admin_sub, nullable
+  // cognito_sub guarded by bookings_source_identity_chk, payments.payment_method + counter CHECKs.
+  // Additive, no backfill (existing rows read as ONLINE / NULL method). Apply before the 3A.1 code.
+  { filename: '011_walk_in_bookings.sql', sql: schema011 },
 ];
 
 interface DbSecret {
