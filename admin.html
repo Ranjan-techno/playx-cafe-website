@@ -109,6 +109,7 @@
     <section class="admin-view" id="view-bookings">
       <div class="admin-view-header">
         <h1>Bookings</h1>
+        <button type="button" class="btn btn-primary" id="walkInOpenBtn" aria-haspopup="dialog">New Walk-in Booking</button>
       </div>
       <form class="admin-filters" id="bookingsFilters">
         <div class="admin-filter-field">
@@ -243,12 +244,121 @@
   </div>
 </div>
 
+<!-- ============ WALK-IN BOOKING OVERLAY (Stage 3A.2 - POST /admin/bookings/walk-in, see
+     js/admin.js + js/admin-walk-in.js). Three steps in one dialog: form -> review -> success.
+     Package/price/duration/racers/simulator type all come from GET /products; available times
+     always come from GET /availability/production (walk-ins are real venue inventory). ============ -->
+<div class="admin-overlay" id="walkInOverlay" hidden>
+  <div class="admin-overlay-backdrop" id="walkInBackdrop"></div>
+  <div class="admin-overlay-panel admin-walkin-panel" role="dialog" aria-modal="true" aria-labelledby="walkInTitle">
+    <button type="button" class="admin-overlay-close" id="walkInCloseBtn" aria-label="Close">&times;</button>
+    <h2 id="walkInTitle">New Walk-in Booking</h2>
+
+    <!-- Step 1: form -->
+    <form class="admin-walkin-form" id="walkInForm" novalidate>
+      <fieldset class="admin-walkin-fieldset">
+        <legend>Customer</legend>
+        <div class="admin-walkin-grid">
+          <div class="form-field">
+            <label for="walkInName">Name</label>
+            <input type="text" id="walkInName" maxlength="100" autocomplete="off" required>
+          </div>
+          <div class="form-field">
+            <label for="walkInPhone">Phone</label>
+            <input type="tel" id="walkInPhone" inputmode="tel" maxlength="16" placeholder="10-digit mobile" autocomplete="off" required>
+          </div>
+          <div class="form-field admin-walkin-span">
+            <label for="walkInEmail">Email <span class="admin-walkin-optional">(optional)</span></label>
+            <input type="email" id="walkInEmail" maxlength="254" autocomplete="off">
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="admin-walkin-fieldset">
+        <legend>Session</legend>
+        <div class="admin-walkin-grid">
+          <div class="form-field admin-walkin-span">
+            <label for="walkInProduct">Package</label>
+            <select id="walkInProduct" required disabled>
+              <option value="">Loading packages...</option>
+            </select>
+            <p class="admin-walkin-hint" id="walkInProductInfo"></p>
+          </div>
+          <div class="form-field">
+            <label for="walkInDate">Date</label>
+            <input type="date" id="walkInDate" required>
+          </div>
+          <div class="form-field">
+            <label for="walkInTime">Available Time</label>
+            <select id="walkInTime" required disabled>
+              <option value="">Select a package and date first</option>
+            </select>
+          </div>
+        </div>
+        <p class="admin-status" id="walkInAvailabilityStatus" role="status" aria-live="polite"></p>
+      </fieldset>
+
+      <fieldset class="admin-walkin-fieldset">
+        <legend>Payment</legend>
+        <div class="admin-walkin-grid">
+          <div class="form-field">
+            <label for="walkInPaymentMethod">Payment Method</label>
+            <select id="walkInPaymentMethod" required>
+              <option value="">Select...</option>
+              <option value="CASH">Cash</option>
+              <option value="UPI">UPI</option>
+              <option value="CARD">Card</option>
+              <option value="COMPLIMENTARY">Complimentary</option>
+            </select>
+          </div>
+          <div class="form-field" id="walkInReferenceField" hidden>
+            <label for="walkInPaymentReference">Payment Reference <span class="admin-walkin-optional">(UTR / slip no., optional)</span></label>
+            <input type="text" id="walkInPaymentReference" maxlength="64" autocomplete="off">
+          </div>
+          <div class="form-field admin-walkin-span">
+            <label for="walkInNotes">Notes <span class="admin-walkin-optional">(optional)</span></label>
+            <textarea id="walkInNotes" rows="2" maxlength="500"></textarea>
+          </div>
+        </div>
+      </fieldset>
+
+      <p class="admin-status" id="walkInFormStatus" role="status" aria-live="polite"></p>
+      <div class="admin-walkin-actions">
+        <button type="submit" class="btn btn-primary" id="walkInReviewBtn">Review Booking</button>
+        <button type="button" class="btn btn-outline" id="walkInCancelBtn">Cancel</button>
+      </div>
+    </form>
+
+    <!-- Step 2: review before POST -->
+    <div class="admin-walkin-review" id="walkInReview" hidden>
+      <p class="admin-view-sub">Check the details with the customer before creating the booking.</p>
+      <div id="walkInReviewBody"></div>
+      <p class="admin-status" id="walkInSubmitStatus" role="status" aria-live="polite"></p>
+      <div class="admin-walkin-actions">
+        <button type="button" class="btn btn-primary" id="walkInSubmitBtn">Create Booking</button>
+        <button type="button" class="btn btn-outline" id="walkInBackBtn">Back to Edit</button>
+      </div>
+    </div>
+
+    <!-- Step 3: success -->
+    <div class="admin-walkin-success" id="walkInSuccess" hidden>
+      <div id="walkInSuccessBody" role="status" aria-live="polite"></div>
+      <div class="admin-walkin-actions">
+        <button type="button" class="btn btn-primary" id="walkInViewBtn">View Booking</button>
+        <button type="button" class="btn btn-outline" id="walkInAnotherBtn">Create Another</button>
+        <button type="button" class="btn btn-outline" id="walkInDoneBtn">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
 <script src="js/aws-config.js"></script>
 <script src="js/cognito-auth.js"></script>
 <script src="js/format-utils.js"></script>
 <script src="js/admin-payment-flags.js"></script>
 <script src="js/admin-email-status.js"></script>
+<script src="js/admin-walk-in.js"></script>
 <script src="js/admin.js"></script>
 </body>
 </html>

@@ -943,6 +943,371 @@
   }
 
   // ==================================================================
+  // WALK-IN BOOKING (Stage 3A.2) - GET /products,
+  //   GET /availability/production, POST /admin/bookings/walk-in
+  //
+  // Form -> review -> success, all inside #walkInOverlay. The pure parts
+  // (catalog filtering, payload whitelist, result classification, success
+  // formatting) live in js/admin-walk-in.js; this section is only DOM
+  // wiring. Nothing here is a trust boundary: the backend derives price,
+  // duration, racers, simulator type, allocation, status and environment
+  // itself (backend/src/lib/walk-in-booking.ts).
+  // ==================================================================
+  const WalkIn = window.PlayXAdminWalkIn;
+
+  const walkInOpenBtn = document.getElementById('walkInOpenBtn');
+  const walkInOverlay = document.getElementById('walkInOverlay');
+  const walkInBackdrop = document.getElementById('walkInBackdrop');
+  const walkInCloseBtn = document.getElementById('walkInCloseBtn');
+  const walkInForm = document.getElementById('walkInForm');
+  const walkInName = document.getElementById('walkInName');
+  const walkInPhone = document.getElementById('walkInPhone');
+  const walkInEmail = document.getElementById('walkInEmail');
+  const walkInProduct = document.getElementById('walkInProduct');
+  const walkInProductInfo = document.getElementById('walkInProductInfo');
+  const walkInDate = document.getElementById('walkInDate');
+  const walkInTime = document.getElementById('walkInTime');
+  const walkInAvailabilityStatus = document.getElementById('walkInAvailabilityStatus');
+  const walkInPaymentMethod = document.getElementById('walkInPaymentMethod');
+  const walkInReferenceField = document.getElementById('walkInReferenceField');
+  const walkInPaymentReference = document.getElementById('walkInPaymentReference');
+  const walkInNotes = document.getElementById('walkInNotes');
+  const walkInFormStatus = document.getElementById('walkInFormStatus');
+  const walkInCancelBtn = document.getElementById('walkInCancelBtn');
+  const walkInReview = document.getElementById('walkInReview');
+  const walkInReviewBody = document.getElementById('walkInReviewBody');
+  const walkInSubmitStatus = document.getElementById('walkInSubmitStatus');
+  const walkInSubmitBtn = document.getElementById('walkInSubmitBtn');
+  const walkInBackBtn = document.getElementById('walkInBackBtn');
+  const walkInSuccess = document.getElementById('walkInSuccess');
+  const walkInSuccessBody = document.getElementById('walkInSuccessBody');
+  const walkInViewBtn = document.getElementById('walkInViewBtn');
+  const walkInAnotherBtn = document.getElementById('walkInAnotherBtn');
+  const walkInDoneBtn = document.getElementById('walkInDoneBtn');
+
+  const walkInSubmitGuard = WalkIn.createSubmitGuard();
+  let walkInProducts = [];          // session products from the latest GET /products
+  let walkInAvailabilitySeq = 0;    // drops stale availability responses
+  let walkInCreatedBookingId = null; // internal only - for "View Booking", never displayed
+
+  function nowIstMinutes() {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date());
+    const part = (type) => Number(parts.find((p) => p.type === type).value);
+    return part('hour') * 60 + part('minute');
+  }
+
+  // reportViewError(), but the overlay lives outside #adminApp - so on a
+  // session-level failure hide it too rather than leaving it over the login
+  // screen.
+  function reportWalkInError(statusEl, result, fallbackMessage) {
+    if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
+      walkInOverlay.hidden = true;
+    }
+    reportViewError(statusEl, result, fallbackMessage);
+  }
+
+  function selectedWalkInProduct() {
+    return walkInProducts.find((p) => p.productCode === walkInProduct.value) || null;
+  }
+
+  function showWalkInStep(step) {
+    walkInForm.hidden = step !== 'form';
+    walkInReview.hidden = step !== 'review';
+    walkInSuccess.hidden = step !== 'success';
+  }
+
+  function setWalkInTimePlaceholder(text) {
+    walkInTime.innerHTML = `<option value="">${escapeHtml(text)}</option>`;
+    walkInTime.disabled = true;
+  }
+
+  function syncWalkInReferenceField() {
+    const applies = WalkIn.paymentReferenceApplies(walkInPaymentMethod.value);
+    walkInReferenceField.hidden = !applies;
+    if (!applies) walkInPaymentReference.value = '';
+  }
+
+  function renderWalkInProductInfo() {
+    const product = selectedWalkInProduct();
+    walkInProductInfo.textContent = product
+      ? `${product.durationMinutes} min · ${WalkIn.simulatorTypeLabel(product.simulatorType)} · ${WalkIn.racersLabel(product.racers)} · ${WalkIn.formatInr(product.priceInr)}`
+      : '';
+  }
+
+  async function loadWalkInProducts() {
+    walkInProduct.disabled = true;
+    walkInProduct.innerHTML = '<option value="">Loading packages...</option>';
+    const result = await adminFetch('/products');
+    if (result.kind !== 'ok') {
+      walkInProduct.innerHTML = '<option value="">Packages unavailable</option>';
+      reportWalkInError(walkInFormStatus, result, 'Could not load packages right now.');
+      return;
+    }
+    walkInProducts = WalkIn.sessionProducts(result.data && result.data.products);
+    if (walkInProducts.length === 0) {
+      walkInProduct.innerHTML = '<option value="">No bookable packages</option>';
+      setStatus(walkInFormStatus, 'No bookable session packages are active right now.', 'error');
+      return;
+    }
+    walkInProduct.innerHTML = '<option value="">Select a package...</option>' + walkInProducts
+      .map((p) => `<option value="${escapeHtml(p.productCode)}">${escapeHtml(WalkIn.productOptionLabel(p))}</option>`)
+      .join('');
+    walkInProduct.disabled = false;
+  }
+
+  // Always PRODUCTION inventory - WalkIn.availabilityPath() hard-codes
+  // /availability/production and is never chosen by hostname.
+  async function refreshWalkInAvailability(keepMessage) {
+    const mySeq = ++walkInAvailabilitySeq;
+    const productCode = walkInProduct.value;
+    const date = walkInDate.value;
+    const today = todayIstDate();
+    if (!keepMessage) setStatus(walkInAvailabilityStatus, '');
+
+    if (!productCode || !date) {
+      setWalkInTimePlaceholder('Select a package and date first');
+      return;
+    }
+    if (WalkIn.isPastDate(date, today)) {
+      setWalkInTimePlaceholder('Date is in the past');
+      setStatus(walkInAvailabilityStatus, 'That date is in the past - choose today or a later date.', 'error');
+      return;
+    }
+
+    setWalkInTimePlaceholder('Checking availability...');
+    const result = await adminFetch(WalkIn.availabilityPath(productCode, date));
+    if (mySeq !== walkInAvailabilitySeq) return; // superseded by a newer selection
+
+    if (result.kind !== 'ok') {
+      setWalkInTimePlaceholder('Unable to check availability');
+      reportWalkInError(walkInAvailabilityStatus, result, 'Could not check availability right now.');
+      return;
+    }
+
+    const slots = WalkIn.filterUpcomingSlots(result.data.availableSlots, date, today, nowIstMinutes());
+    if (slots.length === 0) {
+      setWalkInTimePlaceholder('No times available');
+      const reason = result.data.closed
+        ? 'Play X is closed or not taking bookings on this date.'
+        : 'No simulator is free for this package on this date - try another date or package.';
+      setStatus(walkInAvailabilityStatus, keepMessage ? `${walkInAvailabilityStatus.textContent} ${reason}` : reason, 'error');
+      return;
+    }
+    walkInTime.innerHTML = '<option value="">Select a time...</option>' + slots
+      .map((slot) => `<option value="${escapeHtml(slot)}">${escapeHtml(formatTimeDisplay(slot))}</option>`)
+      .join('');
+    walkInTime.disabled = false;
+  }
+
+  function readWalkInForm() {
+    return {
+      name: walkInName.value,
+      phone: walkInPhone.value,
+      email: walkInEmail.value,
+      productCode: walkInProduct.value,
+      bookingDate: walkInDate.value,
+      startTime: walkInTime.value,
+      paymentMethod: walkInPaymentMethod.value,
+      paymentReference: walkInPaymentReference.value,
+      notes: walkInNotes.value
+    };
+  }
+
+  const WALK_IN_FIELD_INPUTS = {
+    name: walkInName, phone: walkInPhone, email: walkInEmail, product: walkInProduct,
+    date: walkInDate, time: walkInTime, payment: walkInPaymentMethod,
+    reference: walkInPaymentReference, notes: walkInNotes
+  };
+
+  function resetWalkInForm() {
+    walkInForm.reset();
+    walkInDate.min = todayIstDate();
+    walkInDate.value = todayIstDate();
+    syncWalkInReferenceField();
+    renderWalkInProductInfo();
+    setWalkInTimePlaceholder('Select a package and date first');
+    setStatus(walkInFormStatus, '');
+    setStatus(walkInAvailabilityStatus, '');
+    setStatus(walkInSubmitStatus, '');
+    walkInCreatedBookingId = null;
+    showWalkInStep('form');
+  }
+
+  function openWalkIn() {
+    resetWalkInForm();
+    walkInOverlay.hidden = false;
+    walkInName.focus();
+    loadWalkInProducts(); // fresh catalog every time - prices are the server's, never cached here
+  }
+
+  function closeWalkIn() {
+    if (walkInSubmitGuard.busy) return; // never abandon an in-flight POST
+    walkInOverlay.hidden = true;
+    walkInAvailabilitySeq++; // ignore any availability response still in flight
+    walkInOpenBtn.focus();
+  }
+
+  function reviewRow(label, value) {
+    return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(dash(value))}</strong></div>`;
+  }
+
+  function renderWalkInReview(form, product) {
+    const payload = WalkIn.buildWalkInPayload(form);
+    const amount = WalkIn.previewAmountInr(payload.paymentMethod, product.priceInr);
+    walkInReviewBody.innerHTML = `
+      <div class="admin-detail-section">
+        <h3>Customer</h3>
+        <div class="admin-detail-grid">
+          ${reviewRow('Name', payload.customer.name)}
+          ${reviewRow('Phone', payload.customer.phone)}
+          ${reviewRow('Email', payload.customer.email)}
+        </div>
+      </div>
+      <div class="admin-detail-section">
+        <h3>Session</h3>
+        <div class="admin-detail-grid">
+          ${reviewRow('Package', product.name)}
+          ${reviewRow('Date', formatDateDisplay(payload.bookingDate))}
+          ${reviewRow('Time', formatTimeDisplay(payload.startTime))}
+          ${reviewRow('Duration', `${product.durationMinutes} min`)}
+          ${reviewRow('Simulator Type', WalkIn.simulatorTypeLabel(product.simulatorType))}
+          ${reviewRow('Racers', product.racers)}
+        </div>
+      </div>
+      <div class="admin-detail-section">
+        <h3>Payment</h3>
+        <div class="admin-detail-grid">
+          ${reviewRow('Catalog Price', WalkIn.formatInr(product.priceInr))}
+          ${reviewRow('Method', WalkIn.paymentMethodLabel(payload.paymentMethod))}
+          ${WalkIn.paymentReferenceApplies(payload.paymentMethod) ? reviewRow('Reference', payload.paymentReference) : ''}
+          ${reviewRow('To Collect', WalkIn.formatInr(amount))}
+        </div>
+        ${payload.notes ? `<div class="admin-notes-box">${escapeHtml(payload.notes)}</div>` : ''}
+      </div>
+      <p class="admin-walkin-hint">Final price and simulator allocation are set by the server when the booking is created.</p>
+    `;
+  }
+
+  function renderWalkInSuccess(booking) {
+    const s = WalkIn.walkInSuccessSummary(booking);
+    const timeRange = s.endTime
+      ? `${formatTimeDisplay(s.startTime)} – ${formatTimeDisplay(s.endTime)}`
+      : formatTimeDisplay(s.startTime);
+    walkInSuccessBody.innerHTML = `
+      <div class="admin-walkin-success-head">
+        <strong class="admin-walkin-success-ref">${escapeHtml(s.reference)}</strong>
+        <span class="booking-status-pill confirmed">${escapeHtml(s.status)}</span>
+      </div>
+      <div class="admin-detail-section">
+        <div class="admin-detail-grid">
+          ${reviewRow('Customer', s.customerName)}
+          ${reviewRow('Package', s.packageName)}
+          ${reviewRow('Date', formatDateDisplay(s.date))}
+          ${reviewRow('Time', timeRange)}
+          ${reviewRow('Simulator(s)', s.simulators)}
+          ${reviewRow('Payment', s.paymentMethod)}
+          ${reviewRow('Amount Paid', s.amountPaid)}
+          ${s.listPrice ? reviewRow('List Price', s.listPrice) : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  walkInPaymentMethod.addEventListener('change', syncWalkInReferenceField);
+  walkInProduct.addEventListener('change', () => {
+    renderWalkInProductInfo();
+    refreshWalkInAvailability(false);
+  });
+  walkInDate.addEventListener('change', () => refreshWalkInAvailability(false));
+
+  walkInForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const form = readWalkInForm();
+    const problem = WalkIn.validateWalkInForm(form, todayIstDate());
+    if (problem) {
+      setStatus(walkInFormStatus, problem.message, 'error');
+      const input = WALK_IN_FIELD_INPUTS[problem.field];
+      if (input && !input.disabled) input.focus();
+      return;
+    }
+    const product = selectedWalkInProduct();
+    if (!product) {
+      setStatus(walkInFormStatus, 'Choose a package.', 'error');
+      return;
+    }
+    setStatus(walkInFormStatus, '');
+    setStatus(walkInSubmitStatus, '');
+    renderWalkInReview(form, product);
+    showWalkInStep('review');
+    walkInSubmitBtn.focus();
+  });
+
+  walkInBackBtn.addEventListener('click', () => {
+    if (walkInSubmitGuard.busy) return;
+    showWalkInStep('form');
+    walkInName.focus();
+  });
+
+  walkInSubmitBtn.addEventListener('click', async () => {
+    const payload = WalkIn.buildWalkInPayload(readWalkInForm());
+    const result = await walkInSubmitGuard.run(async () => {
+      walkInSubmitBtn.disabled = true;
+      walkInBackBtn.disabled = true;
+      walkInCloseBtn.disabled = true;
+      setStatus(walkInSubmitStatus, 'Creating booking...');
+      try {
+        return await adminFetch(WalkIn.WALK_IN_PATH, { method: 'POST', body: payload });
+      } finally {
+        walkInSubmitBtn.disabled = false;
+        walkInBackBtn.disabled = false;
+        walkInCloseBtn.disabled = false;
+      }
+    });
+    if (!result) return; // a duplicate click while the first request was in flight
+
+    const outcome = WalkIn.classifyWalkInResult(result);
+    if (outcome.action === 'ok') {
+      walkInCreatedBookingId = result.data.id || null;
+      renderWalkInSuccess(result.data);
+      showWalkInStep('success');
+      walkInViewBtn.focus();
+      loadBookings(true);
+      loadDashboard();
+      if (loadedViews.simulators) loadSimulators();
+      return;
+    }
+    if (outcome.action === 'unauthenticated' || outcome.action === 'forbidden') {
+      reportWalkInError(walkInSubmitStatus, result, '');
+      return;
+    }
+    if (outcome.action === 'conflict') {
+      showWalkInStep('form');
+      setStatus(walkInAvailabilityStatus, outcome.message, 'error');
+      walkInTime.focus();
+      refreshWalkInAvailability(true);
+      return;
+    }
+    setStatus(walkInSubmitStatus, outcome.message, 'error');
+  });
+
+  walkInOpenBtn.addEventListener('click', openWalkIn);
+  walkInCloseBtn.addEventListener('click', closeWalkIn);
+  walkInCancelBtn.addEventListener('click', closeWalkIn);
+  walkInBackdrop.addEventListener('click', closeWalkIn);
+  walkInDoneBtn.addEventListener('click', closeWalkIn);
+  walkInAnotherBtn.addEventListener('click', openWalkIn);
+  walkInViewBtn.addEventListener('click', () => {
+    const bookingId = walkInCreatedBookingId;
+    closeWalkIn();
+    if (bookingId) openBookingDetail(bookingId);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !walkInOverlay.hidden) closeWalkIn();
+  });
+
+  // ==================================================================
   // PAYMENTS - GET /admin/payments
   // ==================================================================
   const paymentsStatus = document.getElementById('paymentsStatus');
